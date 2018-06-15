@@ -1,0 +1,28 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+aiohttp = "*"
+uvloop = "*"
+aiodns = "*"
+cchardet = "*"
+pyee = "*"
+websockets = "*"
+ujson = "*"
+yarl = "*"
+async-timeout = "*"
+aiofiles = "*"
+
+[dev-packages]
+black = "*"
+mypy = {git = "https://github.com/python/mypy.git"}
+pytest-asyncio = "*"
+pytest = "*"
+
+[requires]
+python_version = "3.6"
+
+[pipenv]
+allow_prereleases = true
