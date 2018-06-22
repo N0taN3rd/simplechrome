@@ -20,6 +20,11 @@ black = "*"
 mypy = {git = "https://github.com/python/mypy.git"}
 pytest-asyncio = "*"
 pytest = "*"
+psutil = "*"
+ensure = "*"
+robber = "*"
+expects = "*"
+syncer = "*"
 
 [requires]
 python_version = "3.6"

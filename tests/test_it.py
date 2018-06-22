@@ -21,6 +21,6 @@ async def new_browser(request):
 
 
 @pytest.mark.asyncio
-async def test_one(new_browser):
-    print(new_browser)
+async def test_one(event_loop):
+    print(event_loop)
     assert True

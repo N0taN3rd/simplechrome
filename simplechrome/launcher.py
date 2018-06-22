@@ -98,7 +98,6 @@ class Launcher(object):
             self.url = f"http://localhost:{self.port}"
         else:
             self.url = self.options.get("url")  # type: ignore
-
         if "executablePath" in self.options:
             self.exec = self.options["executablePath"]  # type: ignore
         else:
@@ -151,16 +150,19 @@ class Launcher(object):
         raise LauncherError("Could not find a page to connect to")
 
     async def launch(self) -> Chrome:
-        env = self.options.get("env", None)
         self.chrome_dead = False
         self.proc = subprocess.Popen(
-            self.cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env
+            self.cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         myself = self
 
         def _close_process(*args: Any, **kwargs: Any) -> None:
             if not myself.chrome_dead:
-                asyncio.get_event_loop().run_until_complete(myself.kill_chrome())
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(myself.kill_chrome())
+                else:
+                    loop.run_until_complete(myself.kill_chrome())
 
         atexit.register(_close_process)
         if self.options.get("handleSIGINT", True):
