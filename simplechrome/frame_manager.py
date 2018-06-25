@@ -80,7 +80,7 @@ class FrameManager(EventEmitter):
         frame = self._frames.get(frameId, None)
         if frame is not None:
             pass
-        frame._navigatedWithinDocument(event.get('url'))
+        frame._navigatedWithinDocument(event.get("url"))
         self._page.emit(self._page.Events.NavigatedWithinDoc, event)
 
     def enable_lifecycle_emitting(self) -> None:
@@ -209,10 +209,11 @@ class FrameManager(EventEmitter):
         return JSHandle(context, self._client, remoteObject)
 
     def _removeFramesRecursively(self, frame: "Frame") -> None:
-        for child in frame.childFrames:
+        for child in list(frame.childFrames):
             self._removeFramesRecursively(child)
         frame._detach()
-        self._frames.pop(frame._id, None)
+        if frame._id in self._frames:
+            self._frames.pop(frame._id, None)
         self.emit(FrameManager.Events.FrameDetached, frame)
 
 
@@ -279,10 +280,10 @@ class Frame(EventEmitter):
     def _detach(self) -> None:
         self.emit(Frame.Events.Detached)
         self.remove_all_listeners(Frame.Events.Detached)
-        for waitTask in self._waitTasks:
+        for waitTask in list(self._waitTasks):
             waitTask.terminate(PageError("waitForFunction failed: frame got detached."))
         self._detached = True
-        if self._parentFrame:
+        if self._parentFrame and self in self._parentFrame._childFrames:
             self._parentFrame._childFrames.remove(self)
         self._parentFrame = None
         self.remove_all_listeners(Frame.Events.LifeCycleEvent)
@@ -536,9 +537,7 @@ function(html) {
         if isinstance(options.get("url"), str):
             url = options["url"]
             try:
-                return (
-                    await context.evaluateHandle(addScriptUrl, url)
-                ).asElement()
+                return (await context.evaluateHandle(addScriptUrl, url)).asElement()
             except ElementHandleError as e:
                 raise PageError(f"Loading script from {url} failed") from e
 
@@ -554,9 +553,7 @@ function(html) {
 
         if isinstance(options.get("content"), str):
             return (
-                await context.evaluateHandle(
-                    addScriptContent, options["content"]
-                )
+                await context.evaluateHandle(addScriptContent, options["content"])
             ).asElement()
 
         raise ValueError("Provide an object with a `url`, `path` or `content` property")
@@ -595,9 +592,7 @@ function(html) {
         if isinstance(options.get("url"), str):
             url = options["url"]
             try:
-                return (
-                    await context.evaluateHandle(addStyleUrl, url)
-                ).asElement()
+                return (await context.evaluateHandle(addStyleUrl, url)).asElement()
             except ElementHandleError as e:
                 raise PageError(f"Loading style from {url} failed") from e
 
@@ -607,9 +602,7 @@ function(html) {
             contents = contents + "/*# sourceURL={}*/".format(
                 options["path"].replace("\n", "")
             )
-            return (
-                await context.evaluateHandle(addStyleContent, contents)
-            ).asElement()
+            return (await context.evaluateHandle(addStyleContent, contents)).asElement()
 
         if isinstance(options.get("content"), str):
             return (
@@ -819,7 +812,11 @@ function(html) {
         """Get title of the frame."""
         return await self.evaluate("() => document.title")
 
-    def navigation_waiter(self, loop: Optional[asyncio.AbstractEventLoop] = None, timeout: Optional[int] = None) -> Future:
+    def navigation_waiter(
+        self,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        timeout: Optional[int] = None,
+    ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
         if loop is None:
@@ -835,15 +832,17 @@ function(html) {
         def remove_cb(x: Future) -> None:
             if x.cancelled():
                 myself.remove_listener(Frame.Events.Navigated, set_true)
-            else:
-                print('good')
 
         fut.add_done_callback(remove_cb)
         if timeout is not None:
             return asyncio.wait_for(fut, timeout=timeout, loop=loop)
         return fut
 
-    def loaded_waiter(self, loop: Optional[asyncio.AbstractEventLoop] = None, timeout: Optional[int] = None) -> Future:
+    def loaded_waiter(
+        self,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        timeout: Optional[int] = None,
+    ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
         if loop is None:
@@ -853,6 +852,7 @@ function(html) {
         def on_load(lf: str) -> None:
             if lf == "load":
                 fut.set_result(True)
+
         myself = self
 
         def remove_cb(x: Any) -> None:
@@ -864,7 +864,11 @@ function(html) {
             return asyncio.wait_for(fut, timeout=timeout, loop=loop)
         return fut
 
-    def network_idle_waiter(self,  loop: Optional[asyncio.AbstractEventLoop] = None, timeout: Optional[int] = None) -> Future:
+    def network_idle_waiter(
+        self,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        timeout: Optional[int] = None,
+    ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
         if loop is None:

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import ujson as json
 from asyncio import Future
-from typing import Optional, Dict, Callable, Any, cast
+from typing import Optional, Dict, Callable, Any
 
 import websockets
 import websockets.protocol
@@ -37,6 +37,7 @@ class Connection(EventEmitter):
         self._ws: WebSocketClientProtocol = None
         self._recv_fut: Optional[Future] = None
         self._closeCallback: Optional[Callable[[], None]] = None
+        self._loop = asyncio.get_event_loop()
 
     @staticmethod
     async def createForWebSocket(url: str, delay: int = 0) -> "Connection":
@@ -53,7 +54,7 @@ class Connection(EventEmitter):
             read_limit=2 ** 25,
             write_limit=2 ** 25,
         )
-        self._recv_fut = asyncio.ensure_future(self._recv_loop())
+        self._recv_fut = asyncio.ensure_future(self._recv_loop(), loop=self._loop)
 
     @property
     def url(self) -> str:
@@ -66,8 +67,8 @@ class Connection(EventEmitter):
         self._message_id += 1
         _id = self._message_id
         msg = json.dumps(dict(method=method, params=params, id=_id))
-        asyncio.ensure_future(self._send_async(msg))
-        callback = asyncio.get_event_loop().create_future()
+        asyncio.ensure_future(self._send_async(msg), loop=self._loop)
+        callback = self._loop.create_future()
         self._callbacks[_id] = callback
         callback.method = method  # type: ignore
         return callback
@@ -100,7 +101,6 @@ class Connection(EventEmitter):
             except (websockets.ConnectionClosed, ConnectionResetError) as e:
                 logger.info("connection closed")
                 break
-        print("disposing")
 
     def _on_message(self, message: str) -> None:
         msg = json.loads(message)
@@ -134,6 +134,9 @@ class Connection(EventEmitter):
             else:
                 self.emit(method, params)
         except Exception as e:
+            import traceback
+
+            traceback.print_exc()
             print("_on_unsolicited error", e)
             print("_on_unsolicited error", params)
 
@@ -158,8 +161,6 @@ class Connection(EventEmitter):
         # close connection
         if not self._recv_fut.done():
             self._recv_fut.cancel()
-        if not self._ws.closed:
-            await self._ws.close()
 
 
 class CDPSession(EventEmitter):
@@ -226,7 +227,10 @@ class CDPSession(EventEmitter):
                 error = msg["error"]
                 msg = error.get("message")
                 data = error.get("data")
-                callback.set_exception(NetworkError(f"Protocol Error: {msg} {data}"))
+                emsg = f"Protocol Error: {msg}"
+                if data:
+                    emsg += f" {data}"
+                callback.set_exception(NetworkError(emsg))
             else:
                 result = msg.get("result")
                 callback.set_result(result)

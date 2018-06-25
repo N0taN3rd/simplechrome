@@ -8,14 +8,13 @@ from typing import Optional, Dict
 from urllib import request
 from zipfile import ZipFile
 
-DEFAULT_REVISION = "563942"
+DEFAULT_REVISION = "568432"
 logger = logging.getLogger(__name__)
 
 __all__ = ["BrowserFetcher", "BF"]
 
 
 class BrowserFetcher(object):
-
     def __init__(self) -> None:
         self.downloads_folder: Path = Path.home() / ".simplechrome" / "local-chromium"
         self.default_download_host: str = "https://storage.googleapis.com"
@@ -46,7 +45,7 @@ class BrowserFetcher(object):
             "win64": self.downloads_folder / revision / "chrome-win32" / "chrome.exe",
         }
 
-    def update_download_revision(self, revision: str=DEFAULT_REVISION) -> None:
+    def update_download_revision(self, revision: str = DEFAULT_REVISION) -> None:
         if self.revision == revision or not isinstance(revision, str):
             return
         self.revision = revision

@@ -14,10 +14,7 @@ class Dialog(object):
     """
 
     Type = SimpleNamespace(
-        Alert="alert",
-        BeforeUnload="beforeunload",
-        Confirm="confirm",
-        Prompt="prompt"
+        Alert="alert", BeforeUnload="beforeunload", Confirm="confirm", Prompt="prompt"
     )
 
     def __init__(

@@ -12,7 +12,6 @@ __all__ = ["ElementHandle"]
 
 
 class ElementHandle(JSHandle):
-
     def __init__(
         self,
         context: ExecutionContext,
@@ -208,7 +207,9 @@ class ElementHandle(JSHandle):
         If no element matches the ``selector``, returns empty list (``[]``).
         """
         arrayHandle = await self.executionContext.evaluateHandle(
-            "(element, selector) => element.querySelectorAll(selector)", self, selector
+            "(element, selector) => Array.from(element.querySelectorAll(selector))",
+            self,
+            selector,
         )
         properties = await arrayHandle.getProperties()
         await arrayHandle.dispose()

@@ -533,6 +533,8 @@ errorReasons = {
     "aborted": "Aborted",
     "accessdenied": "AccessDenied",
     "addressunreachable": "AddressUnreachable",
+    "blockedbyclient": "BlockedByClient",
+    "blockedbyresponse": "BlockedByResponse",
     "connectionaborted": "ConnectionAborted",
     "connectionclosed": "ConnectionClosed",
     "connectionfailed": "ConnectionFailed",

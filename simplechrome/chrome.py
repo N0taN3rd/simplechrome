@@ -45,6 +45,7 @@ class Chrome(EventEmitter):
         def _dummy_callback() -> Awaitable[None]:
             fut = asyncio.get_event_loop().create_future()
             fut.set_result(None)
+            self.emit(Chrome.Events.Disconnected, None)
             return fut
 
         if closeCallback:
@@ -92,7 +93,7 @@ class Chrome(EventEmitter):
 
     async def createIncognitoBrowserContext(self) -> "BrowserContext":
         nc = await self._connection.send("Target.createBrowserContext")
-        contextId = nc["browserContextId"]
+        contextId = nc.get("browserContextId")
         context = BrowserContext(self, contextId)
         self._contexts[contextId] = context
         return context
@@ -135,15 +136,14 @@ class Chrome(EventEmitter):
 
     async def _targetCreated(self, event: dict) -> None:
         tinfo = event["targetInfo"]
-        browserContextId = tinfo["browserContextId"]
-        context = (
-            self._contexts.get(browserContextId)
-            if browserContextId in self._contexts
-            else self._defaultContext
-        )
+        browserContextId = tinfo.get("browserContextId")
+        if browserContextId is not None and browserContextId in self._contexts:
+            context = self._contexts.get(browserContextId)
+        else:
+            context = self._defaultContext
         targetId = tinfo["targetId"]
         target = Target(tinfo, context, self)
-        if event["targetInfo"]["targetId"] in self._targets:
+        if targetId in self._targets:
             raise BrowserError("target should not exist before create.")
         self._targets[targetId] = target
         if await target._initializedPromise:
