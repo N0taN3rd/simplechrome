@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Dict, TYPE_CHECKING
 
 from .connection import CDPSession
+from .errors import InputError
 from .us_keyboard_layout import keyDefinitions
 from .util import merge_dict
 
@@ -81,7 +82,7 @@ class Keyboard(object):
 
         definition: Dict = keyDefinitions.get(keyString)  # type: ignore
         if not definition:
-            raise KeyError(f"Unknown key: {keyString}")
+            raise InputError(f"Unknown key: {keyString}")
 
         if "key" in definition:
             description["key"] = definition["key"]

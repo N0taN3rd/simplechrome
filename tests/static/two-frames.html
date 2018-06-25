@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Only two frames??</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+        }
+
+        body iframe {
+            flex-grow: 1;
+            flex-shrink: 1;
+        }
+    </style>
+</head>
+<body>
+<iframe src='./frame.html'></iframe>
+<iframe src='./frame.html'></iframe>
+</body>
+</html>

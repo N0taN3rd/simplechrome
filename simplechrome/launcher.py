@@ -5,13 +5,11 @@ import atexit
 import logging
 import os
 import os.path
-import shutil
 import signal
 import subprocess
 import sys
-import tempfile
-from tempfile import TemporaryDirectory
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urljoin
 
@@ -23,7 +21,7 @@ from .connection import Connection
 from .errors import LauncherError
 from .util import merge_dict
 
-__all__ = ["Launcher", "launch", "connect"]
+__all__ = ["Launcher", "launch", "connect", "DEFAULT_ARGS"]
 
 logger = logging.getLogger(__name__)
 

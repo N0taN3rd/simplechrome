@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Frames for days!</title>
+    <style>
+        body {
+            display: flex;
+        }
+
+        body iframe {
+            flex-grow: 1;
+            flex-shrink: 1;
+        }
+    </style>
+</head>
+<body>
+<script>
+async function attachFrame(frameId, url) {
+    const frame = document.createElement('iframe');
+    frame.src = url;
+    frame.id = frameId;
+    document.body.appendChild(frame);
+    await new Promise(x => frame.onload = x);
+    return 'kazakh';
+}
+</script>
+<iframe src='./two-frames.html'></iframe>
+<iframe src='./frame.html'></iframe>
+</body>
+</html>

@@ -6,7 +6,8 @@ __all__ = [
     "NetworkError",
     "PageError",
     "WaitTimeoutError",
-    "LauncherError"
+    "LauncherError",
+    "InputError",
 ]
 
 
@@ -42,4 +43,11 @@ class WaitTimeoutError(asyncio.TimeoutError):  # noqa: D204
 
 class LauncherError(Exception):
     """Launching Chrome related exception"""
+
+    pass
+
+
+class InputError(Exception):
+    """Input related exception"""
+
     pass

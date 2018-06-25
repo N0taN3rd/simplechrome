@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Button test</title>
+</head>
+<body>
+<script src="mouse-helper.js"></script>
+<button id="clickTarget" onclick="clicked();">Click target</button>
+<script>
+  window.result = 'Was not clicked';
+
+  function clicked() {
+    window.result = 'Clicked';
+  }
+</script>
+</body>
+</html>

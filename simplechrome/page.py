@@ -71,14 +71,13 @@ class Page(EventEmitter):
     def on_dialog(self, handler: Callable) -> None:
         self.on(Page.Events.Dialog, handler)
 
-
     @staticmethod
     async def create(
-            client: CDPSession,
-            target: "Target",
-            ignoreHTTPSErrors: bool = False,
-            appMode: bool = False,
-            screenshotTaskQueue: list = None,
+        client: CDPSession,
+        target: "Target",
+        ignoreHTTPSErrors: bool = False,
+        appMode: bool = False,
+        screenshotTaskQueue: list = None,
     ) -> "Page":
         """Async function which makes new page object."""
         await client.send("Page.enable"),
@@ -112,12 +111,12 @@ class Page(EventEmitter):
         return page
 
     def __init__(
-            self,
-            client: CDPSession,
-            target: "Target",
-            frameTree: Dict,
-            ignoreHTTPSErrors: bool = False,
-            screenshotTaskQueue: list = None,
+        self,
+        client: CDPSession,
+        target: "Target",
+        frameTree: Dict,
+        ignoreHTTPSErrors: bool = False,
+        screenshotTaskQueue: list = None,
     ) -> None:
         super().__init__()
         self._client = client
@@ -187,6 +186,7 @@ class Page(EventEmitter):
         entry = event.get("entry")
         args = entry.get("args")
         if args is not None:
+
             async def release() -> None:
                 for arg in args:
                     await helper.releaseObject(self._client, arg)
@@ -327,7 +327,7 @@ class Page(EventEmitter):
         return await context.queryObjects(prototypeHandle)
 
     async def querySelectorEval(
-            self, selector: str, pageFunction: str, *args: Any
+        self, selector: str, pageFunction: str, *args: Any
     ) -> Optional[Any]:
         """Execute function with an element which matches ``selector``.
 
@@ -345,7 +345,7 @@ class Page(EventEmitter):
         return await frame.querySelectorEval(selector, pageFunction, *args)
 
     async def querySelectorAllEval(
-            self, selector: str, pageFunction: str, *args: Any
+        self, selector: str, pageFunction: str, *args: Any
     ) -> Optional[Any]:
         """Execute function with all elements which matches ``selector``.
 
@@ -563,9 +563,9 @@ function addPageBinding(bindingName) {
     def _onConsoleAPI(self, event: dict) -> None:
         _args = event.get("args", [])
         if (
-                event.get("type") == "debug"
-                and _args
-                and _args[0].get("value") == "driver:page-binding"
+            event.get("type") == "debug"
+            and _args
+            and _args[0].get("value") == "driver:page-binding"
         ):
             obj = json.loads(_args[1]["value"])
             name = obj.get("name")
@@ -650,7 +650,7 @@ function deliverResult(name, seq, result) {
         await frame.setContent(html)
 
     async def goto(
-            self, url: str, options: dict = None, **kwargs: Any
+        self, url: str, options: dict = None, **kwargs: Any
     ) -> Optional[Response]:
         """Go to the ``url``.
 
@@ -729,7 +729,7 @@ function deliverResult(name, seq, result) {
         return response
 
     async def waitForNavigation(
-            self, options: dict = None, **kwargs: Any
+        self, options: dict = None, **kwargs: Any
     ) -> Optional[Response]:
         """Wait for navigation.
 
@@ -765,7 +765,7 @@ function deliverResult(name, seq, result) {
         return await self._go(-1, options)
 
     async def goForward(
-            self, options: dict = None, **kwargs: Any
+        self, options: dict = None, **kwargs: Any
     ) -> Optional[Response]:
         """Navigate to the next page in history.
 
@@ -842,7 +842,7 @@ function deliverResult(name, seq, result) {
         return self._viewport
 
     async def evaluate(
-            self, pageFunction: str, *args: Any, force_expr: bool = False
+        self, pageFunction: str, *args: Any, force_expr: bool = False
     ) -> Any:
         """Execute js-function or js-expression on browser and get result.
 
@@ -944,7 +944,7 @@ function deliverResult(name, seq, result) {
         return await self._screenshotTask(screenshotType, options)
 
     async def _screenshotTask(
-            self, format: str, options: dict
+        self, format: str, options: dict
     ) -> bytes:  # noqa: C901,E501
         await self._client.send(
             "Target.activateTarget", {"targetId": self._target._targetId}
@@ -1002,7 +1002,7 @@ function deliverResult(name, seq, result) {
         return buffer
 
     async def _rawScreenshotTask(
-            self, format: str, options: dict
+        self, format: str, options: dict
     ) -> bytes:  # noqa: C901,E501
         await self._client.send(
             "Target.activateTarget", {"targetId": self._target._targetId}
@@ -1110,24 +1110,24 @@ function deliverResult(name, seq, result) {
             paperHeight = fmt["height"]
         else:
             paperWidth = (
-                    convertPrintParameterToInches(options.get("width")) or paperWidth
+                convertPrintParameterToInches(options.get("width")) or paperWidth
             )  # noqa: E501
             paperHeight = (
-                    convertPrintParameterToInches(options.get("height")) or paperHeight
+                convertPrintParameterToInches(options.get("height")) or paperHeight
             )  # noqa: E501
 
         marginOptions = options.get("margin", {})
         marginTop = (
-                convertPrintParameterToInches(marginOptions.get("top")) or 0
+            convertPrintParameterToInches(marginOptions.get("top")) or 0
         )  # noqa: E501
         marginLeft = (
-                convertPrintParameterToInches(marginOptions.get("left")) or 0
+            convertPrintParameterToInches(marginOptions.get("left")) or 0
         )  # noqa: E501
         marginBottom = (
-                convertPrintParameterToInches(marginOptions.get("bottom")) or 0
+            convertPrintParameterToInches(marginOptions.get("bottom")) or 0
         )  # noqa: E501
         marginRight = (
-                convertPrintParameterToInches(marginOptions.get("right")) or 0
+            convertPrintParameterToInches(marginOptions.get("right")) or 0
         )  # noqa: E501
 
         result = await self._client.send(
@@ -1243,7 +1243,7 @@ function deliverResult(name, seq, result) {
         return await frame.select(selector, *values)
 
     async def type(
-            self, selector: str, text: str, options: dict = None, **kwargs: Any
+        self, selector: str, text: str, options: dict = None, **kwargs: Any
     ) -> None:
         """Type ``text`` on the element which matches ``selector``.
 
@@ -1257,11 +1257,11 @@ function deliverResult(name, seq, result) {
         return await frame.type(selector, text, options, **kwargs)
 
     def waitFor(
-            self,
-            selectorOrFunctionOrTimeout: Union[str, int, float],
-            options: dict = None,
-            *args: Any,
-            **kwargs: Any,
+        self,
+        selectorOrFunctionOrTimeout: Union[str, int, float],
+        options: dict = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> Awaitable:
         """Wait for function, timeout, or element which matches on page.
 
@@ -1296,7 +1296,7 @@ function deliverResult(name, seq, result) {
         return frame.waitFor(selectorOrFunctionOrTimeout, options, *args, **kwargs)
 
     def waitForSelector(
-            self, selector: str, options: dict = None, **kwargs: Any
+        self, selector: str, options: dict = None, **kwargs: Any
     ) -> Awaitable:
         """Wait until element which matches ``selector`` appears on page.
 
@@ -1326,7 +1326,7 @@ function deliverResult(name, seq, result) {
         return frame.waitForSelector(selector, options, **kwargs)
 
     def waitForXPath(
-            self, xpath: str, options: dict = None, **kwargs: Any
+        self, xpath: str, options: dict = None, **kwargs: Any
     ) -> Awaitable:
         """Wait until eleemnt which matches ``xpath`` appears on page.
 
@@ -1357,7 +1357,7 @@ function deliverResult(name, seq, result) {
         return frame.waitForXPath(xpath, options, **kwargs)
 
     def waitForFunction(
-            self, pageFunction: str, options: dict = None, *args: str, **kwargs: Any
+        self, pageFunction: str, options: dict = None, *args: str, **kwargs: Any
     ) -> Awaitable:
         """Wait until the function completes and returns a truethy value.
 
