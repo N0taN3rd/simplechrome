@@ -859,7 +859,7 @@ function(html) {
             myself.remove_listener(Frame.Events.LifeCycleEvent, on_load)
 
         fut.add_done_callback(remove_cb)
-        self.on(Frame.Events.LifecycleEvent, on_load)
+        self.on(Frame.Events.LifeCycleEvent, on_load)
         if timeout is not None:
             return asyncio.wait_for(fut, timeout=timeout, loop=loop)
         return fut
