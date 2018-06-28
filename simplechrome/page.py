@@ -859,7 +859,7 @@ function deliverResult(name, seq, result) {
             raise PageError("No main frame.")
         return await frame.evaluate(pageFunction, *args, force_expr=force_expr)
 
-    async def evaluateOnNewDocument(self, pageFunction: str, *args: str) -> None:
+    async def evaluateOnNewDocument(self, pageFunction: str, *args: str, raw=False) -> None:
         """Add a JavaScript function to the document.
 
         This function would be invoked in one of the following scenarios:
@@ -868,7 +868,10 @@ function deliverResult(name, seq, result) {
         * whenever the child frame is attached or navigated. Inthis case, the
           function is invoked in the context of the newly attached frame.
         """
-        source = helper.evaluationString(pageFunction, *args)
+        if raw:
+            source = pageFunction
+        else:
+            source = helper.evaluationString(pageFunction, *args)
         await self._client.send(
             "Page.addScriptToEvaluateOnNewDocument", {"source": source}
         )

@@ -17,7 +17,7 @@ test_requirements = ["pytest", "pytest-asyncio", "psutil", "grappa", "vibora"]
 
 setup(
     name="simplechrome",
-    version="1.0.1",
+    version="1.0.2",
     description=(
         "Headless chrome/chromium automation library"
         "(unofficial fork of pypuppeteer)"
