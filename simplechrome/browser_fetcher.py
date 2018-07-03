@@ -8,7 +8,7 @@ from typing import Optional, Dict
 from urllib import request
 from zipfile import ZipFile
 
-DEFAULT_REVISION = "568432"
+DEFAULT_REVISION = "571375"
 logger = logging.getLogger(__name__)
 
 __all__ = ["BrowserFetcher", "BF"]

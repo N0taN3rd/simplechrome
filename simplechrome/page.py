@@ -107,7 +107,7 @@ class Page(EventEmitter):
                 "Security.setOverrideCertificateErrors", {"override": True}
             )
         if not appMode:
-            await page.setViewport({"width": 800, "height": 600})
+            await page.setViewport({"width": 900, "height": 900})
         return page
 
     def __init__(

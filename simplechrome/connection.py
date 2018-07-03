@@ -162,6 +162,11 @@ class Connection(EventEmitter):
         if not self._recv_fut.done():
             self._recv_fut.cancel()
 
+        try:
+            await self._ws.close()
+        except:
+            pass
+
 
 class CDPSession(EventEmitter):
     def __init__(
