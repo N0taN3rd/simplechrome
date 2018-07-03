@@ -48,6 +48,7 @@ DEFAULT_ARGS = [
     "--disable-renderer-backgrounding",
     "--disable-infobars",
     "--disable-translate",
+    "--autoplay-policy=no-user-gesture-required"
 ]
 
 DOT_DIR = Path.home() / ".simplechrome"
@@ -113,7 +114,7 @@ class Launcher(object):
         if self.options.get("appMode", False):
             self.options["headless"] = False
         if "headless" not in self.options or self.options.get("headless"):
-            self.args.extend(["--headless"])
+            self.args.extend(["--headless", "--disable-gpu"])
 
         if not self._check_supplied_userdd():
             if "userDataDir" not in self.options:
@@ -236,7 +237,7 @@ async def connect(options: dict = None, **kwargs: Any) -> Chrome:
         connection,
         contextIds=[],
         ignoreHTTPSErrors=options.get("ignoreHTTPSErrors", False),
-        appMode=options.get("setDefaultViewport", False),
+        appMode=options.get("appMode", False),
         process=None,
         closeCallback=lambda: connection.send("Browser.close"),
     )

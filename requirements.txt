@@ -1,0 +1,10 @@
+aiohttp  
+uvloop  
+aiodns  
+cchardet  
+pyee  
+websockets  
+ujson  
+yarl  
+async-timeout  
+aiofiles
