@@ -202,7 +202,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_right_click(self):
-        await self.page.goto(f"{self.url}scrollable.html")
+        await self.page.goto(f"{self.url}scrollable.html", waitUntil="load")
         await self.page.click("#button-8", button="right")
         await self.page.evaluate(
             'document.querySelector("#button-8").textContent'
@@ -210,7 +210,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_click_with_modifier_key(self):
-        await self.page.goto(f"{self.url}scrollable.html")
+        await self.page.goto(f"{self.url}scrollable.html", waitUntil="load")
         await self.page.evaluate(
             '() => document.querySelector("#button-3").addEventListener("mousedown", e => window.lastEvent = e, true)'
         )
@@ -264,13 +264,13 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_tap_button(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.page.goto(f"{self.url}button.html", waitUntil="load")
         await self.page.tap("button")
         await self.page.evaluate("result") | should.be.equal.to("Clicked")
 
     @pytest.mark.asyncio
     async def test_touches_report(self):
-        await self.page.goto(f"{self.url}touches.html")
+        await self.page.goto(f"{self.url}touches.html", waitUntil="load")
         button = await self.page.J("button")
         await button.tap()
         await self.page.evaluate("getResult()") | should.be.equal.to(
@@ -279,7 +279,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_click_inside_frame(self):
-        await self.page.goto(f"{self.url}empty.html")
+        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
         await self.page.setContent(
             '<div style="width:100px;height:100px;>spacer</div>"'
         )
@@ -291,7 +291,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_click_with_device_scale_factor(self):
-        await self.page.goto(f"{self.url}empty.html")
+        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
         await self.page.setViewport(
             {"width": 400, "height": 400, "deviceScaleFactor": 5}
         )

@@ -18,10 +18,10 @@ async def alive():
 
 
 def get_app():
-    app.run(debug=False, verbose=False, host="0.0.0.0", port=8888, block=False)
+    app.run(debug=False, verbose=False, host="localhost", port=8888, block=False)
     return app
 
 
 if __name__ == "__main__":
     print("alive")
-    app.run(debug=False, host="0.0.0.0", port=8888, workers=2)
+    app.run(debug=False, host="localhost", port=8888, workers=2)
