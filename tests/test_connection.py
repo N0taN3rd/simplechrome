@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from grappa import should
 
@@ -8,7 +10,10 @@ from simplechrome.launcher import connect, launch
 class TestConnection(object):
     @pytest.mark.asyncio
     async def test_connect(self):
-        browser = await launch()
+        if os.environ.get('INTRAVIS', None) is not None:
+            browser = await launch(headless=False)
+        else:
+            browser = await launch()
         browser2 = await connect(browserWSEndpoint=browser.wsEndpoint)
         page = await browser2.newPage()
         with should(await page.evaluate("() => 7 * 8")):
@@ -21,7 +26,10 @@ class TestConnection(object):
 
     @pytest.mark.asyncio
     async def test_reconnect(self):
-        browser = await launch()
+        if os.environ.get('INTRAVIS', None) is not None:
+            browser = await launch(headless=False)
+        else:
+            browser = await launch()
         browserWSEndpoint = browser.wsEndpoint
         await browser.disconnect()
         browser2 = await connect(browserWSEndpoint=browserWSEndpoint)
@@ -49,6 +57,7 @@ class TestCDPSession(object):
         await client.send("Runtime.enable")
         await client.send("Runtime.evaluate", {"expression": 'window.foo = "bar"'})
         await self.page.evaluate("window.foo") | should.be.equal.to("bar")
+        await client.detach()
 
     @pytest.mark.asyncio
     async def test_send_event(self):
@@ -58,6 +67,7 @@ class TestCDPSession(object):
         client.on("Network.requestWillBeSent", lambda e: events.append(e))
         await self.page.goto(self.url + "empty.html")
         events | should.have.length.of(1)
+        await client.detach()
 
     @pytest.mark.asyncio
     async def test_enable_disable_domain(self):
@@ -69,6 +79,7 @@ class TestCDPSession(object):
         )
         with should(res):
             should.have.key("result").that.should.have.key("value").equal.to(4)
+        await client.detach()
 
     @pytest.mark.asyncio
     async def test_detach(self):

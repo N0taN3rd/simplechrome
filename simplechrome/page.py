@@ -477,7 +477,7 @@ class Page(EventEmitter):
             raise PageError("no main frame.")
         return await frame.injectFile(filePath)
 
-    async def exposeFunction(self, name: str, pyppeteerFunction: Callable) -> None:
+    async def exposeFunction(self, name: str, pyppeteerFunction: Callable) -> Dict[str, int]:
         """Add python function to the browser's ``window`` object as ``name``.
 
         Registered function can be called from chrome process.
@@ -512,12 +512,13 @@ function addPageBinding(bindingName) {
 }
         """  # noqa: E501
         expression = helper.evaluationString(addPageBinding, name)
-        await self._client.send(
+        scriptid = await self._client.send(
             "Page.addScriptToEvaluateOnNewDocument", {"source": expression}
         )
         await asyncio.wait(
             [frame.evaluate(expression, force_expr=True) for frame in self.frames]
         )
+        return scriptid
 
     async def authenticate(self, credentials: Dict[str, str]) -> Any:
         """Provide credentials for http authentication.
@@ -872,9 +873,15 @@ function deliverResult(name, seq, result) {
             source = pageFunction
         else:
             source = helper.evaluationString(pageFunction, *args)
-        await self._client.send(
+        return await self._client.send(
             "Page.addScriptToEvaluateOnNewDocument", {"source": source}
         )
+
+    async def removeScriptToEvaluateOnNewDocument(self, identifier: Union[int, Dict[str, int]]) -> None:
+        """Removes given script from the list."""
+        if not isinstance(identifier, dict):
+            identifier = dict(identifier=identifier)
+        await self._client.send("Page.removeScriptToEvaluateOnNewDocument", identifier)
 
     async def setCacheEnabled(self, enabled: bool = True) -> None:
         """Enable/Disable cache for each request.

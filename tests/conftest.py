@@ -1,11 +1,6 @@
-import os
-import subprocess
-import sys
-import time
 from typing import Any, AsyncGenerator, Generator
-from urllib.error import URLError
-from urllib.request import urlopen
 
+import os
 import psutil
 import pytest
 import uvloop
@@ -14,6 +9,7 @@ from _pytest.fixtures import SubRequest
 from simplechrome.chrome import Chrome
 from simplechrome.launcher import launch
 from simplechrome.page import Page
+from .server import get_app
 
 
 def reaper(oproc):
@@ -28,31 +24,15 @@ def reaper(oproc):
 
 @pytest.yield_fixture(scope="class")
 def test_server(request: SubRequest) -> Generator[str, Any, None]:
-    url = "http://0.0.0.0:8888/static/"
-    if "/tests" in os.getcwd():
-        exe = "server.py"
-    else:
-        exe = "tests/server.py"
-    proc = subprocess.Popen(
-        [sys.executable, exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    request.addfinalizer(reaper(proc))
-    for i in range(100):
-        time.sleep(0.1)
-        try:
-            with urlopen("http://0.0.0.0:8888/alive") as f:
-                data = f.read().decode()
-            break
-        except URLError as e:
-            continue
-    else:
-        raise TimeoutError("Could not start server")
+    url = "http://localhost:8888/static/"
+    app = get_app()
     if request.cls is not None:
         request.cls.url = url
     yield url
+    app.clean_up()
 
 
-@pytest.yield_fixture
+@pytest.yield_fixture(scope="class")
 async def chrome_page(request, chrome: Chrome) -> AsyncGenerator[Page, Any]:
     page = await chrome.newPage()
     if request.cls is not None:
@@ -60,7 +40,7 @@ async def chrome_page(request, chrome: Chrome) -> AsyncGenerator[Page, Any]:
     yield page
 
 
-@pytest.yield_fixture
+@pytest.yield_fixture(scope="class")
 def event_loop() -> Generator[uvloop.Loop, Any, None]:
     loop = uvloop.new_event_loop()
     yield loop
@@ -69,6 +49,19 @@ def event_loop() -> Generator[uvloop.Loop, Any, None]:
 
 @pytest.yield_fixture
 async def chrome() -> AsyncGenerator[Chrome, Any]:
-    chrome = await launch()
+    if os.environ.get('INTRAVIS', None) is not None:
+        chrome = await launch(headless=False)
+    else:
+        chrome = await launch()
+    yield chrome
+    await chrome.close()
+
+
+@pytest.yield_fixture(scope="class")
+async def chrome() -> AsyncGenerator[Chrome, Any]:
+    if os.environ.get('INTRAVIS', None) is not None:
+        chrome = await launch(headless=False)
+    else:
+        chrome = await launch()
     yield chrome
     await chrome.close()

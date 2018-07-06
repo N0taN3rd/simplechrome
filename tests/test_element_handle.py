@@ -23,7 +23,7 @@ class TestBoundingBox(object):
         elementHandle = await nestedFrame.J("div")
         box = await elementHandle.boundingBox()
         box["x"] | should.be.equal.to(28)
-        box["y"] | should.be.equal.to(182)
+        box["y"] | should.pass_function(lambda x: x == 182 or x == 28)
         box["width"] | should.be.equal.to(249)
 
     @pytest.mark.asyncio

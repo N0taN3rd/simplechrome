@@ -122,9 +122,12 @@ class BrowserFetcher(object):
         exec_path = self.chromium_excutable()
         if not exec_path.exists():
             raise IOError("Failed to extract chromium.")
-        exec_path.chmod(
-            exec_path.stat().st_mode | stat.S_IXOTH | stat.S_IXGRP | stat.S_IXUSR
-        )
+        exec_path.chmod(0o755)
+        for subexe in ["nacl_helper", "chrome_sandbox", "nacl_helper_bootstrap"]:
+            sexe = exec_path.parent / subexe
+            if not sexe.exists():
+                raise IOError(f"Failed to completely extract chromium. Missing {sexe}")
+            sexe.chmod(0o755)
         logger.warning(f"chromium extracted to: {path}")
 
     def download_chromium(self, cr: Optional[str] = None) -> None:

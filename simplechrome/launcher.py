@@ -118,10 +118,7 @@ class Launcher(object):
 
         if not self._check_supplied_userdd():
             if "userDataDir" not in self.options:
-                if not TEMP_PROFILE.exists():
-                    TEMP_PROFILE.mkdir(parents=True)
                 self._tmp_user_data_dir = TemporaryDirectory()
-                # tempfile.mkdtemp(dir=str(TEMP_PROFILE))
             self.args.append(
                 "--user-data-dir={}".format(
                     self.options.get("userDataDir", self._tmp_user_data_dir.name)
