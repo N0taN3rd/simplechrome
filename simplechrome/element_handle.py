@@ -1,7 +1,10 @@
+# -*- coding: utf-8 -*-
 """Element handle module."""
 
+import copy
 import os.path
-from typing import Any, Dict, List, Optional
+import math
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 from .connection import CDPSession
 from .errors import ElementHandleError, NetworkError
@@ -10,6 +13,20 @@ from .util import merge_dict
 
 __all__ = ["ElementHandle"]
 
+if TYPE_CHECKING:
+    from simplechrome.page import Page
+    from simplechrome.frame_manager import FrameManager, Frame
+
+
+def computeQuadArea(quad: List[Dict[str, float]]) -> float:
+    area = 0.0
+    qlen = len(quad)
+    for i in range(0, qlen):
+        p1 = quad[i]
+        p2 = quad[(i + 1) % qlen]
+        area += (p1["x"] * p2["y"] - p2["x"] * p1["y"]) / 2
+    return area
+
 
 class ElementHandle(JSHandle):
     def __init__(
@@ -17,32 +34,97 @@ class ElementHandle(JSHandle):
         context: ExecutionContext,
         client: CDPSession,
         remoteObject: dict,
-        page: Any,
+        page: "Page",
+        frameManager: "FrameManager",
     ) -> None:
         super().__init__(context, client, remoteObject)
         self._client = client
         self._remoteObject = remoteObject
         self._page = page
+        self._frameManager = frameManager
         self._disposed = False
 
     def asElement(self) -> "ElementHandle":
         """Return this ElementHandle."""
         return self
 
+    async def contentFrame(self) -> Optional["Frame"]:
+        nodeInfo = await self._client.send(
+            "DOM.describeNode", {"objectId": self._remoteObject.get("objectId")}
+        )
+        frameId = nodeInfo.get("node", {}).get("frameId")
+        if frameId is None:
+            return None
+        return self._frameManager.frame(frameId)
+
     async def _scrollIntoViewIfNeeded(self) -> None:
         error = await self.executionContext.evaluate(
-            """element => {
+            """async (element, pageJavascriptEnabled) => {
                 if (!element.isConnected)
                     return 'Node is detached from document';
                 if (element.nodeType !== Node.ELEMENT_NODE)
                     return 'Node is not of type HTMLElement';
-                element.scrollIntoViewIfNeeded();
+                // force-scroll if page's javascript is disabled.
+                if (!pageJavascriptEnabled) {
+                    element.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
+                    return false;
+                }
+                const visibleRatio = await new Promise(resolve => {
+                    const observer = new IntersectionObserver(entries => {
+                        resolve(entries[0].intersectionRatio);
+                        observer.disconnect();
+                    });
+                    observer.observe(element);
+                });
+                if (visibleRatio !== 1.0)
+                    element.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
                 return false;
             }""",
             self,
+            self._page._javascriptEnabled,
         )
         if error:
             raise ElementHandleError(error)
+
+    async def _clickablePoint(self) -> Dict[str, float]:
+        try:
+            result = await self._client.send(
+                "DOM.getContentQuads", dict(objectId=self._remoteObject.get("objectId"))
+            )
+        except Exception:
+            raise Exception("Node is either not visible or not an HTMLElement")
+
+        quads = []
+        for pquad in result.get("quads"):
+            quad = self._fromProtocolQuad(pquad)
+            if computeQuadArea(quad) > 1:
+                quads.append(quad)
+        if len(quads) == 0:
+            raise Exception("Node is either not visible or not an HTMLElement")
+        quad = quads[0]
+        x = 0.0
+        y = 0.0
+        for point in quad:
+            x += point["x"]
+            y += point["y"]
+        return dict(x=x / 4, y=y / 4)
+
+    async def _getBoxModel(self) -> Optional[Dict]:
+        try:
+            result: Optional[Dict] = await self._client.send(
+                "DOM.getBoxModel", {"objectId": self._remoteObject.get("objectId")}
+            )
+        except NetworkError:
+            result = None
+        return result
+
+    def _fromProtocolQuad(self, quad: List[int]) -> List[Dict[str, float]]:
+        return [
+            {"x": quad[0], "y": quad[1]},
+            {"x": quad[2], "y": quad[3]},
+            {"x": quad[4], "y": quad[5]},
+            {"x": quad[6], "y": quad[7]},
+        ]
 
     async def _visibleCenter(self) -> Dict[str, float]:
         await self._scrollIntoViewIfNeeded()
@@ -50,6 +132,12 @@ class ElementHandle(JSHandle):
         if not box:
             raise ElementHandleError("Node is not visible.")
         return {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
+
+    async def _assertBoundingBox(self) -> Dict:
+        boundingBox = await self.boundingBox()
+        if boundingBox:
+            return boundingBox
+        raise ElementHandleError("Node is either not visible or not an HTMLElement")
 
     async def hover(self) -> None:
         """Move mouse over to center of this element.
@@ -77,12 +165,13 @@ class ElementHandle(JSHandle):
           ``mouseup`` in milliseconds. Defaults to 0.
         """
         options = merge_dict(options, kwargs)
+        await self._scrollIntoViewIfNeeded()
         obj = await self._visibleCenter()
         x = obj.get("x", 0)
         y = obj.get("y", 0)
         await self._page.mouse.click(x, y, options)
 
-    async def uploadFile(self, *filePaths: str) -> dict:
+    async def uploadFile(self, *filePaths: str) -> Dict:
         """Upload files."""
         files = [os.path.abspath(p) for p in filePaths]
         objectId = self._remoteObject.get("objectId")
@@ -96,6 +185,7 @@ class ElementHandle(JSHandle):
         If needed, this method scrolls element into view. If the element is
         detached from DOM, the method raises ``ElementHandleError``.
         """
+        await self._scrollIntoViewIfNeeded()
         center = await self._visibleCenter()
         x = center.get("x", 0)
         y = center.get("y", 0)
@@ -146,13 +236,7 @@ class ElementHandle(JSHandle):
         * ``width`` (int): The width of the element in pixels.
         * ``height`` (int): The height of the element in pixels.
         """
-        try:
-            result: Optional[Dict] = await self._client.send(
-                "DOM.getBoxModel", {"objectId": self._remoteObject.get("objectId")}
-            )
-        except NetworkError:
-            result = None
-
+        result = await self._getBoxModel()
         if not result:
             return None
 
@@ -163,6 +247,34 @@ class ElementHandle(JSHandle):
         height = max(quad[1], quad[3], quad[5], quad[7]) - y
         return {"x": x, "y": y, "width": width, "height": height}
 
+    async def boxModel(self) -> Optional[Dict[str, Union[List[Dict[str, int]], Dict]]]:
+        """Return boxes of element.
+        Return ``None`` if element is not visivle. Boxes are represented as an
+        list of dictionaries, {x, y} for each point, points clock-wise as
+        below:
+        Returned value is a dictionary with the following fields:
+        * ``content`` (List[Dict]): Content box.
+        * ``padding`` (List[Dict]): Padding box.
+        * ``border`` (List[Dict]): Border box.
+        * ``margin`` (List[Dict]): Margin box.
+        * ``width`` (int): Element's width.
+        * ``heidht`` (int): Element's height.
+        """
+        result = await self._getBoxModel()
+
+        if not result:
+            return None
+
+        model = result.get("model", {})
+        return {
+            "content": self._fromProtocolQuad(model.get("content")),
+            "padding": self._fromProtocolQuad(model.get("padding")),
+            "border": self._fromProtocolQuad(model.get("border")),
+            "margin": self._fromProtocolQuad(model.get("margin")),
+            "width": model.get("width"),
+            "height": model.get("height"),
+        }
+
     async def screenshot(self, options: Dict = None, **kwargs: Any) -> bytes:
         """Take a screenshot of this element.
 
@@ -172,20 +284,47 @@ class ElementHandle(JSHandle):
         Available options are same as :meth:`pyppeteer.page.Page.screenshot`.
         """
         options = merge_dict(options, kwargs)
+
+        needsViewportReset = False
+        boundingBox = await self._assertBoundingBox()
+        original_viewport = copy.deepcopy(self._page.viewport)
+
+        if (
+            boundingBox["width"] > original_viewport["width"]
+            or boundingBox["height"] > original_viewport["height"]
+        ):
+            newViewport = {
+                "width": max(
+                    original_viewport["width"], math.ceil(boundingBox["width"])
+                ),
+                "height": max(
+                    original_viewport["height"], math.ceil(boundingBox["height"])
+                ),
+            }
+            new_viewport = copy.deepcopy(original_viewport)
+            new_viewport.update(newViewport)
+            await self._page.setViewport(new_viewport)
+            needsViewportReset = True
+
         await self._scrollIntoViewIfNeeded()
+
+        boundingBox = await self._assertBoundingBox()
         _obj = await self._client.send("Page.getLayoutMetrics")
         pageX = _obj["layoutViewport"]["pageX"]
         pageY = _obj["layoutViewport"]["pageY"]
 
-        clip = await self.boundingBox()
-        if not clip:
-            raise ElementHandleError("Node is not visible.")
-
+        clip = {}
+        clip.update(boundingBox)
         clip["x"] = clip["x"] + pageX
         clip["y"] = clip["y"] + pageY
         opt = {"clip": clip}
         opt.update(options)
-        return await self._page.screenshot(opt)
+        imageData = await self._page.screenshot(opt)
+
+        if needsViewportReset:
+            await self._page.setViewport(original_viewport)
+
+        return imageData
 
     async def querySelector(self, selector: str) -> Optional["ElementHandle"]:
         """Return first element which matches ``selector`` under this element.
@@ -235,8 +374,7 @@ class ElementHandle(JSHandle):
         arrayHandle = await self.executionContext.evaluateHandle(
             """(element, expression) => {
                 const document = element.ownerDocument || element;
-                const iterator = document.evaluate(expression, element, null,
-                    XPathResult.ORDERED_NODE_ITERATOR_TYPE);
+                const iterator = document.evaluate(expression, element, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE);
                 const array = [];
                 let item;
                 while ((item = iterator.iterateNext()))

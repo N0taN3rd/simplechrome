@@ -11,6 +11,8 @@ requirements = [
     "yarl",
     "async-timeout",
     "aiofiles",
+    "urllib3",
+    "attrs",
 ]
 
 test_requirements = ["pytest", "pytest-asyncio", "psutil", "grappa", "vibora"]
@@ -19,8 +21,7 @@ setup(
     name="simplechrome",
     version="1.0.3",
     description=(
-        "Headless chrome/chromium automation library"
-        "(unofficial fork of pypuppeteer)"
+        "Headless chrome/chromium automation library" "(unofficial fork of pypuppeteer)"
     ),
     author="Webrecorder",
     author_email="Webrecorder.Webrecorder@Webrecorder.com",

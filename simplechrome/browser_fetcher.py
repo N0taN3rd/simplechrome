@@ -1,14 +1,15 @@
+# -*- coding: utf-8 -*-
 import logging
 import os
-import stat
 import sys
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Dict
-from urllib import request
 from zipfile import ZipFile
 
-DEFAULT_REVISION = "571375"
+import urllib3
+
+DEFAULT_REVISION = "579032"
 logger = logging.getLogger(__name__)
 
 __all__ = ["BrowserFetcher", "BF"]
@@ -76,7 +77,11 @@ class BrowserFetcher(object):
             return "linux"
         elif sys.platform.startswith("darwin"):
             return "mac"
-        elif sys.platform.startswith("win"):
+        elif (
+            sys.platform.startswith("win")
+            or sys.platform.startswith("msys")
+            or sys.platform.startswith("cyg")
+        ):
             if sys.maxsize > 2 ** 31 - 1:
                 return "win64"
             return "win32"
@@ -88,15 +93,24 @@ class BrowserFetcher(object):
             self.update_download_revision(cr)
         return self.downloadURLs[self.curret_platform()]
 
-    def download_zip(self, url: str) -> bytes:
+    def download_zip(self, url: str) -> BytesIO:
         """Download data from url."""
         logger.warning("start chromium download.\n" "Download may take a few minutes.")
-        with request.urlopen(url) as f:
-            data = f.read()
-        logger.warning("chromium download done.")
-        return data
+        urllib3.disable_warnings()
 
-    def extract_zip(self, data: bytes, path: Path) -> None:
+        with urllib3.PoolManager() as http:
+            # Get data from url.
+            # set preload_content=False means using stream later.
+            data = http.request("GET", url, preload_content=False)
+
+            # 10 * 1024
+            _data = BytesIO()
+            for chunk in data.stream(10240):
+                _data.write(chunk)
+        logger.warning("\nchromium download done.")
+        return _data
+
+    def extract_zip(self, data: BytesIO, path: Path) -> None:
         """Extract zipped data to path."""
         # On mac zipfile module cannot extract correctly, so use unzip instead.
         if self.curret_platform() == "mac":
@@ -107,7 +121,7 @@ class BrowserFetcher(object):
             if not path.exists():
                 path.mkdir(parents=True)
             with zip_path.open("wb") as f:
-                f.write(data)
+                f.write(data.getvalue())
             if not shutil.which("unzip"):
                 raise OSError(
                     "Failed to automatically extract chrome.zip."
@@ -117,7 +131,7 @@ class BrowserFetcher(object):
             if self.chromium_excutable().exists() and zip_path.exists():
                 zip_path.unlink()
         else:
-            with ZipFile(BytesIO(data)) as zf:
+            with ZipFile(data) as zf:
                 zf.extractall(str(path))
         exec_path = self.chromium_excutable()
         if not exec_path.exists():

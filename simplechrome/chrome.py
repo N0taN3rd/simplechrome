@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 import asyncio
 from subprocess import Popen
-from types import SimpleNamespace  # type: ignore
 from typing import Awaitable, Callable, Dict, List, Optional
 
+import attr
 from pyee import EventEmitter
 
 from .connection import Connection, CDPSession
@@ -12,13 +13,16 @@ from .page import Page
 __all__ = ["Chrome", "BrowserContext", "Target"]
 
 
+@attr.dataclass(slots=True)
+class ChromeEvents(object):
+    TargetCreated: str = attr.ib(default="targetcreated")
+    TargetDestroyed: str = attr.ib(default="targetdestroyed")
+    TargetChanged: str = attr.ib(default="targetchanged")
+    Disconnected: str = attr.ib(default="disconnected")
+
+
 class Chrome(EventEmitter):
-    Events: SimpleNamespace = SimpleNamespace(
-        TargetCreated="targetcreated",
-        TargetDestroyed="targetdestroyed",
-        TargetChanged="targetchanged",
-        Disconnected="disconnected",
-    )
+    Events: ChromeEvents = ChromeEvents()
 
     def __init__(
         self,
@@ -58,6 +62,21 @@ class Chrome(EventEmitter):
         self._connection.on("Target.targetCreated", self._targetCreated)
         self._connection.on("Target.targetDestroyed", self._targetDestroyed)
         self._connection.on("Target.targetInfoChanged", self.targetInfoChanged)
+
+    @staticmethod
+    async def create(
+        connection: Connection,
+        contextIds: List[str],
+        ignoreHTTPSErrors: bool,
+        appMode: bool,
+        process: Optional[Popen] = None,
+        closeCallback: Callable[[], Awaitable[None]] = None,
+    ) -> "Chrome":
+        browser = Chrome(
+            connection, contextIds, ignoreHTTPSErrors, appMode, process, closeCallback
+        )
+        await connection.send("Target.setDiscoverTargets", {"discover": True})
+        return browser
 
     def targets(self) -> List["Target"]:
         """Get all targets of this browser."""
@@ -109,21 +128,6 @@ class Chrome(EventEmitter):
         """Retrun websocket end point url."""
         return self._connection.url
 
-    @staticmethod
-    async def create(
-        connection: Connection,
-        contextIds: List[str],
-        ignoreHTTPSErrors: bool,
-        appMode: bool,
-        process: Optional[Popen] = None,
-        closeCallback: Callable[[], Awaitable[None]] = None,
-    ) -> "Chrome":
-        browser = Chrome(
-            connection, contextIds, ignoreHTTPSErrors, appMode, process, closeCallback
-        )
-        await connection.send("Target.setDiscoverTargets", {"discover": True})
-        return browser
-
     def _on_close(self) -> None:
         self.emit(Chrome.Events.Disconnected, None)
 
@@ -148,11 +152,13 @@ class Chrome(EventEmitter):
         self._targets[targetId] = target
         if await target._initializedPromise:
             self.emit(self.Events.TargetCreated, target)
+            context.emit(self.Events.TargetCreated, target)
 
     async def _targetDestroyed(self, event: dict) -> None:
         target = self._targets[event["targetId"]]
         target._initializedCallback(False)
         del self._targets[event["targetId"]]
+        target._closedCallback()
         if await target._initializedPromise:
             self.emit(self.Events.TargetDestroyed, target)
             target.browserContext.emit(Chrome.Events.TargetDestroyed, target)
@@ -161,7 +167,11 @@ class Chrome(EventEmitter):
         target = self._targets.get(event["targetInfo"]["targetId"])
         if not target:
             raise BrowserError("target should exist before targetInfoChanged")
+        previousURL = target.url
         target.targetInfoChanged(event["targetInfo"])
+        if previousURL != target.url:
+            self.emit(Chrome.Events.TargetChanged, target)
+            target.browserContext.emit(Chrome.Events.TargetChanged, target)
 
     async def createPageInContext(self, contextId: Optional[str]) -> Page:
         args = dict(url="about:blank")
@@ -180,12 +190,15 @@ class Chrome(EventEmitter):
         return self._connection.send("Browser.getVersion")
 
 
+@attr.dataclass(slots=True)
+class BrowserContextEvents(object):
+    TargetCreated: str = attr.ib(default="targetcreated")
+    TargetDestroyed: str = attr.ib(default="targetdestroyed")
+    TargetChanged: str = attr.ib(default="targetchanged")
+
+
 class BrowserContext(EventEmitter):
-    Events = SimpleNamespace(
-        TargetCreated="targetcreated",
-        TargetDestroyed="targetdestroyed",
-        TargetChanged="targetchanged",
-    )
+    Events: BrowserContextEvents = BrowserContextEvents()
 
     def __init__(self, browser: Chrome, contextId) -> None:
         super().__init__()
@@ -195,9 +208,18 @@ class BrowserContext(EventEmitter):
     def targets(self) -> List["Target"]:
         targets = []
         for t in self._browser.targets():
-            if t != self:
+            if t.browserContext == self:
                 targets.append(t)
         return targets
+
+    async def pages(self) -> List[Page]:
+        pages = []
+        for target in self.targets():
+            if target.type == "page":
+                page = await target.page()
+                if page is not None:
+                    pages.append(page)
+        return pages
 
     def isIncognito(self) -> bool:
         return self._id is not None
@@ -224,6 +246,7 @@ class Target(object):
         self._targetId = targetInfo["targetId"]
         self._page = None
 
+        self._isClosedPromise: asyncio.Future = asyncio.get_event_loop().create_future()
         self._initializedPromise: asyncio.Future = asyncio.get_event_loop().create_future()
         self._isInitialized = (
             self._targetInfo["type"] != "page" or self._targetInfo["url"] != ""
@@ -235,13 +258,20 @@ class Target(object):
         if not self._initializedPromise.done():
             self._initializedPromise.set_result(bl)
 
+    def _closedCallback(self) -> None:
+        self._isClosedPromise.set_result(None)
+
     async def createCDPSession(self) -> CDPSession:
         """Create a Chrome Devtools Protocol session attached to the target."""
         return await self._browser._connection.createSession(self._targetId)
 
     async def page(self) -> Optional[Page]:
         """Get page of this target."""
-        if self._targetInfo["type"] == "page" and self._page is None:
+        is_page = (
+            self._targetInfo["type"] == "page"
+            or self._targetInfo["type"] == "background_page"
+        )
+        if is_page and self._page is None:
             client = await self._browser._connection.createSession(self._targetId)
             new_page = await Page.create(
                 client,
@@ -255,7 +285,18 @@ class Target(object):
         return self._page
 
     @property
-    def browserContext(self):
+    def opener(self) -> Optional["Chrome"]:
+        openerId = self._targetInfo.get("openerId")
+        if openerId is not None:
+            return self.browser._targets.get(openerId)
+        return openerId
+
+    @property
+    def browser(self) -> "Chrome":
+        return self._browserContext.browser()
+
+    @property
+    def browserContext(self) -> "BrowserContext":
         return self._browserContext
 
     @property
@@ -278,7 +319,6 @@ class Target(object):
         return "other"
 
     def targetInfoChanged(self, targetInfo: dict) -> None:
-        previousURL = self._targetInfo["url"]
         self._targetInfo = targetInfo
 
         if not self._isInitialized and (
@@ -287,5 +327,3 @@ class Target(object):
             self._isInitialized = True
             self._initializedCallback(True)
             return
-        if previousURL != targetInfo["url"]:
-            self._browser.emit(Chrome.Events.TargetChanged, self)

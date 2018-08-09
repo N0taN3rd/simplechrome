@@ -1,13 +1,14 @@
+# -*- coding: utf-8 -*-
 """Network Manager module."""
 
 import asyncio
 import base64
 import ujson as json
 from collections import OrderedDict
-from types import SimpleNamespace
-from typing import Awaitable, Dict, Optional, Union, TYPE_CHECKING
+from typing import Awaitable, Dict, Optional, Union, Set
 from urllib.parse import unquote
 
+import attr
 from pyee import EventEmitter
 
 from .connection import CDPSession
@@ -15,21 +16,21 @@ from .errors import NetworkError
 from .frame_manager import FrameManager, Frame
 from .multimap import Multimap
 
-if TYPE_CHECKING:
-    from typing import Set  # noqa: F401
-
 __all__ = ["NetworkManager", "Request", "Response", "SecurityDetails"]
+
+
+@attr.dataclass(slots=True)
+class NetworkEvents(object):
+    Request: str = attr.ib(default="request")
+    Response: str = attr.ib(default="response")
+    RequestFailed: str = attr.ib(default="requestfailed")
+    RequestFinished: str = attr.ib(default="requestfinished")
 
 
 class NetworkManager(EventEmitter):
     """NetworkManager class."""
 
-    Events = SimpleNamespace(
-        Request="request",
-        Response="response",
-        RequestFailed="requestfailed",
-        RequestFinished="requestfinished",
-    )
+    Events: NetworkEvents = NetworkEvents()
 
     def __init__(self, client: CDPSession, frameManager: FrameManager) -> None:
         """Make new NetworkManager."""
@@ -151,27 +152,6 @@ class NetworkManager(EventEmitter):
                     {"interceptionId": event["interceptionId"]},
                 )
             )
-
-        if "redirectURL" in event:
-            request = self._interceptionIdToRequest.get(event.get("interceptionId", ""))
-            if request:
-                self._handleRequestRedirect(
-                    request,
-                    event.get("redirectStatusCode", 0),
-                    event.get("redirectHeaders", {}),
-                    False,
-                    None,
-                )
-                self._handleRequestStart(
-                    request.requestId,
-                    event.get("interceptionId", ""),
-                    event.get("redirectUrl", ""),
-                    event.get("resourceType", ""),
-                    event.get("request", {}),
-                    event.get("frameId"),
-                    event.get("frameId"),
-                )
-            return
 
         requestHash = generateRequestHash(event["request"])
         requestId = self._requestHashToRequestIds.firstValue(requestHash)

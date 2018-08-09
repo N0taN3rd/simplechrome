@@ -335,7 +335,6 @@ class TestExposeFunctoin(object):
         await self.page.removeScriptToEvaluateOnNewDocument(scriptid)
         self.page._pageBindings.pop("compute")
 
-
     @pytest.mark.asyncio
     async def test_expose_function_frames_before_navigation(self):
         await self.page.goto(self.url + "nested-frames.html")

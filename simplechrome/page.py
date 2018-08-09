@@ -1,14 +1,14 @@
+# -*- coding: utf-8 -*-
 """Page module."""
-
 import asyncio
 import base64
 import json
 import logging
-import math
 import mimetypes
-from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, TYPE_CHECKING
 
+import attr
+import math
 from pyee import EventEmitter
 
 from . import helper
@@ -33,27 +33,32 @@ logger = logging.getLogger(__name__)
 __all__ = ["Page", "ConsoleMessage", "create"]
 
 
+@attr.dataclass(slots=True)
+class PageEvents(object):
+    Close: str = attr.ib(default="close")
+    Console: str = attr.ib(default="console")
+    Dialog: str = attr.ib(default="dialog")
+    DOMContentLoaded: str = attr.ib(default="domcontentloaded")
+    Error: str = attr.ib(default="error")
+    PageError: str = attr.ib(default="pageerror")
+    Request: str = attr.ib(default="request")
+    Response: str = attr.ib(default="response")
+    RequestFailed: str = attr.ib(default="requestfailed")
+    RequestFinished: str = attr.ib(default="requestfinished")
+    FrameAttached: str = attr.ib(default="frameattached")
+    FrameDetached: str = attr.ib(default="framedetached")
+    FrameNavigated: str = attr.ib(default="framenavigated")
+    Load: str = attr.ib(default="load")
+    Metrics: str = attr.ib(default="metrics")
+    LifecycleEvent: str = attr.ib(default="lifecycleevent")
+    LogEntry: str = attr.ib(default="logentry")
+    NavigatedWithinDoc: str = attr.ib(default="navigatedwithindoc")
+    FrameNavigatedWithinDocument: str = attr.ib(default="framenavigatedwithindocument")
+
+
 class Page(EventEmitter):
 
-    Events = SimpleNamespace(
-        Console="console",
-        Dialog="dialog",
-        DOMContentLoaded="domcontentloaded",
-        Error="error",
-        PageError="pageerror",
-        Request="request",
-        Response="response",
-        RequestFailed="requestfailed",
-        RequestFinished="requestfinished",
-        FrameAttached="frameattached",
-        FrameDetached="framedetached",
-        FrameNavigated="framenavigated",
-        Load="load",
-        Metrics="metrics",
-        LifecycleEvent="lifecycleevent",
-        LogEntry="logentry",
-        NavigatedWithinDoc="navigatedwithindoc",
-    )
+    Events: PageEvents = PageEvents()
 
     PaperFormats: Dict[str, Dict[str, float]] = dict(
         letter={"width": 8.5, "height": 11},
@@ -85,7 +90,10 @@ class Page(EventEmitter):
         page = Page(client, target, frameTree, ignoreHTTPSErrors, screenshotTaskQueue)
 
         await asyncio.gather(
-            # client.send('Target.setAutoAttach', {"autoAttach": True, "waitForDebuggerOnStart": False}),
+            # client.send(
+            #     "Target.setAutoAttach",
+            #     {"autoAttach": True, "waitForDebuggerOnStart": False},
+            # ),
             client.send("Page.setLifecycleEventsEnabled", {"enabled": True}),
             client.send("Network.enable", {}),
             client.send("Runtime.enable", {}),
@@ -101,7 +109,6 @@ class Page(EventEmitter):
                 ]
             ),
         )
-        # client.on('Target.attachedToTarget', print)
         if ignoreHTTPSErrors:
             await client.send(
                 "Security.setOverrideCertificateErrors", {"override": True}
@@ -130,6 +137,7 @@ class Page(EventEmitter):
         self._pageBindings: Dict[str, Callable] = dict()
         self._ignoreHTTPSErrors = ignoreHTTPSErrors
         self._defaultNavigationTimeout = 30000  # milliseconds
+        self._javascriptEnabled = True
         self._lifecycle_emitting = False
 
         if screenshotTaskQueue is None:
@@ -148,6 +156,10 @@ class Page(EventEmitter):
         _fm.on(
             FrameManager.Events.FrameNavigated,
             lambda event: self.emit(Page.Events.FrameNavigated, event),
+        )
+        _fm.on(
+            FrameManager.Events.FrameNavigatedWithinDocument,
+            lambda event: self.emit(Page.Events.FrameNavigatedWithinDocument, event),
         )
 
         _nm = self._networkManager
@@ -182,7 +194,23 @@ class Page(EventEmitter):
         client.on("Inspector.targetCrashed", lambda event: self._onTargetCrashed())
         client.on("Log.entryAdded", self._onLogEntryAdded)
 
-    def _onLogEntryAdded(self, event: dict) -> None:
+        def closed(fut: asyncio.futures.Future) -> None:
+            self.emit(Page.Events.Close)
+
+        self._target._isClosedPromise.add_done_callback(closed)
+
+    def _check_worker(self, event: Dict) -> None:
+        tinfo = event.get("targetInfo")
+        if tinfo is not None:
+            type_ = tinfo["type"]
+            if type_ != "worker":
+                asyncio.ensure_future(
+                    self._client.send(
+                        "Target.detachFromTarget", {"sessionId": event.get("sessionId")}
+                    )
+                )
+
+    def _onLogEntryAdded(self, event: Dict) -> None:
         entry = event.get("entry")
         args = entry.get("args")
         if args is not None:
@@ -192,8 +220,8 @@ class Page(EventEmitter):
                     await helper.releaseObject(self._client, arg)
 
             asyncio.ensure_future(release())
-        if entry.get("source", "") != "deprecation":
-            self.emit(Page.Events.LogEntry, entry)
+        if entry.get("source", "") != "worker":
+            self.emit(Page.Events.Console, entry)
 
     def _on_lifecycle(self, le: Callable) -> None:
         self.emit(Page.Events.LifecycleEvent, le)
@@ -477,7 +505,9 @@ class Page(EventEmitter):
             raise PageError("no main frame.")
         return await frame.injectFile(filePath)
 
-    async def exposeFunction(self, name: str, pyppeteerFunction: Callable) -> Dict[str, int]:
+    async def exposeFunction(
+        self, name: str, pyppeteerFunction: Callable
+    ) -> Dict[str, int]:
         """Add python function to the browser's ``window`` object as ``name``.
 
         Registered function can be called from chrome process.
@@ -860,7 +890,9 @@ function deliverResult(name, seq, result) {
             raise PageError("No main frame.")
         return await frame.evaluate(pageFunction, *args, force_expr=force_expr)
 
-    async def evaluateOnNewDocument(self, pageFunction: str, *args: str, raw=False) -> None:
+    async def evaluateOnNewDocument(
+        self, pageFunction: str, *args: str, raw=False
+    ) -> Dict[str, int]:
         """Add a JavaScript function to the document.
 
         This function would be invoked in one of the following scenarios:
@@ -877,7 +909,9 @@ function deliverResult(name, seq, result) {
             "Page.addScriptToEvaluateOnNewDocument", {"source": source}
         )
 
-    async def removeScriptToEvaluateOnNewDocument(self, identifier: Union[int, Dict[str, int]]) -> None:
+    async def removeScriptToEvaluateOnNewDocument(
+        self, identifier: Union[int, Dict[str, int]]
+    ) -> None:
         """Removes given script from the list."""
         if not isinstance(identifier, dict):
             identifier = dict(identifier=identifier)
@@ -949,7 +983,7 @@ function deliverResult(name, seq, result) {
                 screenshotType = "jpeg"
             else:
                 raise ValueError("Unsupported screenshot " f"mime type: {mimeType}")
-        if not screenshotType:
+        if screenshotType is None:
             screenshotType = "png"
         return await self._screenshotTask(screenshotType, options)
 
@@ -963,7 +997,7 @@ function deliverResult(name, seq, result) {
         if clip:
             clip["scale"] = 1
 
-        if options.get("fullPage"):
+        if options.get("fullPage", False):
             metrics = await self._client.send("Page.getLayoutMetrics")
             width = math.ceil(metrics["contentSize"]["width"])
             height = math.ceil(metrics["contentSize"]["height"])

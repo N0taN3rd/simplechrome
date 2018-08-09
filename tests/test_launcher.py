@@ -30,7 +30,7 @@ class TestLauncher(object):
     async def test_launches_chrome_no_args(self):
         l = Launcher()
         async with timeout(10) as to:
-            if os.environ.get('INTRAVIS', None) is not None:
+            if os.environ.get("INTRAVIS", None) is not None:
                 chrome = await launch(headless=False)
             else:
                 chrome = await launch()
@@ -51,7 +51,7 @@ class TestLauncher(object):
     @pytest.mark.asyncio
     async def test_launch_fn_no_args(self):
         async with timeout(10) as to:
-            if os.environ.get('INTRAVIS', None) is not None:
+            if os.environ.get("INTRAVIS", None) is not None:
                 chrome = await launch(headless=False)
             else:
                 chrome = await launch()
@@ -71,7 +71,7 @@ class TestLauncher(object):
 
     @pytest.mark.asyncio
     async def test_await_after_close(self):
-        if os.environ.get('INTRAVIS', None) is not None:
+        if os.environ.get("INTRAVIS", None) is not None:
             chrome = await launch(headless=False)
         else:
             chrome = await launch()
@@ -83,5 +83,5 @@ class TestLauncher(object):
 
     @pytest.mark.asyncio
     async def test_invalid_executable_path(self):
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(NotADirectoryError):
             await launch(executablePath="not-a-path")

@@ -1,14 +1,13 @@
+# -*- coding: utf-8 -*-
 """Frame Manager module."""
 
 import asyncio
 import logging
 from asyncio import Future
-from async_timeout import timeout as ato
 from collections import OrderedDict
-from types import SimpleNamespace
-from typing import Any, Dict, Generator, List, Optional, Union
-from typing import TYPE_CHECKING
+from typing import Any, Dict, Generator, List, Optional, Union, Set
 
+import attr
 from pyee import EventEmitter
 
 from . import helper
@@ -19,23 +18,24 @@ from .errors import NetworkError
 from .execution_context import ExecutionContext, JSHandle
 from .util import merge_dict
 
-if TYPE_CHECKING:
-    from typing import Set  # noqa: F401
-
 __all__ = ["FrameManager", "Frame", "WaitTask", "WaitSetupError"]
 
 logger = logging.getLogger(__name__)
 
 
+@attr.dataclass(slots=True)
+class FrameManagerEvents(object):
+    FrameAttached: str = attr.ib(default="frameattached")
+    FrameNavigated: str = attr.ib(default="framenavigated")
+    FrameDetached: str = attr.ib(default="framedetached")
+    LifecycleEvent: str = attr.ib(default="lifecycleevent")
+    FrameNavigatedWithinDocument: str = attr.ib(default="framenavigatedwithindocument")
+
+
 class FrameManager(EventEmitter):
     """FrameManager class."""
 
-    Events = SimpleNamespace(
-        FrameAttached="frameattached",
-        FrameNavigated="framenavigated",
-        FrameDetached="framedetached",
-        LifecycleEvent="lifecycleevent",
-    )
+    Events: FrameManagerEvents = FrameManagerEvents()
 
     def __init__(self, client: CDPSession, frameTree: Dict, page: Any) -> None:
         """Make new frame manager."""
@@ -46,42 +46,46 @@ class FrameManager(EventEmitter):
         self.mainFrame: Optional[Frame] = None
         self._contextIdToContext: Dict[str, ExecutionContext] = dict()
         self._emits_life = False
-        client.on(
+        self._client.on(
             "Page.frameAttached",
             lambda event: self._onFrameAttached(
                 event.get("frameId", ""), event.get("parentFrameId", "")
             ),
         )
-        client.on(
+        self._client.on(
             "Page.frameNavigated",
             lambda event: self._onFrameNavigated(event.get("frame")),
         )
-        client.on(
+        self._client.on(
+            "Page.navigatedWithinDocument",
+            lambda event: self._onFrameNavigatedWithinDocument(
+                event.get("frameId"), event.get("url")
+            ),
+        )
+        self._client.on(
             "Page.frameDetached",
             lambda event: self._onFrameDetached(event.get("frameId")),
         )
-        client.on(
+        self._client.on(
+            "Page.frameStoppedLoading",
+            lambda event: self._onFrameStoppedLoading(event.get("frameId")),
+        )
+        self._client.on(
             "Runtime.executionContextCreated",
             lambda event: self._onExecutionContextCreated(event.get("context")),
         )
-        client.on(
+        self._client.on(
             "Runtime.executionContextDestroyed",
             lambda event: self._onExecutionContextDestroyed(
                 event.get("executionContextId")
             ),
         )
-        client.on("Runtime.executionContextsCleared", self._onExecutionContextsCleared)
-        client.on("Page.lifecycleEvent", self._onLifecycleEvent)
-        client.on("Page.navigatedWithinDocument", self._onNavigatedWithinDocument)
-        self._handleFrameTree(frameTree)
+        self._client.on(
+            "Runtime.executionContextsCleared", self._onExecutionContextsCleared
+        )
+        self._client.on("Page.lifecycleEvent", self._onLifecycleEvent)
 
-    def _onNavigatedWithinDocument(self, event) -> None:
-        frameId = event.get("frameId", "")
-        frame = self._frames.get(frameId, None)
-        if frame is not None:
-            pass
-        frame._navigatedWithinDocument(event.get("url"))
-        self._page.emit(self._page.Events.NavigatedWithinDoc, event)
+        self._handleFrameTree(frameTree)
 
     def enable_lifecycle_emitting(self) -> None:
         self._emits_life = True
@@ -89,9 +93,30 @@ class FrameManager(EventEmitter):
     def disable_lifecyle_emitting(self) -> None:
         self._emits_life = False
 
+    def createJSHandle(
+        self, contextId: str, remoteObject: Optional[Dict] = None
+    ) -> JSHandle:
+        """Create JS handle associated to the context id and remote object."""
+        if remoteObject is None:
+            remoteObject = dict()
+        context = self._contextIdToContext.get(contextId)
+        if not context:
+            raise ElementHandleError(f"missing context with id = {contextId}")
+        if remoteObject.get("subtype") == "node":
+            return ElementHandle(context, self._client, remoteObject, self._page, self)
+        return JSHandle(context, self._client, remoteObject)
+
+    def frames(self) -> List["Frame"]:
+        """Retrun all frames."""
+        return list(self._frames.values())
+
+    def frame(self, frameId: str) -> Optional["Frame"]:
+        """Return :class:`Frame` of ``frameId``."""
+        return self._frames.get(frameId)
+
     def _onLifecycleEvent(self, event: Dict) -> None:
-        frame: Frame = self._frames.get(event["frameId"])
-        if not frame:
+        frame = self._frames.get(event["frameId"])
+        if frame is None:
             return
         frame._onLifecycleEvent(event["loaderId"], event["name"])
         self.emit(FrameManager.Events.LifecycleEvent, frame)
@@ -105,14 +130,6 @@ class FrameManager(EventEmitter):
             return
         for child in frameTree["childFrames"]:
             self._handleFrameTree(child)
-
-    def frames(self) -> List["Frame"]:
-        """Retrun all frames."""
-        return list(self._frames.values())
-
-    def frame(self, frameId: str) -> Optional["Frame"]:
-        """Return :class:`Frame` of ``frameId``."""
-        return self._frames.get(frameId)
 
     def _onFrameAttached(self, frameId: str, parentFrameId: str) -> None:
         if frameId in self._frames:
@@ -154,12 +171,27 @@ class FrameManager(EventEmitter):
 
         # Update frame payload.
         frame._navigated(framePayload)
-        self.emit(self.Events.FrameNavigated, frame)
+        self.emit(FrameManager.Events.FrameNavigated, frame)
 
     def _onFrameDetached(self, frameId: str) -> None:
         frame = self._frames.get(frameId)
         if frame:
             self._removeFramesRecursively(frame)
+
+    def _onFrameStoppedLoading(self, frameId):
+        frame = self._frames.get(frameId)
+        if frame is None:
+            return
+        frame._onLoadingStopped()
+        self.emit(FrameManager.Events.LifecycleEvent, frame)
+
+    def _onFrameNavigatedWithinDocument(self, frameId: str, url: str) -> None:
+        frame = self._frames.get(frameId, None)
+        if frame is None:
+            return
+        frame._navigatedWithinDocument(url)
+        self.emit(FrameManager.Events.FrameNavigatedWithinDocument, frame)
+        self.emit(FrameManager.Events.FrameNavigated, frame)
 
     def _onExecutionContextCreated(self, contextPayload: Dict) -> None:
         if contextPayload.get("auxData") and contextPayload["auxData"]["isDefault"]:
@@ -197,17 +229,6 @@ class FrameManager(EventEmitter):
             self._removeContext(context)
         self._contextIdToContext.clear()
 
-    def createJSHandle(self, contextId: str, remoteObject: Dict = None) -> JSHandle:
-        """Create JS handle associated to the context id and remote object."""
-        if remoteObject is None:
-            remoteObject = dict()
-        context = self._contextIdToContext.get(contextId)
-        if not context:
-            raise ElementHandleError(f"missing context with id = {contextId}")
-        if remoteObject.get("subtype") == "node":
-            return ElementHandle(context, self._client, remoteObject, self._page)
-        return JSHandle(context, self._client, remoteObject)
-
     def _removeFramesRecursively(self, frame: "Frame") -> None:
         for child in list(frame.childFrames):
             self._removeFramesRecursively(child)
@@ -217,15 +238,20 @@ class FrameManager(EventEmitter):
         self.emit(FrameManager.Events.FrameDetached, frame)
 
 
+@attr.dataclass(slots=True)
+class FrameEvents(object):
+    LifeCycleEvent: str = attr.ib(default="lifecycleevent")
+    Detached: str = attr.ib(default="detached")
+    Navigated: str = attr.ib(default="navigated")
+
+
 class Frame(EventEmitter):
     """Frame class.
 
     Frame objects can be obtained via :attr:`pyppeteer.page.Page.mainFrame`.
     """
 
-    Events = SimpleNamespace(
-        LifeCycleEvent="lifecycleevent", Detached="detached", Navigated="navigated"
-    )
+    Events: FrameEvents = FrameEvents()
 
     def __init__(
         self,
@@ -239,6 +265,7 @@ class Frame(EventEmitter):
         self._page = page
         self._parentFrame = parentFrame
         self._url: str = ""
+        self._name: str = ""
         self._detached: bool = False
         self._id: str = frameId
         self._emits_life: bool = False
@@ -255,7 +282,7 @@ class Frame(EventEmitter):
         if self._parentFrame:
             self._parentFrame._childFrames.add(self)
 
-    def _navigatedWithinDocument(self, url) -> None:
+    def _navigatedWithinDocument(self, url: str) -> None:
         self._url = url
         self.navigations.append(url)
 
@@ -265,6 +292,10 @@ class Frame(EventEmitter):
         self.navigations.append(self.url)
         if self._emits_life:
             self.emit(Frame.Events.Navigated)
+
+    def _onLoadingStopped(self):
+        self._lifecycleEvents.add("DOMContentLoaded")
+        self._lifecycleEvents.add("load")
 
     def _onLifecycleEvent(self, loaderId: str, name: str) -> None:
         if name == "init":
@@ -442,14 +473,14 @@ class Frame(EventEmitter):
         """Get the whole HTML contents of the page."""
         return await self.evaluate(
             """
-() => {
-  let retVal = '';
-  if (document.doctype)
-    retVal = new XMLSerializer().serializeToString(document.doctype);
-  if (document.documentElement)
-    retVal += document.documentElement.outerHTML;
-  return retVal;
-}
+        () => {
+          let retVal = '';
+          if (document.doctype)
+            retVal = new XMLSerializer().serializeToString(document.doctype);
+          if (document.documentElement)
+            retVal += document.documentElement.outerHTML;
+          return retVal;
+        }
         """.strip()
         )
 
@@ -467,7 +498,7 @@ function(html) {
     @property
     def name(self) -> str:
         """Get frame name."""
-        return self.__dict__.get("_name", "")
+        return self._name
 
     @property
     def url(self) -> str:
@@ -941,7 +972,8 @@ class WaitTask(object):
                 WaitTimeoutError(f"Waiting failed: timeout {timeout}ms exceeds.")
             )
 
-        self._timeoutTimer = asyncio.ensure_future(timer(self._timeout))
+        if timeout:
+            self._timeoutTimer = asyncio.ensure_future(timer(self._timeout))
         self._runningTask = asyncio.ensure_future(self.rerun())
 
     def __await__(self) -> Generator:
@@ -1011,7 +1043,7 @@ class WaitTask(object):
         self._cleanup()
 
     def _cleanup(self) -> None:
-        if not self._timeoutError:
+        if self._timeout and not self._timeoutError:
             self._timeoutTimer.cancel()
         self._frame._waitTasks.remove(self)
 
