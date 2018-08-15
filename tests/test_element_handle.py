@@ -1,7 +1,6 @@
-import asyncio
-import sys
 import pytest
 from grappa import should
+
 from simplechrome.errors import ElementHandleError
 
 

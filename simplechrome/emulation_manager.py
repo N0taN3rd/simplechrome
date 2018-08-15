@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Emulation Managet module."""
 
 from . import helper

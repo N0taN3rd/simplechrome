@@ -1,15 +1,13 @@
+# -*- coding: utf-8 -*-
 """Keyboard and Mouse module."""
 
 import asyncio
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Dict, Set
 
 from .connection import CDPSession
 from .errors import InputError
 from .us_keyboard_layout import keyDefinitions
 from .util import merge_dict
-
-if TYPE_CHECKING:
-    from typing import Set  # noqa: F401
 
 __all__ = ["Keyboard", "Mouse", "Touchscreen"]
 

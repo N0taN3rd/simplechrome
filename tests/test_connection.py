@@ -10,7 +10,7 @@ from simplechrome.launcher import connect, launch
 class TestConnection(object):
     @pytest.mark.asyncio
     async def test_connect(self):
-        if os.environ.get('INTRAVIS', None) is not None:
+        if os.environ.get("INTRAVIS", None) is not None:
             browser = await launch(headless=False)
         else:
             browser = await launch()
@@ -26,7 +26,7 @@ class TestConnection(object):
 
     @pytest.mark.asyncio
     async def test_reconnect(self):
-        if os.environ.get('INTRAVIS', None) is not None:
+        if os.environ.get("INTRAVIS", None) is not None:
             browser = await launch(headless=False)
         else:
             browser = await launch()

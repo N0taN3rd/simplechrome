@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Navigator Watcher module."""
 
 import asyncio
@@ -26,20 +27,26 @@ class NavigatorWatcher:
         """Make new navigator watcher."""
         options = merge_dict(options, kwargs)
         self._validate_options(options)
-        self._frameManeger = frameManager
+        self._frameManager = frameManager
         self._frame = frame
         self._initialLoaderId = frame._loaderId
         self._timeout = timeout
+        self._hasSameDocumentNavigation = False
         self._eventListeners = [
             helper.addEventListener(
-                self._frameManeger,
+                self._frameManager,
                 FrameManager.Events.LifecycleEvent,
                 self._checkLifecycleComplete,
             ),
             helper.addEventListener(
-                self._frameManeger,
+                self._frameManager,
                 FrameManager.Events.FrameDetached,
                 self._checkLifecycleComplete,
+            ),
+            helper.addEventListener(
+                self._frameManager,
+                FrameManager.Events.FrameNavigatedWithinDocument,
+                self._navigatedWithinDocument,
             ),
         ]
         loop = asyncio.get_event_loop()
@@ -68,12 +75,20 @@ class NavigatorWatcher:
             waitUntil = _waitUntil
         elif isinstance(_waitUntil, str):
             waitUntil = [_waitUntil]
+        else:
+            waitUntil = ["load"]
         self._expectedLifecycle: List[str] = []
         for value in waitUntil:
             protocolEvent = WaitToProtocolLifecycle.get(value)
             if protocolEvent is None:
                 raise ValueError(f"Unknown value for options.waitUntil: {value}")
             self._expectedLifecycle.append(protocolEvent)
+
+    def _navigatedWithinDocument(self, frame):
+        if frame != self._frame:
+            return
+        self._hasSameDocumentNavigation = True
+        self._checkLifecycleComplete()
 
     def _createTimeoutPromise(self) -> Awaitable[None]:
         self._maximumTimer = asyncio.get_event_loop().create_future()
@@ -96,7 +111,10 @@ class NavigatorWatcher:
         return self._navigationPromise
 
     def _checkLifecycleComplete(self, frame: Frame = None) -> None:
-        if self._frame._loaderId == self._initialLoaderId:
+        if (
+            self._frame._loaderId == self._initialLoaderId
+            and not self._hasSameDocumentNavigation
+        ):
             return
         if not self._checkLifecycle(self._frame, self._expectedLifecycle):
             return
@@ -108,9 +126,9 @@ class NavigatorWatcher:
         for event in expectedLifecycle:
             if event not in frame._lifecycleEvents:
                 return False
-        for child in frame.childFrames:
-            if not self._checkLifecycle(child, expectedLifecycle):
-                return False
+        # for child in frame.childFrames:
+        #     if not self._checkLifecycle(child, expectedLifecycle):
+        #         return False
         return True
 
     def cancel(self) -> None:

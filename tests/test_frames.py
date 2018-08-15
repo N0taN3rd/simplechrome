@@ -290,19 +290,19 @@ class TestWaitForSelector(object):
         with pytest.raises(Exception):
             await fut
 
-    @pytest.mark.skip("FIXME!!")
+    # @pytest.mark.skip("FIXME!!")
     @pytest.mark.asyncio
     async def test_cross_process_navigation(self):
         result = []
+        await self.page.goto(f"{self.url}empty.html", dict(waitUntil="load"))
         fut = asyncio.ensure_future(self.page.waitForSelector("h1"))
         fut.add_done_callback(lambda fut: result.append(True))
-        await self.page.goto(f"{self.url}empty.html")
         await asyncio.sleep(0.1)
         result | should.have.length.of(0)
         await self.page.reload()
         await asyncio.sleep(0.1)
         result | should.have.length.of(0)
-        await self.page.goto(f"{self.url}h1.html")
+        await self.page.goto(f"{self.url}h1.html", dict(waitUntil="load"))
         await fut
         result | should.have.index.at(0).equal.to(True)
 

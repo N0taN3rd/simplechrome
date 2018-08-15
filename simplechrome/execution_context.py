@@ -1,7 +1,7 @@
 """Execut Context Module."""
 
 import math
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING, Callable
 
 from . import helper
 from .connection import CDPSession
@@ -21,7 +21,7 @@ class ExecutionContext(object):
         self,
         client: CDPSession,
         contextPayload: Dict,
-        objectHandleFactory: Any,
+        objectHandleFactory: Callable[..., "JSHandle"],
         frame: Optional["Frame"],
     ) -> None:
         self._client = client
@@ -205,7 +205,7 @@ class JSHandle(object):
                     "functionDeclaration": "function() { return this; }",
                     "objectId": objectId,
                     "returnByValue": True,
-                    "awaitPromiss": True,
+                    "awaitPromise": True,
                 },
             )
             return helper.valueFromRemoteObject(response["result"])

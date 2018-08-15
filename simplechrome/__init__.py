@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """The simple chrome package"""
 
 from .browser_fetcher import *

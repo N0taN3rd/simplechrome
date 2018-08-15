@@ -49,19 +49,19 @@ def event_loop() -> Generator[uvloop.Loop, Any, None]:
 
 @pytest.yield_fixture
 async def chrome() -> AsyncGenerator[Chrome, Any]:
-    if os.environ.get('INTRAVIS', None) is not None:
-        chrome = await launch(headless=False)
+    if os.environ.get("INTRAVIS", None) is not None:
+        browser = await launch(headless=False)
     else:
-        chrome = await launch()
-    yield chrome
-    await chrome.close()
+        browser = await launch()
+    yield browser
+    await browser.close()
 
 
 @pytest.yield_fixture(scope="class")
 async def chrome() -> AsyncGenerator[Chrome, Any]:
-    if os.environ.get('INTRAVIS', None) is not None:
-        chrome = await launch(headless=False)
+    if os.environ.get("INTRAVIS", None) is not None:
+        browser = await launch(headless=False)
     else:
-        chrome = await launch()
-    yield chrome
-    await chrome.close()
+        browser = await launch()
+    yield browser
+    await browser.close()

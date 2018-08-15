@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Utitlity functions."""
 
 import gc

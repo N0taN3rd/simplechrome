@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Launcher module"""
 
 import asyncio
@@ -48,7 +49,7 @@ DEFAULT_ARGS = [
     "--disable-renderer-backgrounding",
     "--disable-infobars",
     "--disable-translate",
-    "--autoplay-policy=no-user-gesture-required"
+    "--autoplay-policy=no-user-gesture-required",
 ]
 
 DOT_DIR = Path.home() / ".simplechrome"

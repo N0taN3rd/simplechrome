@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Helper functions."""
 
 import json
@@ -32,7 +33,7 @@ def getExceptionMessage(exceptionDetails: dict) -> str:
     """Get exception message from `exceptionDetails` object."""
     exception = exceptionDetails.get("exception")
     if exception is not None:
-        return exception.get("description", "")  # type: ignore
+        return exception.get("description", exception.get("value", ""))  # type: ignore
     message = exceptionDetails.get("text", "")
     stackTrace = exceptionDetails.get("stackTrace")
     if stackTrace is not None:

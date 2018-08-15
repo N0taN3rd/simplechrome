@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """US Keyboard Definition."""
 
 __all__ = ["keyDefinitions"]

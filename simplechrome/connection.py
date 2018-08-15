@@ -1,16 +1,18 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import logging
 import ujson as json
 from asyncio import Future
+from concurrent.futures import CancelledError
 from typing import Optional, Dict, Callable, Any
 
 import websockets
 import websockets.protocol
 from pyee import EventEmitter
 from websockets import WebSocketClientProtocol
-from websockets.client import Connect
 
 from .errors import NetworkError
+
 
 __all__ = ["Connection", "CDPSession"]
 
@@ -29,7 +31,7 @@ class Connection(EventEmitter):
     def __init__(self, url: str, delay: int = 0, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._url: str = url
-        self._message_id: int = 0
+        self._lastId: int = 0
         self._callbacks: Dict[int, Future] = dict()
         self._delay: int = delay
         self._sessions: Dict[str, CDPSession] = dict()
@@ -39,6 +41,11 @@ class Connection(EventEmitter):
         self._closeCallback: Optional[Callable[[], None]] = None
         self._loop = asyncio.get_event_loop()
 
+    @property
+    def url(self) -> str:
+        """Get connected WebSocket url."""
+        return self._url
+
     @staticmethod
     async def createForWebSocket(url: str, delay: int = 0) -> "Connection":
         con = Connection(url, delay)
@@ -46,7 +53,7 @@ class Connection(EventEmitter):
         return con
 
     async def connect(self) -> None:
-        self._ws = await Connect(
+        self._ws = await websockets.client.connect(
             self._url,
             compression=None,
             max_queue=0,
@@ -56,22 +63,46 @@ class Connection(EventEmitter):
         )
         self._recv_fut = asyncio.ensure_future(self._recv_loop(), loop=self._loop)
 
-    @property
-    def url(self) -> str:
-        """Get connected WebSocket url."""
-        return self._url
+    async def _recv_loop(self) -> None:
+        self.connected = True
+        while self.connected:
+            try:
+                resp = await self._ws.recv()
+                # print(resp)
+                if resp:
+                    self._on_message(resp)
+            except (websockets.ConnectionClosed, ConnectionResetError) as e:
+                logger.info("connection closed")
+                break
+        if self.connected:
+            asyncio.ensure_future(self.dispose())
 
     def send(self, method: str = None, params: dict = None) -> Future:
+        if self._lastId and not self.connected:
+            raise ConnectionError("Connection is closed")
         if params is None:
             params = dict()
-        self._message_id += 1
-        _id = self._message_id
+        self._lastId += 1
+        _id = self._lastId
         msg = json.dumps(dict(method=method, params=params, id=_id))
-        asyncio.ensure_future(self._send_async(msg), loop=self._loop)
+        asyncio.ensure_future(self._send_async(msg, _id), loop=self._loop)
         callback = self._loop.create_future()
         self._callbacks[_id] = callback
         callback.method = method  # type: ignore
         return callback
+
+    async def _send_async(self, msg: str, callback_id: int) -> None:
+        while not self.connected:
+            await asyncio.sleep(0)
+
+        try:
+            await self._ws.send(msg)
+        except websockets.ConnectionClosed:
+            logger.error("connection unexpectedly closed")
+            callback = self._callbacks.get(callback_id, None)
+            if callback and not callback.done():
+                callback.set_result(None)
+                await self.dispose()
 
     async def dispose(self) -> None:
         """Close all connection."""
@@ -90,18 +121,6 @@ class Connection(EventEmitter):
         """Set closed callback."""
         self._closeCallback = callback
 
-    async def _recv_loop(self) -> None:
-        self.connected = True
-        while self.connected:
-            try:
-                resp = await self._ws.recv()
-                # print(resp)
-                if resp:
-                    self._on_message(resp)
-            except (websockets.ConnectionClosed, ConnectionResetError) as e:
-                logger.info("connection closed")
-                break
-
     def _on_message(self, message: str) -> None:
         msg = json.loads(message)
         if msg.get("id") in self._callbacks:
@@ -111,11 +130,12 @@ class Connection(EventEmitter):
 
     def _on_response(self, msg: dict) -> None:
         callback = self._callbacks.pop(msg.get("id", -1))
-        if "error" in msg:
-            error = msg["error"]
-            callback.set_exception(NetworkError(f"Protocol Error: {error}"))
-        else:
-            callback.set_result(msg.get("result"))
+        if callback and not callback.done():
+            if "error" in msg:
+                error = msg["error"]
+                callback.set_exception(NetworkError(f"Protocol Error: {error}"))
+            else:
+                callback.set_result(msg.get("result"))
 
     def _on_unsolicited(self, msg: dict) -> None:
         params = msg.get("params", {})
@@ -139,11 +159,6 @@ class Connection(EventEmitter):
             traceback.print_exc()
             print("_on_unsolicited error", e)
             print("_on_unsolicited error", params)
-
-    async def _send_async(self, msg: str) -> None:
-        while not self.connected:
-            await asyncio.sleep(0)
-        await self._ws.send(msg)
 
     async def _on_close(self) -> None:
         if self._closeCallback:
@@ -186,7 +201,7 @@ class CDPSession(EventEmitter):
         self._sessionId: str = sessionId
         self._sessions: Dict[str, CDPSession] = dict()
 
-    async def send(self, method: str, params: dict = None) -> Any:
+    async def send(self, method: str, params: Optional[dict] = None) -> Any:
         """Send message to the connected session.
         :arg str method: Protocol method name.
         :arg dict params: Optional method parameters.
@@ -197,13 +212,17 @@ class CDPSession(EventEmitter):
 
         callback = asyncio.get_event_loop().create_future()
         self._callbacks[_id] = callback
-        callback.method: str = method  # type: ignore
+        callback.method = method
 
         if not self._connection:
             raise NetworkError("Connection closed.")
-        await self._connection.send(
-            "Target.sendMessageToTarget", {"sessionId": self._sessionId, "message": msg}
-        )
+        try:
+            await self._connection.send(
+                "Target.sendMessageToTarget",
+                {"sessionId": self._sessionId, "message": msg},
+            )
+        except CancelledError:
+            raise NetworkError("connection unexpectedly closed")
         return await callback
 
     async def detach(self) -> None:
@@ -238,7 +257,8 @@ class CDPSession(EventEmitter):
                 callback.set_exception(NetworkError(emsg))
             else:
                 result = msg.get("result")
-                callback.set_result(result)
+                if callback and not callback.done():
+                    callback.set_result(result)
         else:
             self.emit(msg.get("method"), msg.get("params"))
 
