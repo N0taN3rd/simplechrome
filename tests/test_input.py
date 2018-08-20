@@ -492,7 +492,7 @@ class TestType(object):
         await self.page.goto(f"{self.url}textarea.html")
         await self.page.focus("textarea")
         await self.page.evaluate(
-            """
+            """() => {
 window.addEventListener('keydown', event => {
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -500,8 +500,8 @@ window.addEventListener('keydown', event => {
         event.preventDefault();
     if (event.key === 'o')
         Promise.resolve().then(() => event.preventDefault());
-}, false);""",
-            force_expr=True,
+}, false);
+} """
         )
         await self.page.keyboard.type("Hello World!")
         await self.page.evaluate("textarea.value") | should.be.equal.to("He Wrd!")
@@ -524,9 +524,9 @@ window.addEventListener('keydown', event => {
         await self.page.goto(f"{self.url}textarea.html")
         await self.page.focus("textarea")
         await self.page.evaluate(
-            'document.querySelector("textarea").addEventListener("keydown",'
-            "    e => window.lastEvent = e, true)",
-            force_expr=True,
+            """() => {
+            document.querySelector("textarea").addEventListener("keydown", e => window.lastEvent = e, true);
+            }"""
         )
         await self.page.keyboard.down("a")
         await self.page.evaluate("window.lastEvent.repeat") | should.be.false

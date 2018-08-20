@@ -16,12 +16,12 @@ class TestConnection(object):
             browser = await launch()
         browser2 = await connect(browserWSEndpoint=browser.wsEndpoint)
         page = await browser2.newPage()
-        with should(await page.evaluate("() => 7 * 8")):
-            should.be.a(int).that.should.be.equal.to(56)
+        result = await page.evaluate("() => 7 * 8")
+        result | should.be.a(int).that.should.be.equal.to(56)
         await browser2.disconnect()
         page2 = await browser.newPage()
-        with should(await page2.evaluate("() => 7 * 6")):
-            should.be.a(int).that.should.be.equal.to(42)
+        result = await page2.evaluate("() => 7 * 6")
+        result | should.be.a(int).that.should.be.equal.to(42)
         await browser.close()
 
     @pytest.mark.asyncio
@@ -45,7 +45,7 @@ class TestConnection(object):
         with pytest.raises(NetworkError) as ne:
             await page._client.send("Bogus.command")
         str(ne.value) | should.start_with(
-            "Protocol Error: 'Bogus.command' wasn't found"
+            "Protocol Error (Bogus.command): 'Bogus.command' wasn't found"
         )
 
 

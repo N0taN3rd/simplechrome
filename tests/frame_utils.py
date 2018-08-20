@@ -8,8 +8,7 @@ __all__ = ["attachFrame", "detachFrame", "dumpFrames", "navigateFrame"]
 
 
 async def attachFrame(page: Page, frameId: str, url: str) -> None:
-    func = """
-        (frameId, url) => {
+    func = """(frameId, url) => {
             const frame = document.createElement('iframe');
             frame.src = url;
             frame.id = frameId;
@@ -21,8 +20,7 @@ async def attachFrame(page: Page, frameId: str, url: str) -> None:
 
 
 async def detachFrame(page: Page, frameId: str) -> None:
-    func = """
-        (frameId) => {
+    func = """(frameId) => {
             const frame = document.getElementById(frameId);
             frame.remove();
         }
@@ -31,8 +29,7 @@ async def detachFrame(page: Page, frameId: str) -> None:
 
 
 async def navigateFrame(page: Page, frameId: str, url: str) -> None:
-    func = """
-        (frameId, url) => {
+    func = """(frameId, url) => {
             const frame = document.getElementById(frameId);
             frame.src = url;
             return new Promise(x => frame.onload = x);

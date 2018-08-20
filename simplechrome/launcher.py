@@ -38,17 +38,18 @@ DEFAULT_ARGS = [
     "--disable-prompt-on-repost",
     "--disable-sync",
     "--disable-translate",
+    "--disable-domain-reliability",
+    "--disable-renderer-backgrounding",
+    "--disable-infobars",
+    "--disable-translate",
+    "--disable-features=site-per-process",
+    "--disable-breakpad",
     "--metrics-recording-only",
     "--no-first-run",
     "--safebrowsing-disable-auto-update",
     "--password-store=basic",
-    "--disable-features=site-per-process",
     "--use-mock-keychain",
     "--mute-audio",
-    "--disable-domain-reliability",  # no Domain Reliability Monitoring
-    "--disable-renderer-backgrounding",
-    "--disable-infobars",
-    "--disable-translate",
     "--autoplay-policy=no-user-gesture-required",
 ]
 
@@ -112,10 +113,14 @@ class Launcher(object):
             self.args.extend(DEFAULT_ARGS)
             self.args.append(f"--remote-debugging-port={self.port}")
 
-        if self.options.get("appMode", False):
-            self.options["headless"] = False
         if "headless" not in self.options or self.options.get("headless"):
-            self.args.extend(["--headless", "--disable-gpu"])
+            self.args.extend(["--headless", "--hide-scrollbars"])
+            if (
+                sys.platform.startswith("win")
+                or sys.platform.startswith("msys")
+                or sys.platform.startswith("cyg")
+            ):
+                self.args.append("--disable-gpu")
 
         if not self._check_supplied_userdd():
             if "userDataDir" not in self.options:
@@ -141,9 +146,9 @@ class Launcher(object):
             else:
                 # cannot connet to browser for 10 seconds
                 raise LauncherError(f"Failed to connect to browser port: {self.url}")
-            for d in data:
-                if d["type"] == "page":
-                    return d["webSocketDebuggerUrl"]
+        for d in data:
+            if d["type"] == "page":
+                return d["webSocketDebuggerUrl"]
         raise LauncherError("Could not find a page to connect to")
 
     async def launch(self) -> Chrome:
@@ -179,7 +184,7 @@ class Launcher(object):
             con,
             [],
             self.options.get("ignoreHTTPSErrors", False),
-            self.options.get("setDefaultViewport", False),
+            self.options.get("defaultViewPort"),
             self.proc,
             self.kill_chrome,
         )
@@ -235,7 +240,7 @@ async def connect(options: dict = None, **kwargs: Any) -> Chrome:
         connection,
         contextIds=[],
         ignoreHTTPSErrors=options.get("ignoreHTTPSErrors", False),
-        appMode=options.get("appMode", False),
+        defaultViewport=options.get("defaultViewPort"),
         process=None,
         closeCallback=lambda: connection.send("Browser.close"),
     )

@@ -64,7 +64,7 @@ class TestJSHandle(object):
         with pytest.raises(NetworkError) as cm:
             await windowHandle.jsonValue()
         str(cm.value) | should.be.equal.to(
-            "Protocol Error: Object reference chain is too long"
+            "Protocol Error (Runtime.callFunctionOn): Object reference chain is too long"
         )
 
     @pytest.mark.asyncio

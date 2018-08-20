@@ -12,7 +12,7 @@ class TestBoundingBox(object):
         await self.page.goto(f"{self.url}grid.html")
         elementHandle = await self.page.J(".box:nth-of-type(13)")
         box = await elementHandle.boundingBox()
-        box | should.be.equal.to({"x": 150, "y": 50, "width": 50, "height": 50})
+        box | should.be.equal.to({"x": 100, "y": 50, "width": 50, "height": 50})
 
     @pytest.mark.asyncio
     async def test_nested_frame(self):
@@ -23,7 +23,7 @@ class TestBoundingBox(object):
         box = await elementHandle.boundingBox()
         box["x"] | should.be.equal.to(28)
         box["y"] | should.pass_function(lambda x: x == 182 or x == 28)
-        box["width"] | should.be.equal.to(249)
+        box["width"] | should.be.equal.to(264)
 
     @pytest.mark.asyncio
     async def test_invisible_element(self):

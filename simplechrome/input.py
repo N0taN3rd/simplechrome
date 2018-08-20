@@ -2,7 +2,7 @@
 """Keyboard and Mouse module."""
 
 import asyncio
-from typing import Any, Dict, Set
+from typing import Any, Dict, Set, Union
 
 from .connection import CDPSession
 from .errors import InputError
@@ -74,11 +74,13 @@ class Keyboard(object):
             return 8
         return 0
 
-    def _keyDescriptionForString(self, keyString: str) -> Dict:  # noqa: C901
+    def _keyDescriptionForString(
+        self, keyString: str
+    ) -> Dict[str, Union[str, int]]:  # noqa: C901
         shift = self._modifiers & 8
         description = {"key": "", "keyCode": 0, "code": "", "text": "", "location": 0}
 
-        definition: Dict = keyDefinitions.get(keyString)  # type: ignore
+        definition = keyDefinitions.get(keyString)
         if not definition:
             raise InputError(f"Unknown key: {keyString}")
 
