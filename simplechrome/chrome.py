@@ -29,14 +29,14 @@ class Chrome(EventEmitter):
         connection: Connection,
         contextIds: List[str],
         ignoreHTTPSErrors: bool,
-        setDefaultViewport: bool,
+        defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
         closeCallback: Callable[[], Awaitable[None]] = None,
     ) -> None:
         super().__init__()
         self.process: Optional[Popen] = process
         self.ignoreHTTPSErrors: bool = ignoreHTTPSErrors
-        self._setDefaultViewport: bool = setDefaultViewport
+        self._defaultViewport: Dict[str, int] = defaultViewport
         self._screenshotTaskQueue: List = []
         self._connection: Connection = connection
 
@@ -68,12 +68,17 @@ class Chrome(EventEmitter):
         connection: Connection,
         contextIds: List[str],
         ignoreHTTPSErrors: bool,
-        appMode: bool,
+        defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
         closeCallback: Callable[[], Awaitable[None]] = None,
     ) -> "Chrome":
         browser = Chrome(
-            connection, contextIds, ignoreHTTPSErrors, appMode, process, closeCallback
+            connection,
+            contextIds,
+            ignoreHTTPSErrors,
+            defaultViewport,
+            process,
+            closeCallback,
         )
         await connection.send("Target.setDiscoverTargets", {"discover": True})
         return browser
@@ -276,8 +281,8 @@ class Target(object):
             new_page = await Page.create(
                 client,
                 self,
+                self._browser._defaultViewport,
                 self._browser.ignoreHTTPSErrors,
-                self._browser._setDefaultViewport,
                 self._browser._screenshotTaskQueue,
             )
             self._page = new_page
@@ -285,7 +290,7 @@ class Target(object):
         return self._page
 
     @property
-    def opener(self) -> Optional["Chrome"]:
+    def opener(self) -> Optional["Target"]:
         openerId = self._targetInfo.get("openerId")
         if openerId is not None:
             return self.browser._targets.get(openerId)
@@ -307,7 +312,7 @@ class Target(object):
     @property
     def type(self) -> str:
         """Get type of this target."""
-        _type = self._targetInfo["type"]
+        _type: str = self._targetInfo["type"]
         if (
             _type == "page"
             or _type == "service_worker"

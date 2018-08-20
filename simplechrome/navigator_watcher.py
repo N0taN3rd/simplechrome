@@ -32,6 +32,7 @@ class NavigatorWatcher:
         self._initialLoaderId = frame._loaderId
         self._timeout = timeout
         self._hasSameDocumentNavigation = False
+        self.all_frames = options.get("all_frames", True)
         self._eventListeners = [
             helper.addEventListener(
                 self._frameManager,
@@ -51,7 +52,6 @@ class NavigatorWatcher:
         ]
         loop = asyncio.get_event_loop()
         self._lifecycleCompletePromise = loop.create_future()
-
         self._navigationPromise = asyncio.ensure_future(
             asyncio.wait(
                 [self._lifecycleCompletePromise, self._createTimeoutPromise()],
@@ -126,9 +126,10 @@ class NavigatorWatcher:
         for event in expectedLifecycle:
             if event not in frame._lifecycleEvents:
                 return False
-        # for child in frame.childFrames:
-        #     if not self._checkLifecycle(child, expectedLifecycle):
-        #         return False
+        if self.all_frames:
+            for child in frame.childFrames:
+                if not self._checkLifecycle(child, expectedLifecycle):
+                    return False
         return True
 
     def cancel(self) -> None:

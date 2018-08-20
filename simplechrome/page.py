@@ -2,7 +2,6 @@
 """Page module."""
 import asyncio
 import base64
-import json
 import logging
 import mimetypes
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, TYPE_CHECKING
@@ -10,16 +9,15 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, TYPE_C
 import attr
 import math
 from pyee import EventEmitter
+from ujson import loads
 
 from . import helper
 from .connection import CDPSession
 from .dialog import Dialog
-from .element_handle import ElementHandle  # noqa: F401
 from .emulation_manager import EmulationManager
 from .errors import PageError
-from .execution_context import JSHandle  # noqa: F401
-from .frame_manager import Frame  # noqa: F401
-from .frame_manager import FrameManager
+from .execution_context import JSHandle, ElementHandle, createJSHandle  # noqa: F401
+from .frame_manager import FrameManager, Frame
 from .input import Keyboard, Mouse, Touchscreen
 from .navigator_watcher import NavigatorWatcher
 from .network_manager import NetworkManager, Response, Request
@@ -80,8 +78,8 @@ class Page(EventEmitter):
     async def create(
         client: CDPSession,
         target: "Target",
+        defaultViewport: Optional[Dict[str, int]] = None,
         ignoreHTTPSErrors: bool = False,
-        appMode: bool = False,
         screenshotTaskQueue: list = None,
     ) -> "Page":
         """Async function which makes new page object."""
@@ -113,8 +111,8 @@ class Page(EventEmitter):
             await client.send(
                 "Security.setOverrideCertificateErrors", {"override": True}
             )
-        if not appMode:
-            await page.setViewport({"width": 900, "height": 900})
+        if defaultViewport is not None:
+            await page.setViewport(defaultViewport)
         return page
 
     def __init__(
@@ -126,6 +124,7 @@ class Page(EventEmitter):
         screenshotTaskQueue: list = None,
     ) -> None:
         super().__init__()
+        self._closed = False
         self._client = client
         self._target = target
         self._keyboard = Keyboard(client)
@@ -134,7 +133,6 @@ class Page(EventEmitter):
         self._frameManager = FrameManager(client, frameTree, self)
         self._networkManager = NetworkManager(client, self._frameManager)
         self._emulationManager = EmulationManager(client)
-        self._pageBindings: Dict[str, Callable] = dict()
         self._ignoreHTTPSErrors = ignoreHTTPSErrors
         self._defaultNavigationTimeout = 30000  # milliseconds
         self._javascriptEnabled = True
@@ -192,10 +190,11 @@ class Page(EventEmitter):
             lambda exception: self._handleException(exception.get("exceptionDetails")),
         )
         client.on("Inspector.targetCrashed", lambda event: self._onTargetCrashed())
-        client.on("Log.entryAdded", self._onLogEntryAdded)
+        client.on("Log.entryAdded", lambda event: self._onLogEntryAdded(event))
 
         def closed(fut: asyncio.futures.Future) -> None:
             self.emit(Page.Events.Close)
+            self._closed = True
 
         self._target._isClosedPromise.add_done_callback(closed)
 
@@ -221,7 +220,7 @@ class Page(EventEmitter):
 
             asyncio.ensure_future(release())
         if entry.get("source", "") != "worker":
-            self.emit(Page.Events.Console, entry)
+            self.emit(Page.Events.LogEntry, entry)
 
     def _on_lifecycle(self, le: Callable) -> None:
         self.emit(Page.Events.LifecycleEvent, le)
@@ -505,51 +504,6 @@ class Page(EventEmitter):
             raise PageError("no main frame.")
         return await frame.injectFile(filePath)
 
-    async def exposeFunction(
-        self, name: str, pyppeteerFunction: Callable
-    ) -> Dict[str, int]:
-        """Add python function to the browser's ``window`` object as ``name``.
-
-        Registered function can be called from chrome process.
-
-        :arg string name: Name of the function on the window object.
-        :arg Callable pyppeteerFunction: Function which will be called on
-                                         python process.
-        """
-        if self._pageBindings.get(name):
-            raise PageError(
-                f"Failed to add page binding with name {name}: "
-                f'window["{name}"] already exists!'
-            )
-        self._pageBindings[name] = pyppeteerFunction
-
-        addPageBinding = """
-function addPageBinding(bindingName) {
-  window[bindingName] = async(...args) => {
-    const me = window[bindingName];
-    let callbacks = me['callbacks'];
-    if (!callbacks) {
-      callbacks = new Map();
-      me['callbacks'] = callbacks;
-    }
-    const seq = (me['lastSeq'] || 0) + 1;
-    me['lastSeq'] = seq;
-    const promise = new Promise(fulfill => callbacks.set(seq, fulfill));
-    // eslint-disable-next-line no-console
-    console.debug('driver:page-binding', JSON.stringify({name: bindingName, seq, args}));
-    return promise;
-  };
-}
-        """  # noqa: E501
-        expression = helper.evaluationString(addPageBinding, name)
-        scriptid = await self._client.send(
-            "Page.addScriptToEvaluateOnNewDocument", {"source": expression}
-        )
-        await asyncio.wait(
-            [frame.evaluate(expression, force_expr=True) for frame in self.frames]
-        )
-        return scriptid
-
     async def authenticate(self, credentials: Dict[str, str]) -> Any:
         """Provide credentials for http authentication.
 
@@ -592,52 +546,23 @@ function addPageBinding(bindingName) {
         self.emit(Page.Events.PageError, PageError(message))
 
     def _onConsoleAPI(self, event: dict) -> None:
-        _args = event.get("args", [])
-        if (
-            event.get("type") == "debug"
-            and _args
-            and _args[0].get("value") == "driver:page-binding"
-        ):
-            obj = json.loads(_args[1]["value"])
-            name = obj.get("name")
-            seq = obj.get("seq")
-            args = obj.get("args")
-            result = self._pageBindings[name](*args)
-
-            deliverResult = """
-function deliverResult(name, seq, result) {
-  window[name]['callbacks'].get(seq)(result);
-  window[name]['callbacks'].delete(seq);
-}
-            """
-            expression = helper.evaluationString(deliverResult, name, seq, result)
-            asyncio.ensure_future(
-                self._client.send(
-                    "Runtime.evaluate",
-                    {
-                        "expression": expression,
-                        "contextId": event["executionContextId"],
-                    },
-                )
-            )
-            return
-
+        context = self._frameManager.executionContextById(
+            event.get("executionContextId")
+        )
+        values = []
+        for arg in event.get("args", []):
+            values.append(createJSHandle(context, arg))
         if not self.listeners(Page.Events.Console):
-            for arg in _args:
-                asyncio.ensure_future(helper.releaseObject(self._client, arg))
+            for arg in values:
+                asyncio.ensure_future(arg.dispose())
             return
-
-        _id = event["executionContextId"]
-        values: List[JSHandle] = []
-        for arg in _args:
-            values.append(self._frameManager.createJSHandle(_id, arg))
-
         textTokens = []
-        for arg, value in zip(_args, values):
-            if arg.get("objectId"):
-                textTokens.append(value.toString())
+        for arg in values:
+            remoteObject = arg._remoteObject
+            if remoteObject.get("objectId"):
+                textTokens.append(arg.toString())
             else:
-                textTokens.append(str(helper.valueFromRemoteObject(arg)))
+                textTokens.append(str(helper.valueFromRemoteObject(remoteObject)))
 
         message = ConsoleMessage(event["type"], " ".join(textTokens), values)
         self.emit(Page.Events.Console, message)
@@ -681,12 +606,13 @@ function deliverResult(name, seq, result) {
         await frame.setContent(html)
 
     async def goto(
-        self, url: str, options: dict = None, **kwargs: Any
+        self, url: str, options: Dict[str, Union[str, int, bool]] = None, **kwargs: Any
     ) -> Optional[Response]:
         """Go to the ``url``.
 
         :arg string url: URL to navigate page to. The url should include
             scheme, e.g. ``https://``.
+        :arg dict options:
 
         Available options are:
 
@@ -888,7 +814,7 @@ function deliverResult(name, seq, result) {
         frame = self.mainFrame
         if frame is None:
             raise PageError("No main frame.")
-        return await frame.evaluate(pageFunction, *args, force_expr=force_expr)
+        return await frame.evaluate(pageFunction, *args)
 
     async def evaluateOnNewDocument(
         self, pageFunction: str, *args: str, raw=False
@@ -1480,34 +1406,16 @@ def convertPrintParameterToInches(
     return pixels / 96
 
 
+@attr.dataclass(slots=True)
 class ConsoleMessage(object):
     """Console message class.
 
     ConsoleMessage objects are dispatched by page via the ``console`` event.
     """
 
-    def __init__(self, type: str, text: str, args: List[JSHandle]) -> None:
-        #: (str) type of console message
-        self._type = type
-        #: (str) console message string
-        self._text = text
-        #: list of JSHandle
-        self._args = args
-
-    @property
-    def type(self) -> str:
-        """Return type of this message."""
-        return self._type
-
-    @property
-    def text(self) -> str:
-        """Return text representation of this message."""
-        return self._text
-
-    @property
-    def args(self) -> List[JSHandle]:
-        """Return list of args (JSHandle) of this message."""
-        return self._args
+    type: str = attr.ib()
+    text: str = attr.ib()
+    args: List[JSHandle] = attr.ib()
 
 
 #: alias to :func:`create_page()`

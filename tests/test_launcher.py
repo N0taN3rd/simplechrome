@@ -83,5 +83,5 @@ class TestLauncher(object):
 
     @pytest.mark.asyncio
     async def test_invalid_executable_path(self):
-        with pytest.raises(NotADirectoryError):
+        with pytest.raises(FileNotFoundError):
             await launch(executablePath="not-a-path")

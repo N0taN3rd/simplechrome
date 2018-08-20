@@ -13,23 +13,25 @@ from websockets import WebSocketClientProtocol
 
 from .errors import NetworkError
 
-
 __all__ = ["Connection", "CDPSession"]
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST: str = "localhost"
-DEFAULT_PORT: int = 9222
-TIMEOUT_S = 25
-MAX_PAYLOAD_SIZE_BYTES = 2 ** 30
-MAX_PAYLOAD_SIZE_MB = MAX_PAYLOAD_SIZE_BYTES / 1024 ** 2  # ~ 1GB
+
+def createProtocolError(method, msg) -> str:
+    error = msg["error"]
+    data = error.get("data")
+    emsg = f"Protocol Error ({method}): {error.get('message')}"
+    if data:
+        emsg += f" {data}"
+    return emsg
 
 
 class Connection(EventEmitter):
     """Websocket Connection To The Remote Browser"""
 
     def __init__(self, url: str, delay: int = 0, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self._url: str = url
         self._lastId: int = 0
         self._callbacks: Dict[int, Future] = dict()
@@ -68,14 +70,13 @@ class Connection(EventEmitter):
         while self.connected:
             try:
                 resp = await self._ws.recv()
-                # print(resp)
                 if resp:
                     self._on_message(resp)
             except (websockets.ConnectionClosed, ConnectionResetError) as e:
                 logger.info("connection closed")
                 break
         if self.connected:
-            asyncio.ensure_future(self.dispose())
+            await self.dispose()
 
     def send(self, method: str = None, params: dict = None) -> Future:
         if self._lastId and not self.connected:
@@ -132,8 +133,9 @@ class Connection(EventEmitter):
         callback = self._callbacks.pop(msg.get("id", -1))
         if callback and not callback.done():
             if "error" in msg:
-                error = msg["error"]
-                callback.set_exception(NetworkError(f"Protocol Error: {error}"))
+                callback.set_exception(
+                    NetworkError(createProtocolError(callback.method, msg))
+                )
             else:
                 callback.set_result(msg.get("result"))
 
@@ -193,7 +195,7 @@ class CDPSession(EventEmitter):
         **kwargs: Any,
     ) -> None:
         """Make new session."""
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self._lastId: int = 0
         self._callbacks: Dict[int, Future] = {}
         self._connection: Optional[Connection] = connection
@@ -248,13 +250,9 @@ class CDPSession(EventEmitter):
         if _id and _id in self._callbacks:
             callback = self._callbacks.pop(_id)
             if "error" in msg:
-                error = msg["error"]
-                msg = error.get("message")
-                data = error.get("data")
-                emsg = f"Protocol Error: {msg}"
-                if data:
-                    emsg += f" {data}"
-                callback.set_exception(NetworkError(emsg))
+                callback.set_exception(
+                    NetworkError(createProtocolError(callback.method, msg))
+                )
             else:
                 result = msg.get("result")
                 if callback and not callback.done():

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Utitlity functions."""
 
+from asyncio import AbstractEventLoop, get_event_loop
 import gc
 import socket
 from typing import Dict, Optional, Any
@@ -26,3 +27,7 @@ def merge_dict(dict1: Optional[Dict], dict2: Optional[Dict]) -> Dict[str, Any]:
     if dict2:
         new_dict.update(dict2)
     return new_dict
+
+
+def loop_factory() -> AbstractEventLoop:
+    return get_event_loop()

@@ -2,13 +2,14 @@
 """Helper functions."""
 
 import json
-import math
-from typing import Any, Callable, Dict, List, Union, Iterable, Optional
+from typing import Any, Callable, Dict, List
 
-from pyee import EventEmitter
+import math
 
 from .connection import CDPSession
 from .errors import ElementHandleError
+from pyee import EventEmitter
+
 
 __all__ = [
     "evaluationString",

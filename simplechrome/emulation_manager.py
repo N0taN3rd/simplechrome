@@ -41,8 +41,7 @@ class EmulationManager(object):
             },
         )
 
-        injectedTouchEventsFunction = """
-function injectedTouchEventsFunction() {
+        injectedTouchEventsFunction = """function injectedTouchEventsFunction() {
   const touchEvents = ['ontouchstart', 'ontouchend', 'ontouchmove', 'ontouchcancel'];
   const recepients = [window.__proto__, document.__proto__];
   for (let i = 0; i < touchEvents.length; ++i) {

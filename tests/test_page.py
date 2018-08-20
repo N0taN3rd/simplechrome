@@ -103,11 +103,6 @@ class TestEvaluate(object):
         result | should.be.equal.to(3)
 
     @pytest.mark.asyncio
-    async def test_evaluate_force_expression(self):
-        result = await self.page.evaluate("() => null;\n1 + 2;", force_expr=True)
-        result | should.be.equal.to(3)
-
-    @pytest.mark.asyncio
     async def test_accept_string_with_semicolon(self):
         result = await self.page.evaluate("1 + 5;")
         result | should.be.equal.to(6)
@@ -303,47 +298,6 @@ class TestDOMContentLoaded(object):
         result = []
         self.page.once("domcontentloaded", result.append(True))
         result | should.have.length.of(1)
-
-
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestExposeFunctoin(object):
-    @pytest.mark.asyncio
-    async def test_expose_function(self):
-        await self.page.goto(self.url + "empty.html")
-        scriptid = await self.page.exposeFunction("compute", lambda a, b: a * b)
-        result = await self.page.evaluate("(a, b) => compute(a, b)", 9, 4)
-        result | should.be.equal.to(36)
-        await self.page.removeScriptToEvaluateOnNewDocument(scriptid)
-        self.page._pageBindings.pop("compute")
-
-    @pytest.mark.asyncio
-    async def test_expose_function_other_page(self):
-        scriptid = await self.page.exposeFunction("compute", lambda a, b: a * b)
-        await self.page.goto(self.url + "empty.html")
-        result = await self.page.evaluate("(a, b) => compute(a, b)", 9, 4)
-        result | should.be.equal.to(36)
-        await self.page.removeScriptToEvaluateOnNewDocument(scriptid)
-        self.page._pageBindings.pop("compute")
-
-    @pytest.mark.asyncio
-    async def test_expose_function_frames(self):
-        scriptid = await self.page.exposeFunction("compute", lambda a, b: a * b)
-        await self.page.goto(self.url + "nested-frames.html")
-        frame = self.page.frames[1]
-        result = await frame.evaluate("() => compute(3, 5)")
-        result | should.be.equal.to(15)
-        await self.page.removeScriptToEvaluateOnNewDocument(scriptid)
-        self.page._pageBindings.pop("compute")
-
-    @pytest.mark.asyncio
-    async def test_expose_function_frames_before_navigation(self):
-        await self.page.goto(self.url + "nested-frames.html")
-        scriptid = await self.page.exposeFunction("compute", lambda a, b: a * b)
-        frame = self.page.frames[1]
-        result = await frame.evaluate("() => compute(3, 5)")
-        result | should.be.equal.to(15)
-        await self.page.removeScriptToEvaluateOnNewDocument(scriptid)
-        self.page._pageBindings.pop("compute")
 
 
 @pytest.mark.usefixtures("test_server", "chrome_page")
