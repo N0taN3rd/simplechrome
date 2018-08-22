@@ -21,6 +21,7 @@ from .chrome import Chrome
 from .connection import Connection
 from .errors import LauncherError
 from .util import merge_dict
+from .helper import Helper
 
 __all__ = ["Launcher", "launch", "connect", "DEFAULT_ARGS"]
 
@@ -57,6 +58,21 @@ DOT_DIR = Path.home() / ".simplechrome"
 TEMP_PROFILE = DOT_DIR / "simplechrome_temp_profile"
 
 Options = Dict[str, Union[int, str, bool, List[str]]]
+
+
+async def ensureInitialPage(browser: Chrome) -> None:
+    for target in browser.targets():
+        if target.type == "page":
+            return
+    initialPagePromise = asyncio.get_event_loop().create_future()
+
+    def onTargetCreated(newTarget):
+        if newTarget.type == "page":
+            initialPagePromise.set_result(True)
+
+    listeners = [Helper.addEventListener(browser, "targetcreated", onTargetCreated)]
+    await initialPagePromise
+    Helper.removeEventListeners(listeners)
 
 
 class Launcher(object):
@@ -188,6 +204,7 @@ class Launcher(object):
             self.proc,
             self.kill_chrome,
         )
+        await ensureInitialPage(self.chrome)
         return self.chrome
 
     async def kill_chrome(self) -> None:

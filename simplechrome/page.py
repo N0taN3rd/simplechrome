@@ -9,9 +9,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, TYPE_C
 import attr
 import math
 from pyee import EventEmitter
-from ujson import loads
 
-from . import helper
+from .helper import Helper
 from .connection import CDPSession
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
@@ -88,22 +87,17 @@ class Page(EventEmitter):
         page = Page(client, target, frameTree, ignoreHTTPSErrors, screenshotTaskQueue)
 
         await asyncio.gather(
-            # client.send(
-            #     "Target.setAutoAttach",
-            #     {"autoAttach": True, "waitForDebuggerOnStart": False},
-            # ),
             client.send("Page.setLifecycleEventsEnabled", {"enabled": True}),
             client.send("Network.enable", {}),
             client.send("Runtime.enable", {}),
-            # client.send("Security.enable", {}),
             client.send("Log.enable", {}),
         )
         await client.send(
             "Log.startViolationsReport",
             dict(
                 config=[
-                    dict(name="blockedEvent", threshold=0),
-                    dict(name="blockedParser", threshold=0),
+                    dict(name="blockedEvent", threshold=1),
+                    dict(name="blockedParser", threshold=1),
                 ]
             ),
         )
@@ -137,6 +131,7 @@ class Page(EventEmitter):
         self._defaultNavigationTimeout = 30000  # milliseconds
         self._javascriptEnabled = True
         self._lifecycle_emitting = False
+        self._viewport = None
 
         if screenshotTaskQueue is None:
             screenshotTaskQueue = list()
@@ -216,7 +211,7 @@ class Page(EventEmitter):
 
             async def release() -> None:
                 for arg in args:
-                    await helper.releaseObject(self._client, arg)
+                    await Helper.releaseObject(self._client, arg)
 
             asyncio.ensure_future(release())
         if entry.get("source", "") != "worker":
@@ -249,17 +244,17 @@ class Page(EventEmitter):
 
     @property
     def mainFrame(self) -> Optional["Frame"]:
-        """Get main :class:`~pyppeteer.frame_manager.Frame` of this page."""
+        """Get main :class:`~simplechrome.frame_manager.Frame` of this page."""
         return self._frameManager.mainFrame
 
     @property
     def keyboard(self) -> Keyboard:
-        """Get :class:`~pyppeteer.input.Keyboard` object."""
+        """Get :class:`~simplechrome.input.Keyboard` object."""
         return self._keyboard
 
     @property
     def touchscreen(self) -> Touchscreen:
-        """Get :class:`~pyppeteer.input.Touchscreen` object."""
+        """Get :class:`~simplechrome.input.Touchscreen` object."""
         return self._touchscreen
 
     async def tap(self, selector: str) -> None:
@@ -311,13 +306,16 @@ class Page(EventEmitter):
             )
         )
 
+    async def stopLoading(self) -> None:
+        await self._client.send("Page.stopLoading")
+
     async def querySelector(self, selector: str) -> Optional["ElementHandle"]:
         """Get an Element which matches ``selector``.
 
         :arg str selector: A selector to search element.
         :return Optional[ElementHandle]: If element which matches the
             ``selector`` is found, return its
-            :class:`~pyppeteer.element_handle.ElementHandle`. If not found,
+            :class:`~simplechrome.element_handle.ElementHandle`. If not found,
             returns ``None``.
         """
         frame = self.mainFrame
@@ -328,8 +326,8 @@ class Page(EventEmitter):
     async def evaluateHandle(self, pageFunction: str, *args: Any) -> JSHandle:
         """Execute function on this page.
 
-        Difference between :meth:`~pyppeteer.page.Page.evaluate` and
-        :meth:`~pyppeteer.page.Page.evaluateHandle` is that
+        Difference between :meth:`~simplechrome.page.Page.evaluate` and
+        :meth:`~simplechrome.page.Page.evaluateHandle` is that
         ``evaluateHandle`` returns JSHandle object (not value).
 
         :arg str pageFunction: JavaScript function to be executed.
@@ -392,7 +390,7 @@ class Page(EventEmitter):
 
         :arg str selector: A selector to search element.
         :return List[ElementHandle]: List of
-            :class:`~pyppeteer.element_handle.ElementHandle` which matches the
+            :class:`~simplechrome.element_handle.ElementHandle` which matches the
             ``selector``. If no element is matched to the ``selector``, return
             empty list.
         """
@@ -468,7 +466,7 @@ class Page(EventEmitter):
             * ``path`` (string): Path to the local JavaScript file to add.
             * ``content`` (string): JavaScript string to add.
 
-        :return ElementHandle: :class:`~pyppeteer.element_handle.ElementHandle`
+        :return ElementHandle: :class:`~simplechrome.element_handle.ElementHandle`
                                of added tag.
         """
         frame = self.mainFrame
@@ -485,7 +483,7 @@ class Page(EventEmitter):
             * ``path`` (string): Path to the local CSS file to add.
             * ``content`` (string): CSS string to add.
 
-        :return ElementHandle: :class:`~pyppeteer.element_handle.ElementHandle`
+        :return ElementHandle: :class:`~simplechrome.element_handle.ElementHandle`
                                of added tag.
         """
         frame = self.mainFrame
@@ -542,7 +540,7 @@ class Page(EventEmitter):
         return result
 
     def _handleException(self, exceptionDetails: Dict) -> None:
-        message = helper.getExceptionMessage(exceptionDetails)
+        message = Helper.getExceptionMessage(exceptionDetails)
         self.emit(Page.Events.PageError, PageError(message))
 
     def _onConsoleAPI(self, event: dict) -> None:
@@ -562,7 +560,7 @@ class Page(EventEmitter):
             if remoteObject.get("objectId"):
                 textTokens.append(arg.toString())
             else:
-                textTokens.append(str(helper.valueFromRemoteObject(remoteObject)))
+                textTokens.append(str(Helper.valueFromRemoteObject(remoteObject)))
 
         message = ConsoleMessage(event["type"], " ".join(textTokens), values)
         self.emit(Page.Events.Console, message)
@@ -640,7 +638,7 @@ class Page(EventEmitter):
                 requests[request.url] = request
 
         eventListeners = [
-            helper.addEventListener(
+            Helper.addEventListener(
                 self._networkManager, NetworkManager.Events.Request, set_request
             )
         ]
@@ -656,7 +654,7 @@ class Page(EventEmitter):
             raise PageError(result)
         result = await watcher.navigationPromise()
         watcher.cancel()
-        helper.removeEventListeners(eventListeners)
+        Helper.removeEventListeners(eventListeners)
         error = result[0].pop().exception()  # type: ignore
         if error:
             raise error
@@ -699,13 +697,13 @@ class Page(EventEmitter):
         timeout = options.get("timeout", self._defaultNavigationTimeout)
         watcher = NavigatorWatcher(self._frameManager, mainFrame, timeout, options)
         responses: Dict[str, Response] = dict()
-        listener = helper.addEventListener(
+        listener = Helper.addEventListener(
             self._networkManager,
             NetworkManager.Events.Response,
             lambda response: responses.__setitem__(response.url, response),
         )
         result = await watcher.navigationPromise()
-        helper.removeEventListeners([listener])
+        Helper.removeEventListeners([listener])
         error = result[0].pop().exception()
         if error:
             raise error
@@ -766,7 +764,7 @@ class Page(EventEmitter):
             "Emulation.setScriptExecutionDisabled", {"value": not enabled}
         )
 
-    async def emulateMedia(self, mediaType: str = None) -> None:
+    async def emulateMedia(self, mediaType: Optional[str] = None) -> None:
         """Emulate css media type of the page."""
         if mediaType not in ["screen", "print", None, ""]:
             raise ValueError(f"Unsupported media type: {mediaType}")
@@ -798,9 +796,7 @@ class Page(EventEmitter):
         """
         return self._viewport
 
-    async def evaluate(
-        self, pageFunction: str, *args: Any, force_expr: bool = False
-    ) -> Any:
+    async def evaluate(self, pageFunction: str, *args: Any) -> Any:
         """Execute js-function or js-expression on browser and get result.
 
         :arg str pageFunction: String of js-function/expression to be executed
@@ -830,7 +826,7 @@ class Page(EventEmitter):
         if raw:
             source = pageFunction
         else:
-            source = helper.evaluationString(pageFunction, *args)
+            source = Helper.evaluationString(pageFunction, *args)
         return await self._client.send(
             "Page.addScriptToEvaluateOnNewDocument", {"source": source}
         )
@@ -1148,7 +1144,7 @@ class Page(EventEmitter):
 
     @property
     def mouse(self) -> Mouse:
-        """Get :class:`~pyppeteer.input.Mouse` object."""
+        """Get :class:`~simplechrome.input.Mouse` object."""
         return self._mouse
 
     async def click(self, selector: str, options: dict = None, **kwargs: Any) -> None:
@@ -1219,7 +1215,7 @@ class Page(EventEmitter):
 
         If no element matched the ``selector``, raise ``PageError``.
 
-        Details see :meth:`pyppeteer.input.Keyboard.type`.
+        Details see :meth:`simplechrome.input.Keyboard.type`.
         """
         frame = self.mainFrame
         if not frame:
@@ -1247,7 +1243,7 @@ class Page(EventEmitter):
           :meth:`waitForXPath`. If the string starts with ``//``, the string is
           treated as xpath.
 
-        Pyppeteer tries to automatically detect function or selector, but
+        simplechrome tries to automatically detect function or selector, but
         sometimes miss-detects. If not work as you expected, use
         :meth:`waitForFunction` or :meth:`waitForSelector` dilectly.
 
@@ -1334,7 +1330,7 @@ class Page(EventEmitter):
         :arg Any args: Arguments to pass to ``pageFunction``.
         :return: Return awaitable object which resolves when the
                  ``pageFunction`` returns a truethy value. It resolves to a
-                 :class:`~pyppeteer.execution_context.JSHandle` of the truethy
+                 :class:`~simplechrome.execution_context.JSHandle` of the truethy
                  value.
 
         This method accepts the following options:

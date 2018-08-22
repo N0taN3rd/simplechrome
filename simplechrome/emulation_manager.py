@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Emulation Managet module."""
 
-from . import helper
+from .helper import Helper
 from .connection import CDPSession
 
 __all__ = ["EmulationManager"]
@@ -22,9 +22,9 @@ class EmulationManager(object):
         mobile = viewport.get("isMobile", False)
         options["mobile"] = mobile
         if "width" in viewport:
-            options["width"] = helper.get_positive_int(viewport, "width")
+            options["width"] = Helper.get_positive_int(viewport, "width")
         if "height" in viewport:
-            options["height"] = helper.get_positive_int(viewport, "height")
+            options["height"] = Helper.get_positive_int(viewport, "height")
 
         options["deviceScaleFactor"] = viewport.get("deviceScaleFactor", 1)
         if viewport.get("isLandscape"):

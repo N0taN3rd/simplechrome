@@ -10,7 +10,7 @@ from typing import Any, Dict, Generator, List, Optional, Union, Set, TYPE_CHECKI
 import attr
 from pyee import EventEmitter
 
-from . import helper
+from .helper import Helper
 from .connection import CDPSession
 from .execution_context import ElementHandle
 from .errors import ElementHandleError, PageError, WaitTimeoutError
@@ -75,19 +75,22 @@ class FrameManager(EventEmitter):
             "Page.frameStoppedLoading",
             lambda event: self._onFrameStoppedLoading(event.get("frameId")),
         )
+
         self._client.on(
             "Runtime.executionContextCreated",
-            lambda event: self._onExecutionContextCreated(event.get("context")),
+            lambda event: self._onExecutionContextCreated(event),
         )
+
         self._client.on(
             "Runtime.executionContextDestroyed",
-            lambda event: self._onExecutionContextDestroyed(
-                event.get("executionContextId")
-            ),
+            lambda event: self._onExecutionContextDestroyed(event),
         )
+
         self._client.on(
-            "Runtime.executionContextsCleared", self._onExecutionContextsCleared
+            "Runtime.executionContextsCleared",
+            lambda event: self._onExecutionContextsCleared(event),
         )
+
         self._client.on("Page.lifecycleEvent", self._onLifecycleEvent)
 
         self._handleFrameTree(frameTree)
@@ -141,7 +144,7 @@ class FrameManager(EventEmitter):
         self.emit(self.Events.FrameAttached, frame)
 
     def _onFrameNavigated(self, framePayload: dict) -> None:
-        isMainFrame = not framePayload.get("parentId")
+        isMainFrame = framePayload.get("parentId") is None
         if isMainFrame:
             frame = self.mainFrame
         else:
@@ -194,8 +197,9 @@ class FrameManager(EventEmitter):
         self.emit(FrameManager.Events.FrameNavigatedWithinDocument, frame)
         self.emit(FrameManager.Events.FrameNavigated, frame)
 
-    def _onExecutionContextCreated(self, contextPayload: Dict) -> None:
-        if contextPayload.get("auxData") and contextPayload["auxData"]["isDefault"]:
+    def _onExecutionContextCreated(self, event: dict) -> None:
+        contextPayload = event.get("context")
+        if contextPayload.get("auxData"):
             frameId = contextPayload["auxData"]["frameId"]
         else:
             frameId = None
@@ -204,33 +208,33 @@ class FrameManager(EventEmitter):
         contextID = contextPayload["id"]
         context = ExecutionContext(self._client, contextPayload, frame)
         self._contextIdToContext[contextID] = context
-
         if frame:
-            frame._setDefaultContext(context)
+            frame._addExecutionContext(context)
 
-    def _removeContext(self, context: ExecutionContext) -> None:
-        frame = self._frames[context._frameId] if context._frameId else None
-        if frame and context._isDefault:
-            frame._setDefaultContext(None)
-
-    def _onExecutionContextDestroyed(self, executionContextId: str) -> None:
+    def _onExecutionContextDestroyed(self, event: dict) -> None:
+        # print("Runtime.executionContextDestroyed")
+        # print(event)
+        executionContextId = event.get("executionContextId")
         context = self._contextIdToContext.get(executionContextId)
         if not context:
             return
         del self._contextIdToContext[executionContextId]
-        self._removeContext(context)
+        frame = context.frame
+        if frame:
+            frame._removeExecutionContext(context)
 
     def _onExecutionContextsCleared(self, *args) -> None:
         for context in self._contextIdToContext.values():
-            self._removeContext(context)
+            frame = context.frame
+            if frame:
+                frame._removeExecutionContext(context)
         self._contextIdToContext.clear()
 
     def _removeFramesRecursively(self, frame: "Frame") -> None:
         for child in list(frame.childFrames):
             self._removeFramesRecursively(child)
         frame._detach()
-        if frame._id in self._frames:
-            self._frames.pop(frame._id, None)
+        self._frames.pop(frame._id)
         self.emit(FrameManager.Events.FrameDetached, frame)
 
 
@@ -244,7 +248,7 @@ class FrameEvents(object):
 class Frame(EventEmitter):
     """Frame class.
 
-    Frame objects can be obtained via :attr:`pyppeteer.page.Page.mainFrame`.
+    Frame objects can be obtained via :attr:`simplechrome.page.Page.mainFrame`.
     """
 
     Events: FrameEvents = FrameEvents()
@@ -267,7 +271,7 @@ class Frame(EventEmitter):
         self._emits_life: bool = False
 
         self._documentPromise: Optional[ElementHandle] = None
-        self._contextResolveCallback = lambda _: None
+        self._contextPromise: Optional[Future] = None
         self._setDefaultContext(None)
         self._at_lifecycle: Optional[str] = None
         self._waitTasks: Set[WaitTask] = set()  # maybe list
@@ -317,45 +321,6 @@ class Frame(EventEmitter):
         """Get child frames."""
         return list(self._childFrames)
 
-    def _onLoadingStopped(self):
-        self._lifecycleEvents.add("DOMContentLoaded")
-        self._lifecycleEvents.add("load")
-
-    def _onLifecycleEvent(self, loaderId: str, name: str) -> None:
-        if name == "init":
-            self._loaderId = loaderId
-            self._lifecycleEvents.clear()
-            self._at_lifecycle = "init"
-        else:
-            self._lifecycleEvents.add(name)
-            self._at_lifecycle = name
-        if self._emits_life:
-            self.emit(Frame.Events.LifeCycleEvent, name)
-
-    def _detach(self) -> None:
-        self.emit(Frame.Events.Detached)
-        self.remove_all_listeners(Frame.Events.Detached)
-        for waitTask in list(self._waitTasks):
-            waitTask.terminate(PageError("waitForFunction failed: frame got detached."))
-        self._detached = True
-        if self._parentFrame and self in self._parentFrame._childFrames:
-            self._parentFrame._childFrames.remove(self)
-        self._parentFrame = None
-        self.remove_all_listeners(Frame.Events.LifeCycleEvent)
-
-    def _setDefaultContext(self, context: Optional[ExecutionContext]) -> None:
-        if context is not None:
-            self._contextResolveCallback(context)  # type: ignore
-            self._contextResolveCallback = lambda _: None
-            for waitTask in self._waitTasks:
-                asyncio.ensure_future(waitTask.rerun())
-        else:
-            self._documentPromise = None
-            self._contextPromise = asyncio.get_event_loop().create_future()
-            self._contextResolveCallback = lambda _context: self._contextPromise.set_result(
-                _context
-            )
-
     def navigatedWithinDocument(self, url: str) -> None:
         self._url = url
         self.navigations.append(url)
@@ -376,7 +341,7 @@ class Frame(EventEmitter):
     async def executionContext(self) -> Optional[ExecutionContext]:
         """Return execution context of this frame.
 
-        Return :class:`~pyppeteer.execution_context.ExecutionContext`
+        Return :class:`~simplechrome.execution_context.ExecutionContext`
         associated to this frame.
         """
         return await self._contextPromise
@@ -384,7 +349,7 @@ class Frame(EventEmitter):
     async def evaluateHandle(self, pageFunction: str, *args: Any) -> JSHandle:
         """Execute fucntion on this frame.
 
-        Details see :meth:`pyppeteer.page.Page.evaluateHandle`.
+        Details see :meth:`simplechrome.page.Page.evaluateHandle`.
         """
         context = await self.executionContext()
         if context is None:
@@ -394,7 +359,7 @@ class Frame(EventEmitter):
     async def evaluate(self, pageFunction: str, *args: Any) -> Any:
         """Evaluate pageFunction on this frame.
 
-        Details see :meth:`pyppeteer.page.Page.evaluate`.
+        Details see :meth:`simplechrome.page.Page.evaluate`.
         """
         context = await self.executionContext()
         if context is None:
@@ -404,7 +369,7 @@ class Frame(EventEmitter):
     async def querySelector(self, selector: str) -> Optional[ElementHandle]:
         """Get element which matches `selector` string.
 
-        Details see :meth:`pyppeteer.page.Page.querySelector`.
+        Details see :meth:`simplechrome.page.Page.querySelector`.
         """
         document = await self._document()
         value = await document.querySelector(selector)
@@ -438,7 +403,7 @@ class Frame(EventEmitter):
     ) -> Optional[Any]:
         """Execute function on element which matches selector.
 
-        Details see :meth:`pyppeteer.page.Page.querySelectorEval`.
+        Details see :meth:`simplechrome.page.Page.querySelectorEval`.
         """
         elementHandle = await self.querySelector(selector)
         if elementHandle is None:
@@ -454,7 +419,7 @@ class Frame(EventEmitter):
     ) -> Optional[Dict]:
         """Execute function on all elements which matches selector.
 
-        Details see :meth:`pyppeteer.page.Page.querySelectorAllEval`.
+        Details see :meth:`simplechrome.page.Page.querySelectorAllEval`.
         """
         context = await self.executionContext()
         if context is None:
@@ -469,7 +434,7 @@ class Frame(EventEmitter):
     async def querySelectorAll(self, selector: str) -> List[ElementHandle]:
         """Get all elelments which matches `selector`.
 
-        Details see :meth:`pyppeteer.page.Page.querySelectorAll`.
+        Details see :meth:`simplechrome.page.Page.querySelectorAll`.
         """
         document = await self._document()
         value = await document.querySelectorAll(selector)
@@ -519,7 +484,7 @@ class Frame(EventEmitter):
     async def addScriptTag(self, options: Dict) -> ElementHandle:
         """Add script tag to this frame.
 
-        Details see :meth:`pyppeteer.page.Page.addScriptTag`.
+        Details see :meth:`simplechrome.page.Page.addScriptTag`.
         """
         context = await self.executionContext()
         if context is None:
@@ -571,7 +536,7 @@ class Frame(EventEmitter):
     async def addStyleTag(self, options: Dict) -> ElementHandle:
         """Add style tag to this frame.
 
-        Details see :meth:`pyppeteer.page.Page.addStyleTag`.
+        Details see :meth:`simplechrome.page.Page.addStyleTag`.
         """
         context = await self.executionContext()
         if context is None:
@@ -624,7 +589,7 @@ class Frame(EventEmitter):
     async def click(self, selector: str, options: dict = None, **kwargs: Any) -> None:
         """Click element which matches ``selector``.
 
-        Details see :meth:`pyppeteer.page.Page.click`.
+        Details see :meth:`simplechrome.page.Page.click`.
         """
         options = merge_dict(options, kwargs)
         handle = await self.J(selector)
@@ -636,7 +601,7 @@ class Frame(EventEmitter):
     async def focus(self, selector: str) -> None:
         """Fucus element which matches ``selector``.
 
-        Details see :meth:`pyppeteer.page.Page.focus`.
+        Details see :meth:`simplechrome.page.Page.focus`.
         """
         handle = await self.J(selector)
         if not handle:
@@ -647,7 +612,7 @@ class Frame(EventEmitter):
     async def hover(self, selector: str) -> None:
         """Mouse hover the element which matches ``selector``.
 
-        Details see :meth:`pyppeteer.page.Page.hover`.
+        Details see :meth:`simplechrome.page.Page.hover`.
         """
         handle = await self.J(selector)
         if not handle:
@@ -658,7 +623,7 @@ class Frame(EventEmitter):
     async def select(self, selector: str, *values: str) -> List[str]:
         """Select options and return selected values.
 
-        Details see :meth:`pyppeteer.page.Page.select`.
+        Details see :meth:`simplechrome.page.Page.select`.
         """
         for value in values:
             if not isinstance(value, str):
@@ -690,7 +655,7 @@ class Frame(EventEmitter):
     async def tap(self, selector: str) -> None:
         """Tap the element which matches the ``selector``.
 
-        Details see :meth:`pyppeteer.page.Page.tap`.
+        Details see :meth:`simplechrome.page.Page.tap`.
         """
         handle = await self.J(selector)
         if not handle:
@@ -703,7 +668,7 @@ class Frame(EventEmitter):
     ) -> None:
         """Type ``text`` on the element which matches ``selector``.
 
-        Details see :meth:`pyppeteer.page.Page.type`.
+        Details see :meth:`simplechrome.page.Page.type`.
         """
         options = merge_dict(options, kwargs)
         handle = await self.querySelector(selector)
@@ -721,7 +686,7 @@ class Frame(EventEmitter):
     ) -> Union[Future, "WaitTask"]:
         """Wait until `selectorOrFunctionOrTimeout`.
 
-        Details see :meth:`pyppeteer.page.Page.waitFor`.
+        Details see :meth:`simplechrome.page.Page.waitFor`.
         """
         options = merge_dict(options, kwargs)
         if isinstance(selectorOrFunctionOrTimeout, (int, float)):
@@ -738,7 +703,7 @@ class Frame(EventEmitter):
             )
             return fut
 
-        if args or helper.is_jsfunc(selectorOrFunctionOrTimeout):
+        if args or Helper.is_jsfunc(selectorOrFunctionOrTimeout):
             return self.waitForFunction(selectorOrFunctionOrTimeout, options, *args)
         if selectorOrFunctionOrTimeout.startswith("//"):
             return self.waitForXPath(selectorOrFunctionOrTimeout, options)
@@ -749,7 +714,7 @@ class Frame(EventEmitter):
     ) -> "WaitTask":
         """Wait until element which matches ``selector`` appears on page.
 
-        Details see :meth:`pyppeteer.page.Page.waitForSelector`.
+        Details see :meth:`simplechrome.page.Page.waitForSelector`.
         """
         options = merge_dict(options, kwargs)
         return self._waitForSelectorOrXPath(selector, False, options)
@@ -759,7 +724,7 @@ class Frame(EventEmitter):
     ) -> "WaitTask":
         """Wait until element which matches ``xpath`` appears on page.
 
-        Details see :meth:`pyppeteer.page.Page.waitForXPath`.
+        Details see :meth:`simplechrome.page.Page.waitForXPath`.
         """
         options = merge_dict(options, kwargs)
         return self._waitForSelectorOrXPath(xpath, True, options)
@@ -769,7 +734,7 @@ class Frame(EventEmitter):
     ) -> "WaitTask":
         """Wait until the function completes.
 
-        Details see :meth:`pyppeteer.page.Page.waitForFunction`.
+        Details see :meth:`simplechrome.page.Page.waitForFunction`.
         """
         options = merge_dict(options, kwargs)
         timeout = options.get("timeout", 30000)  # msec
@@ -909,6 +874,63 @@ class Frame(EventEmitter):
     #: Alias to :meth:`querySelectorAllEval`
     JJeval = querySelectorAllEval
 
+    def _onLoadingStopped(self):
+        self._lifecycleEvents.add("DOMContentLoaded")
+        self._lifecycleEvents.add("load")
+
+    def _onLifecycleEvent(self, loaderId: str, name: str) -> None:
+        if name == "init":
+            self._loaderId = loaderId
+            self._lifecycleEvents.clear()
+            self._at_lifecycle = "init"
+        else:
+            self._lifecycleEvents.add(name)
+            self._at_lifecycle = name
+        if self._emits_life:
+            self.emit(Frame.Events.LifeCycleEvent, name)
+
+    def _detach(self) -> None:
+        self.emit(Frame.Events.Detached)
+        self.remove_all_listeners(Frame.Events.Detached)
+        for waitTask in list(self._waitTasks):
+            waitTask.terminate(PageError("waitForFunction failed: frame got detached."))
+        self._detached = True
+        if self._parentFrame:
+            self._parentFrame._childFrames.remove(self)
+        self._parentFrame = None
+        self.remove_all_listeners(Frame.Events.LifeCycleEvent)
+
+    def _setDefaultContext(self, context: Optional[ExecutionContext]) -> None:
+        if context:
+            self._contextResolveCallback(context)  # type: ignore
+            for waitTask in self._waitTasks:
+                asyncio.ensure_future(waitTask.rerun())
+        else:
+            self._documentPromise = None
+            self._contextPromise = asyncio.get_event_loop().create_future()
+
+    def _contextResolveCallback(self, context: ExecutionContext) -> None:
+        # print(f"Adding context {context} to {self}")
+        if self._contextPromise.done():
+            # print(f"Frame {self._url} had context {self._contextPromise.result()}")
+            self._contextPromise = asyncio.get_event_loop().create_future()
+        self._contextPromise.set_result(context)
+        # print(f"Frame {self._url} now has context {self._contextPromise.result()}")
+        # print()
+
+    def _addExecutionContext(self, context: ExecutionContext) -> None:
+        if context._isDefault:
+            # print(f"Adding execution context. Frame={self} Context={context}")
+            self._setDefaultContext(context)
+
+    def _removeExecutionContext(self, context: ExecutionContext) -> None:
+        if context._isDefault:
+            # print(f"Removing execution context. Frame={self} Context={context}")
+            self._setDefaultContext(None)
+
+    def __repr__(self):
+        return f"Frame(url={self._url}, name={self._name}, detached={self._detached}, id={self._id})"
+
 
 class WaitSetupError(Exception):
     pass
@@ -940,7 +962,7 @@ class WaitTask(object):
         self._frame: Frame = frame
         self._polling: Union[str, int] = polling
         self._timeout: float = timeout
-        if args or helper.is_jsfunc(predicateBody):
+        if args or Helper.is_jsfunc(predicateBody):
             self._predicateBody = f"return ({predicateBody})(...args)"
         else:
             self._predicateBody = f"return {predicateBody}"
@@ -1004,7 +1026,11 @@ class WaitTask(object):
                 await success.dispose()
             return
 
-        if not error and success and (await self._frame.evaluate("s => !s", success)):
+        if (
+            error is None
+            and success
+            and (await self._frame.evaluate("s => !s", success))
+        ):
             await success.dispose()
             return
 
