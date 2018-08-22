@@ -208,6 +208,8 @@ class CDPSession(EventEmitter):
         :arg str method: Protocol method name.
         :arg dict params: Optional method parameters.
         """
+        if params is None:
+            params = dict()
         self._lastId += 1
         _id = self._lastId
         msg = json.dumps(dict(id=_id, method=method, params=params))

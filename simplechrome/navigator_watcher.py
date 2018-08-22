@@ -5,7 +5,7 @@ import asyncio
 import concurrent.futures
 from typing import Any, Awaitable, Dict, List
 
-from . import helper
+from .helper import Helper
 from .errors import WaitTimeoutError
 from .frame_manager import FrameManager, Frame
 from .util import merge_dict
@@ -34,17 +34,17 @@ class NavigatorWatcher:
         self._hasSameDocumentNavigation = False
         self.all_frames = options.get("all_frames", True)
         self._eventListeners = [
-            helper.addEventListener(
+            Helper.addEventListener(
                 self._frameManager,
                 FrameManager.Events.LifecycleEvent,
                 self._checkLifecycleComplete,
             ),
-            helper.addEventListener(
+            Helper.addEventListener(
                 self._frameManager,
                 FrameManager.Events.FrameDetached,
                 self._checkLifecycleComplete,
             ),
-            helper.addEventListener(
+            Helper.addEventListener(
                 self._frameManager,
                 FrameManager.Events.FrameNavigatedWithinDocument,
                 self._navigatedWithinDocument,
@@ -137,7 +137,7 @@ class NavigatorWatcher:
         self._cleanup()
 
     def _cleanup(self) -> None:
-        helper.removeEventListeners(self._eventListeners)
+        Helper.removeEventListeners(self._eventListeners)
         self._lifecycleCompletePromise.cancel()
         self._maximumTimer.cancel()
         self._timeout_timer.cancel()

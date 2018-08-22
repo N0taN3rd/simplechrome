@@ -403,7 +403,7 @@ class Request(object):
         """Continue request with optional request overrides.
 
         To use this method, request interception should be enabled by
-        :meth:`pyppeteer.page.Page.setRequestInterception`. If request
+        :meth:`simplechrome.page.Page.setRequestInterception`. If request
         interception is not enabled, raise ``NetworkError``.
 
         ``overrides`` can have the following fields:
@@ -430,7 +430,7 @@ class Request(object):
         """Fulfills request with given response.
 
         To use this, request interception shuold by enabled by
-        :meth:`pyppeteer.page.Page.setRequestInterception`. Requst interception
+        :meth:`simplechrome.page.Page.setRequestInterception`. Requst interception
         is not enabled, raise ``NetworkError``.
 
         ``response`` is a dictinary which can have the following fields:
@@ -486,7 +486,7 @@ class Request(object):
         """Abort request.
 
         To use this, request interception should be enabled by
-        :meth:`pyppeteer.page.Page.setRequestInterception`.
+        :meth:`simplechrome.page.Page.setRequestInterception`.
         If request interception is not enabled, raise ``NetworkError``.
 
         ``errorCode`` is an optional error code string. Defaults to ``failed``,

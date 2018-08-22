@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, TYPE_CHECKING, Union, List
 import math
 import os
 
-from . import helper
+from .helper import Helper
 from .connection import CDPSession
 from .errors import ElementHandleError, NetworkError
 from .util import merge_dict
@@ -22,7 +22,7 @@ def createJSHandle(
     context: "ExecutionContext", remoteObject: Dict
 ) -> Union["ElementHandle", "JSHandle"]:
     frame = context.frame
-    if remoteObject.get("subtype") == "node" and frame is not None:
+    if remoteObject.get("subtype") == "node" and frame:
         frameManager = frame._frameManager
         return ElementHandle(
             context, context._client, remoteObject, frameManager.page, frameManager
@@ -37,10 +37,8 @@ class ExecutionContext(object):
         self._client = client
         self._frame = frame
         self._contextId = contextPayload.get("id")
-
-        auxData = contextPayload.get("auxData", {"isDefault": True})
-        self._frameId = auxData.get("frameId", None)
-        self._isDefault = bool(auxData.get("isDefault"))
+        self._frameId = frame._id
+        self._isDefault = contextPayload.get("auxData", {}).get("isDefault", False)
 
     @property
     def frame(self):
@@ -49,7 +47,7 @@ class ExecutionContext(object):
     async def evaluate(self, pageFunction: str, *args: Any) -> Any:
         """Execute ``pageFunction`` on this context.
 
-        Details see :meth:`pyppeteer.page.Page.evaluate`.
+        Details see :meth:`simplechrome.page.Page.evaluate`.
         """
         handle = await self.evaluateHandle(pageFunction, *args)
         try:
@@ -66,9 +64,9 @@ class ExecutionContext(object):
     async def evaluateHandle(self, pageFunction: str, *args: Any) -> "JSHandle":
         """Execute ``pageFunction`` on this context.
 
-        Details see :meth:`pyppeteer.page.Page.evaluateHandle`.
+        Details see :meth:`simplechrome.page.Page.evaluateHandle`.
         """
-        if not helper.is_jsfunc(pageFunction):
+        if not Helper.is_jsfunc(pageFunction):
             _obj = await self._client.send(
                 "Runtime.evaluate",
                 {
@@ -83,12 +81,11 @@ class ExecutionContext(object):
             if exceptionDetails:
                 raise ElementHandleError(
                     "Evaluation failed: {}".format(
-                        helper.getExceptionMessage(exceptionDetails)
+                        Helper.getExceptionMessage(exceptionDetails)
                     )
                 )
             remoteObject = _obj.get("result")
             return createJSHandle(self, remoteObject)
-
         _obj = await self._client.send(
             "Runtime.callFunctionOn",
             {
@@ -104,7 +101,7 @@ class ExecutionContext(object):
         if exceptionDetails:
             raise ElementHandleError(
                 "Evaluation failed: {}".format(
-                    helper.getExceptionMessage(exceptionDetails)
+                    Helper.getExceptionMessage(exceptionDetails)
                 )
             )
         remoteObject = _obj.get("result")
@@ -137,7 +134,7 @@ class ExecutionContext(object):
     async def queryObjects(self, prototypeHandle: "JSHandle") -> "JSHandle":
         """Send query.
 
-        Details see :meth:`pyppeteer.page.Page.queryObjects`.
+        Details see :meth:`simplechrome.page.Page.queryObjects`.
         """
         if prototypeHandle._disposed:
             raise ElementHandleError("Prototype JSHandle is disposed!")
@@ -151,12 +148,15 @@ class ExecutionContext(object):
         )
         return createJSHandle(self, response.get("objects"))
 
+    def __repr__(self):
+        return f"ExecutionContext(contextId={self._contextId}, frameId={self._frameId}, isDefault={self._isDefault})"
+
 
 class JSHandle(object):
     """JSHandle class.
 
     JSHandle represents an in-page JavaScript object. JSHandle can be created
-    with the :meth:`~pyppeteer.page.Page.evaluateHandle` method.
+    with the :meth:`~simplechrome.page.Page.evaluateHandle` method.
     """
 
     def __init__(
@@ -214,8 +214,8 @@ class JSHandle(object):
                     "awaitPromise": True,
                 },
             )
-            return helper.valueFromRemoteObject(response["result"])
-        return helper.valueFromRemoteObject(self._remoteObject)
+            return Helper.valueFromRemoteObject(response["result"])
+        return Helper.valueFromRemoteObject(self._remoteObject)
 
     def asElement(self) -> Optional["ElementHandle"]:
         """Return either null or the object handle itself."""
@@ -226,14 +226,17 @@ class JSHandle(object):
         if self._disposed:
             return
         self._disposed = True
-        await helper.releaseObject(self._client, self._remoteObject)
+        await Helper.releaseObject(self._client, self._remoteObject)
 
     def toString(self) -> str:
         """Get string representation."""
         if self._remoteObject.get("objectId"):
             _type = self._remoteObject.get("subtype") or self._remoteObject.get("type")
             return f"JSHandle@{_type}"
-        return "JSHandle:{}".format(helper.valueFromRemoteObject(self._remoteObject))
+        return "JSHandle:{}".format(Helper.valueFromRemoteObject(self._remoteObject))
+
+    def __repr__(self):
+        return self.toString()
 
 
 def computeQuadArea(quad: List[Dict[str, float]]) -> float:
@@ -417,7 +420,7 @@ class ElementHandle(JSHandle):
     async def type(self, text: str, options: Dict = None, **kwargs: Any) -> None:
         """Focus the element and then type text.
 
-        Details see :meth:`pyppeteer.input.Keyboard.type` method.
+        Details see :meth:`simplechrome.input.Keyboard.type` method.
         """
         options = merge_dict(options, kwargs)
         await self.focus()
@@ -427,8 +430,8 @@ class ElementHandle(JSHandle):
         """Press ``key`` onto the element.
 
         This method focuses the element, and then uses
-        :meth:`pyppeteer.input.keyboard.down` and
-        :meth:`pyppeteer.input.keyboard.up`.
+        :meth:`simplechrome.input.keyboard.down` and
+        :meth:`simplechrome.input.keyboard.up`.
 
         :arg str key: Name of key to press, such as ``ArrowLeft``.
 
@@ -500,7 +503,7 @@ class ElementHandle(JSHandle):
         If the element is detached from DOM, this method raises an
         ``ElementHandleError``.
 
-        Available options are same as :meth:`pyppeteer.page.Page.screenshot`.
+        Available options are same as :meth:`simplechrome.page.Page.screenshot`.
         """
         options = merge_dict(options, kwargs)
 
@@ -615,3 +618,6 @@ class ElementHandle(JSHandle):
 
     #: alias to :meth:`xpath`
     Jx = xpath
+
+    def __repr__(self):
+        return f"ElementHandle({self.toString()})"
