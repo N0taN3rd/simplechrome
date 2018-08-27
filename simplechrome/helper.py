@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Union
 
 import math
 
-from .connection import CDPSession
+from .connection import Client, TargetSession
 from .errors import ElementHandleError
 from pyee import EventEmitter
 
@@ -97,7 +97,9 @@ class Helper(object):
         return remoteObject.get("value")
 
     @staticmethod
-    async def releaseObject(client: CDPSession, remoteObject: dict) -> None:
+    async def releaseObject(
+        client: Union[Client, TargetSession], remoteObject: dict
+    ) -> None:
         """Release remote object."""
         objectId = remoteObject.get("objectId")
         if not objectId:

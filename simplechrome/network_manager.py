@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import attr
 from pyee import EventEmitter
 
-from .connection import CDPSession
+from .connection import Client, TargetSession
 from .errors import NetworkError
 from .frame_manager import FrameManager, Frame
 from .multimap import Multimap
@@ -41,9 +41,11 @@ class NetworkManager(EventEmitter):
 
     Events: NetworkEvents = NetworkEvents()
 
-    def __init__(self, client: CDPSession, frameManager: FrameManager) -> None:
+    def __init__(
+        self, client: Union[Client, TargetSession], frameManager: FrameManager
+    ) -> None:
         """Make new NetworkManager."""
-        super().__init__()
+        super().__init__(loop=asyncio.get_event_loop())
         self._client = client
         self._frameManager = frameManager
         self._requestIdToRequest: Dict[str, Request] = dict()

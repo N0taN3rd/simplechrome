@@ -11,7 +11,7 @@ import attr
 from pyee import EventEmitter
 
 from .helper import Helper
-from .connection import CDPSession
+from .connection import Client, TargetSession
 from .execution_context import ElementHandle
 from .errors import ElementHandleError, PageError, WaitTimeoutError
 from .errors import NetworkError
@@ -42,7 +42,12 @@ class FrameManager(EventEmitter):
 
     Events: FrameManagerEvents = FrameManagerEvents()
 
-    def __init__(self, client: CDPSession, frameTree: Dict, page: "Page") -> None:
+    def __init__(
+        self,
+        client: Union[Client, TargetSession],
+        frameTree: Dict,
+        page: Optional["Page"],
+    ) -> None:
         """Make new frame manager."""
         super().__init__(loop=asyncio.get_event_loop())
         self._client = client
@@ -241,12 +246,12 @@ class Frame(EventEmitter):
     def __init__(
         self,
         frameManager: "FrameManager",
-        client: CDPSession,
+        client: Union[Client, TargetSession],
         parentFrame: Optional["Frame"],
         frameId: str,
     ) -> None:
-        super().__init__()
-        self._client: CDPSession = client
+        super().__init__(loop=asyncio.get_event_loop())
+        self._client: Union[Client, TargetSession] = client
         self._frameManager = frameManager
         self._parentFrame = parentFrame
         self._url: str = ""
@@ -306,6 +311,13 @@ class Frame(EventEmitter):
         """Get child frames."""
         return list(self._childFrames)
 
+    def isDetached(self) -> bool:
+        """Return ``True`` if this frame is detached.
+
+        Otherwise return ``False``.
+        """
+        return self._detached
+
     def navigatedWithinDocument(self, url: str) -> None:
         self._url = url
         self.navigations.append(url)
@@ -313,7 +325,7 @@ class Frame(EventEmitter):
     def navigated(self, framePayload: dict) -> None:
         self._name = framePayload.get("name", "")
         self._url = framePayload.get("url", "")
-        self.navigations.append(self.url)
+        self.navigations.append(self._url)
         if self._emits_life:
             self.emit(Frame.Events.Navigated)
 
@@ -867,6 +879,7 @@ class Frame(EventEmitter):
         if name == "init":
             self._loaderId = loaderId
             self._lifecycleEvents.clear()
+            self.navigations.clear()
             self._at_lifecycle = "init"
         else:
             self._lifecycleEvents.add(name)

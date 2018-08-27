@@ -4,7 +4,7 @@
 import asyncio
 from typing import Any, Dict, Set, Union
 
-from .connection import CDPSession
+from .connection import Client, TargetSession
 from .errors import InputError
 from .us_keyboard_layout import keyDefinitions
 from .util import merge_dict
@@ -15,7 +15,7 @@ __all__ = ["Keyboard", "Mouse", "Touchscreen"]
 class Keyboard(object):
     """Keyboard class."""
 
-    def __init__(self, client: CDPSession) -> None:
+    def __init__(self, client: Union[Client, TargetSession]) -> None:
         self._client = client
         self._modifiers = 0
         self._pressedKeys: Set[str] = set()
@@ -203,7 +203,9 @@ class Keyboard(object):
 class Mouse(object):
     """Mouse class."""
 
-    def __init__(self, client: CDPSession, keyboard: Keyboard) -> None:
+    def __init__(
+        self, client: Union[Client, TargetSession], keyboard: Keyboard
+    ) -> None:
         self._client = client
         self._keyboard = keyboard
         self._x = 0.0
@@ -310,7 +312,9 @@ class Mouse(object):
 class Touchscreen(object):
     """Touchscreen class."""
 
-    def __init__(self, client: CDPSession, keyboard: Keyboard) -> None:
+    def __init__(
+        self, client: Union[Client, TargetSession], keyboard: Keyboard
+    ) -> None:
         """Make new touchscreen object."""
         self._client = client
         self._keyboard = keyboard

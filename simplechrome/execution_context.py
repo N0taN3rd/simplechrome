@@ -6,7 +6,7 @@ import math
 import os
 
 from .helper import Helper
-from .connection import CDPSession
+from .connection import Client, TargetSession
 from .errors import ElementHandleError, NetworkError
 from .util import merge_dict
 
@@ -32,7 +32,10 @@ def createJSHandle(
 
 class ExecutionContext(object):
     def __init__(
-        self, client: CDPSession, contextPayload: Dict, frame: Optional["Frame"]
+        self,
+        client: Union[Client, TargetSession],
+        contextPayload: Dict,
+        frame: Optional["Frame"],
     ) -> None:
         self._client = client
         self._frame = frame
@@ -162,7 +165,10 @@ class JSHandle(object):
     """
 
     def __init__(
-        self, context: ExecutionContext, client: CDPSession, remoteObject: Dict
+        self,
+        context: ExecutionContext,
+        client: Union[Client, TargetSession],
+        remoteObject: Dict,
     ) -> None:
         self._context = context
         self._client = client
@@ -255,7 +261,7 @@ class ElementHandle(JSHandle):
     def __init__(
         self,
         context: ExecutionContext,
-        client: CDPSession,
+        client: Union[Client, TargetSession],
         remoteObject: dict,
         page: "Page",
         frameManager: "FrameManager",

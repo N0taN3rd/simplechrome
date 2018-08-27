@@ -12,7 +12,7 @@ import math
 from pyee import EventEmitter
 
 from .helper import Helper
-from .connection import CDPSession
+from .connection import Client, TargetSession
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import PageError
@@ -76,7 +76,7 @@ class Page(EventEmitter):
 
     @staticmethod
     async def create(
-        client: CDPSession,
+        client: Union[Client, TargetSession],
         target: "Target",
         defaultViewport: Optional[Dict[str, int]] = None,
         ignoreHTTPSErrors: bool = False,
@@ -112,13 +112,13 @@ class Page(EventEmitter):
 
     def __init__(
         self,
-        client: CDPSession,
+        client: Union[Client, TargetSession],
         target: "Target",
         frameTree: Dict,
         ignoreHTTPSErrors: bool = False,
         screenshotTaskQueue: list = None,
     ) -> None:
-        super().__init__()
+        super().__init__(loop=asyncio.get_event_loop())
         self._closed = False
         self._client = client
         self._target = target
@@ -228,8 +228,24 @@ class Page(EventEmitter):
 
     def disable_lifecyle_emitting(self) -> None:
         _fm = self._frameManager
-        _fm.disable_lifecyle_emitting()
+        _fm.disable_lifecycle_emitting()
         _fm.remove_listener(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
+
+    async def getWindowDescriptor(self):
+        return await self._client.send(
+            "Browser.getWindowForTarget", dict(targetId=self._target._targetId)
+        )
+
+    async def getWindowBounds(self):
+        windowDescriptor = await self.getWindowDescriptor()
+        return windowDescriptor.get("bounds")
+
+    async def setWindowBounds(self, bounds: dict):
+        windowDescriptor = await self.getWindowDescriptor()
+        await self._client.send(
+            "Browser.setWindowBounds",
+            dict(windowId=windowDescriptor["windowId"], bounds=bounds),
+        )
 
     @property
     def frame_manager(self) -> FrameManager:

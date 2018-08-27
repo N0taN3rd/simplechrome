@@ -18,7 +18,7 @@ from aiohttp import ClientSession, ClientConnectorError
 
 from .browser_fetcher import BF
 from .chrome import Chrome
-from .connection import Connection
+from .connection import Client, createForWebSocket
 from .errors import LauncherError
 from .util import merge_dict
 from .helper import Helper
@@ -86,7 +86,7 @@ class Launcher(object):
         self.exec: str = ""
         self._args_setup()
         self.chrome: Optional[Chrome] = None
-        self._connection: Optional[Connection] = None
+        self._connection: Optional[Client] = None
         self.proc: Optional[subprocess.Popen] = None
         self.cmd: List[str] = [self.exec] + self.args
 
@@ -167,6 +167,24 @@ class Launcher(object):
                 return d["webSocketDebuggerUrl"]
         raise LauncherError("Could not find a page to connect to")
 
+    async def _find_target(self) -> Dict:
+        async with ClientSession() as session:
+            for i in range(100):
+                await asyncio.sleep(0.1)
+                try:
+                    res = await session.get(urljoin(self.url, "json"))
+                    data = await res.json()
+                    break
+                except ClientConnectorError as e:
+                    continue
+            else:
+                # cannot connet to browser for 10 seconds
+                raise LauncherError(f"Failed to connect to browser port: {self.url}")
+        for d in data:
+            if d["type"] == "page":
+                return d
+        raise LauncherError("Could not find a page to connect to")
+
     async def launch(self) -> Chrome:
         self.chrome_dead = False
         self.proc = subprocess.Popen(
@@ -192,9 +210,10 @@ class Launcher(object):
             if self.options.get("handleSIGHUP", True):
                 signal.signal(signal.SIGHUP, _close_process)
 
-        wsurl = await self._get_ws_endpoint()
-        logger.info(f"Browser listening on: {wsurl}")
-        con = await Connection.createForWebSocket(wsurl)
+        target = await self._find_target()
+        logger.info(f"Browser listening on: {target['webSocketDebuggerUrl']}")
+        con = await createForWebSocket(target["webSocketDebuggerUrl"])
+        targetInfo = await con.send("Target.getTargetInfo", dict(targetId=target["id"]))
         self._connection = con
         self.chrome = await Chrome.create(
             con,
@@ -203,6 +222,7 @@ class Launcher(object):
             self.options.get("defaultViewPort"),
             self.proc,
             self.kill_chrome,
+            targetInfo=targetInfo["targetInfo"],
         )
         await ensureInitialPage(self.chrome)
         return self.chrome
@@ -242,22 +262,22 @@ class Launcher(object):
             raise IOError("Unable to remove Temporary User Data")
 
 
-async def launch(options: dict = None, **kwargs: Any) -> Chrome:
+async def launch(options: Optional[dict] = None, **kwargs: Any) -> Chrome:
     return await Launcher(options, **kwargs).launch()
 
 
-async def connect(options: dict = None, **kwargs: Any) -> Chrome:
+async def connect(options: Optional[dict] = None, **kwargs: Any) -> Chrome:
     options = merge_dict(options, kwargs)
     browserWSEndpoint = options.get("browserWSEndpoint")
     if not browserWSEndpoint:
         raise LauncherError("Need `browserWSEndpoint` option.")
-    connectionDelay = options.get("slowMo", 0)
-    connection = await Connection.createForWebSocket(browserWSEndpoint, connectionDelay)
+    con = await createForWebSocket(browserWSEndpoint)
+    targetInfo = await con.send("Target.getTargetInfo")
     return await Chrome.create(
-        connection,
+        con,
         contextIds=[],
         ignoreHTTPSErrors=options.get("ignoreHTTPSErrors", False),
         defaultViewport=options.get("defaultViewPort"),
         process=None,
-        closeCallback=lambda: connection.send("Browser.close"),
+        targetInfo=targetInfo["targetInfo"],
     )

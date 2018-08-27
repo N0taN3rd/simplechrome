@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 import asyncio
 from subprocess import Popen
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional, Union
 
 import attr
 from pyee import EventEmitter
 
-from .connection import Connection, CDPSession
+from .connection import Client, TargetSession
 from .errors import BrowserError
 from .page import Page
 
@@ -26,23 +26,27 @@ class Chrome(EventEmitter):
 
     def __init__(
         self,
-        connection: Connection,
+        connection: Union[Client, TargetSession],
         contextIds: List[str],
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
         closeCallback: Callable[[], Awaitable[None]] = None,
+        targetInfo: Dict = None,
     ) -> None:
-        super().__init__()
+        super().__init__(loop=asyncio.get_event_loop())
         self.process: Optional[Popen] = process
         self.ignoreHTTPSErrors: bool = ignoreHTTPSErrors
         self._defaultViewport: Dict[str, int] = defaultViewport
         self._screenshotTaskQueue: List = []
-        self._connection: Connection = connection
-
-        self._defaultContext: BrowserContext = BrowserContext(self, None)
-
+        self._connection: Union[Client, TargetSession] = connection
+        self._targetInfo = targetInfo
+        if self._targetInfo is not None:
+            self._defaultContext: BrowserContext = BrowserContext(
+                self, targetInfo["browserContextId"] if targetInfo is not None else None
+            )
         self._contexts: Dict[str, BrowserContext] = dict()
+        self._page: Optional[Page] = None
         for contextId in contextIds:
             self._contexts[contextId] = BrowserContext(self, contextId)
 
@@ -65,12 +69,13 @@ class Chrome(EventEmitter):
 
     @staticmethod
     async def create(
-        connection: Connection,
+        connection: Client,
         contextIds: List[str],
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
         closeCallback: Callable[[], Awaitable[None]] = None,
+        targetInfo: Optional[Dict] = None,
     ) -> "Chrome":
         browser = Chrome(
             connection,
@@ -79,9 +84,31 @@ class Chrome(EventEmitter):
             defaultViewport,
             process,
             closeCallback,
+            targetInfo,
         )
         await connection.send("Target.setDiscoverTargets", {"discover": True})
         return browser
+
+    async def page(self) -> Page:
+        """The default page for the target connected to"""
+        if self._page is None:
+            targetId = self._targetInfo["targetId"]
+            if targetId in self._targets:
+                target = self._targets[targetId]
+            else:
+                target = Target(self._targetInfo, self._defaultContext, self)
+                self._targets[targetId] = target
+            await target._initializedPromise
+            page = await Page.create(
+                self._connection,
+                target,
+                self._defaultViewport,
+                self.ignoreHTTPSErrors,
+                self._screenshotTaskQueue,
+            )
+            target._page = page
+            self._page = page
+        return self._page
 
     def targets(self) -> List["Target"]:
         """Get all targets of this browser."""
@@ -206,7 +233,7 @@ class BrowserContext(EventEmitter):
     Events: BrowserContextEvents = BrowserContextEvents()
 
     def __init__(self, browser: Chrome, contextId) -> None:
-        super().__init__()
+        super().__init__(loop=asyncio.get_event_loop())
         self._browser = browser
         self._id = contextId
 
@@ -266,9 +293,9 @@ class Target(object):
     def _closedCallback(self) -> None:
         self._isClosedPromise.set_result(None)
 
-    async def createCDPSession(self) -> CDPSession:
+    async def createTargetSession(self) -> TargetSession:
         """Create a Chrome Devtools Protocol session attached to the target."""
-        return await self._browser._connection.createSession(self._targetId)
+        return await self._browser._connection.createTargetSession(self._targetId)
 
     async def page(self) -> Optional[Page]:
         """Get page of this target."""
@@ -277,7 +304,7 @@ class Target(object):
             or self._targetInfo["type"] == "background_page"
         )
         if is_page and self._page is None:
-            client = await self._browser._connection.createSession(self._targetId)
+            client = await self._browser._connection.createTargetSession(self._targetId)
             new_page = await Page.create(
                 client,
                 self,
