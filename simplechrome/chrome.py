@@ -58,7 +58,7 @@ class Chrome(EventEmitter):
             self._closeCallback = _dummy_callback
 
         self._targets: Dict[str, Target] = dict()
-        self._connection.set_close_callback(self._on_close)
+        self._connection.on(self._connection.Events.Disconnected, self._on_close)
         self._connection.on("Target.targetCreated", self._targetCreated)
         self._connection.on("Target.targetDestroyed", self._targetDestroyed)
         self._connection.on("Target.targetInfoChanged", self.targetInfoChanged)

@@ -1,15 +1,15 @@
-from pathlib import Path
 import asyncio
+from pathlib import Path
+
 import pytest
 from grappa import should
 
 from simplechrome.errors import PageError, InputError
-
+from .base_test import BaseChromeTest
 from .frame_utils import attachFrame
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestClick(object):
+class TestClick(BaseChromeTest):
     get_dimensions = """
         function () {
             const rect = document.querySelector('textarea').getBoundingClientRect();
@@ -23,13 +23,13 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_click(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         await self.page.click("button")
         await self.page.evaluate("result") | should.be.equal.to("Clicked")
 
     @pytest.mark.asyncio
     async def test_click_events(self):
-        await self.page.goto(f"{self.url}checkbox.html")
+        await self.goto_test(f"checkbox.html")
         await self.page.evaluate("result.check") | should.be.none
         await self.page.click("input#agree")
         await self.page.evaluate("result.check") | should.be.true
@@ -51,7 +51,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_click_label(self):
-        await self.page.goto(f"{self.url}checkbox.html")
+        await self.goto_test("checkbox.html")
         await self.page.evaluate("result.check") | should.be.none
         await self.page.click('label[for="agree"]')
         await self.page.evaluate("result.check") | should.be.true
@@ -62,7 +62,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_click_fail(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         with pytest.raises(PageError) as cm:
             await self.page.click("button.does-not-exist")
         str(cm.value) | should.be.equal.to(
@@ -87,15 +87,15 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_click_after_navigation(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         await self.page.click("button")
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         await self.page.click("button")
         await self.page.evaluate("result") | should.be.equal.to("Clicked")
 
     @pytest.mark.asyncio
     async def test_resize_textarea(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         dimensions = await self.page.evaluate(self.get_dimensions)
         x = dimensions["x"]
         y = dimensions["y"]
@@ -112,7 +112,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_scroll_and_click(self):
-        await self.page.goto(f"{self.url}scrollable.html")
+        await self.goto_test("scrollable.html")
         await self.page.click("#button-5")
         await self.page.evaluate(
             'document.querySelector("#button-5").textContent'
@@ -124,7 +124,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_double_click(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         await self.page.evaluate(
             """() => {
             window.double = false;
@@ -141,7 +141,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_click_partially_obscured_button(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         await self.page.evaluate(
             """() => {
             const button = document.querySelector('button');
@@ -155,7 +155,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_select_text_by_mouse(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         await self.page.focus("textarea")
         text = "This is the text that we are going to try to select. Let's see how it goes."  # noqa: E501
         await self.page.keyboard.type(text)
@@ -173,7 +173,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_select_text_by_triple_click(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         await self.page.focus("textarea")
         text = "This is the text that we are going to try to select. Let's see how it goes."  # noqa: E501
         await self.page.keyboard.type(text)
@@ -186,7 +186,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_trigger_hover(self):
-        await self.page.goto(f"{self.url}scrollable.html")
+        await self.goto_test("scrollable.html")
         await self.page.hover("#button-6")
         await self.page.evaluate(
             'document.querySelector("button:hover").id'
@@ -234,9 +234,11 @@ class TestClick(object):
             ) | should.be.false
 
     @pytest.mark.asyncio
-    async def test_click_link(self):
+    async def test_click_link(self, ee_helper):
         results = []
-        self.page.on(self.page.Events.FrameNavigated, lambda x: results.append(True))
+        ee_helper.addEventListener(
+            self.page, self.page.Events.FrameNavigated, lambda x: results.append(True)
+        )
         await self.page.setContent(
             '<a href="{}">empty.html</a>'.format("f{self.url}empty.html")
         )
@@ -306,11 +308,10 @@ class TestClick(object):
         await frame.evaluate("result") | should.be.equal.to("Clicked")
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestFileUpload(object):
+class TestFileUpload(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_file_upload(self):
-        await self.page.goto(f"{self.url}fileupload.html")
+        await self.goto_test("fileupload.html")
         filePath = Path(__file__).parent / "file-to-upload.txt"
         input = await self.page.J("input")
         await input.uploadFile(str(filePath))
@@ -328,11 +329,10 @@ class TestFileUpload(object):
         results | should.be.equal.to("contents of the file\n")
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestType(object):
+class TestType(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_key_type(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         textarea = await self.page.J("textarea")
         text = "Type in this text!"
         await textarea.type(text)
@@ -345,7 +345,7 @@ class TestType(object):
 
     @pytest.mark.asyncio
     async def test_key_arrowkey(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         await self.page.type("textarea", "Hello World!")
         for char in "World!":
             await self.page.keyboard.press("ArrowLeft")
@@ -367,7 +367,7 @@ class TestType(object):
 
     @pytest.mark.asyncio
     async def test_key_press_element_handle(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         textarea = await self.page.J("textarea")
         await textarea.press("a", text="f")
         result = await self.page.evaluate(
@@ -383,7 +383,7 @@ class TestType(object):
 
     @pytest.mark.asyncio
     async def test_key_send_char(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         await self.page.focus("textarea")
         await self.page.keyboard.sendCharacter("朝")
         result = await self.page.evaluate(
@@ -402,7 +402,7 @@ class TestType(object):
 
     @pytest.mark.asyncio
     async def test_repeat_shift_key(self):
-        await self.page.goto(f"{self.url}keyboard.html")
+        await self.goto_test("keyboard.html")
         keyboard = self.page.keyboard
         codeForKey = {"Shift": 16, "Alt": 18, "Meta": 91, "Control": 17}
         for key, code in codeForKey.items():
@@ -431,7 +431,7 @@ class TestType(object):
 
     @pytest.mark.asyncio
     async def test_repeat_multiple_modifiers(self):
-        await self.page.goto(f"{self.url}keyboard.html")
+        await self.goto_test("keyboard.html")
         keyboard = self.page.keyboard
         await keyboard.down("Control")
         await self.page.evaluate("getResult()") | should.be.equal.to(
@@ -460,7 +460,7 @@ class TestType(object):
 
     @pytest.mark.asyncio
     async def test_send_proper_code_while_typing(self):
-        await self.page.goto(f"{self.url}keyboard.html")
+        await self.goto_test("keyboard.html")
         await self.page.keyboard.type("!")
         await self.page.evaluate("getResult()") | should.be.equal.to(
             "Keydown: ! Digit1 49 []\n"
@@ -476,7 +476,7 @@ class TestType(object):
 
     @pytest.mark.asyncio
     async def test_send_proper_code_while_typing_with_shift(self):
-        await self.page.goto(f"{self.url}keyboard.html")
+        await self.goto_test("keyboard.html")
         await self.page.keyboard.down("Shift")
         await self.page.keyboard.type("~")
         await self.page.evaluate("getResult()") | should.be.equal.to(
@@ -489,7 +489,7 @@ class TestType(object):
 
     @pytest.mark.asyncio
     async def test_not_type_prevent_events(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         await self.page.focus("textarea")
         await self.page.evaluate(
             """() => {
@@ -521,7 +521,7 @@ window.addEventListener('keydown', event => {
 
     @pytest.mark.asyncio
     async def test_repeat_properly(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         await self.page.focus("textarea")
         await self.page.evaluate(
             """() => {
@@ -544,7 +544,7 @@ window.addEventListener('keydown', event => {
 
     @pytest.mark.asyncio
     async def test_key_type_long(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         textarea = await self.page.J("textarea")
         text = "This text is two lines.\\nThis is character 朝."
         await textarea.type(text)
@@ -557,7 +557,7 @@ window.addEventListener('keydown', event => {
 
     @pytest.mark.asyncio
     async def test_key_location(self):
-        await self.page.goto(f"{self.url}textarea.html")
+        await self.goto_test("textarea.html")
         textarea = await self.page.J("textarea")
         await self.page.evaluate(
             '() => window.addEventListener("keydown", e => window.keyLocation = e.location, true)'  # noqa: E501

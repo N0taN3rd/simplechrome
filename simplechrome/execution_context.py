@@ -107,7 +107,26 @@ class ExecutionContext(object):
         remoteObject = _obj.get("result")
         return createJSHandle(self, remoteObject)
 
+    async def queryObjects(self, prototypeHandle: "JSHandle") -> "JSHandle":
+        """Send query.
+
+        Details see :meth:`simplechrome.page.Page.queryObjects`.
+        """
+        if prototypeHandle._disposed:
+            raise ElementHandleError("Prototype JSHandle is disposed!")
+        if not prototypeHandle._remoteObject.get("objectId"):
+            raise ElementHandleError(
+                "Prototype JSHandle must not be referencing primitive value"
+            )
+        response = await self._client.send(
+            "Runtime.queryObjects",
+            {"prototypeObjectId": prototypeHandle._remoteObject["objectId"]},
+        )
+        return createJSHandle(self, response.get("objects"))
+
     def _convertArgument(self, arg: Any) -> Dict:  # noqa: C901
+        if arg == -0:
+            return {"unserializableValue": "-0"}
         if arg == math.inf:
             return {"unserializableValue": "Infinity"}
         if arg == -math.inf:
@@ -130,23 +149,6 @@ class ExecutionContext(object):
                 return {"value": objectHandle._remoteObject.get("value")}
             return {"objectId": objectHandle._remoteObject.get("objectId")}
         return {"value": arg}
-
-    async def queryObjects(self, prototypeHandle: "JSHandle") -> "JSHandle":
-        """Send query.
-
-        Details see :meth:`simplechrome.page.Page.queryObjects`.
-        """
-        if prototypeHandle._disposed:
-            raise ElementHandleError("Prototype JSHandle is disposed!")
-        if not prototypeHandle._remoteObject.get("objectId"):
-            raise ElementHandleError(
-                "Prototype JSHandle must not be referencing primitive value"
-            )
-        response = await self._client.send(
-            "Runtime.queryObjects",
-            {"prototypeObjectId": prototypeHandle._remoteObject["objectId"]},
-        )
-        return createJSHandle(self, response.get("objects"))
 
     def __repr__(self):
         return f"ExecutionContext(contextId={self._contextId}, frameId={self._frameId}, isDefault={self._isDefault})"

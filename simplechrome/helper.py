@@ -2,7 +2,7 @@
 """Helper functions."""
 
 import json
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Union
 
 import math
 
@@ -11,7 +11,7 @@ from .errors import ElementHandleError
 from pyee import EventEmitter
 
 
-__all__ = ["Helper", "unserializableValueMap"]
+__all__ = ["Helper", "unserializableValueMap", "EEListener"]
 
 unserializableValueMap = {
     "-0": -0,
@@ -20,6 +20,8 @@ unserializableValueMap = {
     "Infinity": math.inf,
     "-Infinity": -math.inf,
 }
+
+EEListener = Dict[str, Union[str, EventEmitter, Callable]]
 
 
 class Helper(object):
@@ -58,13 +60,13 @@ class Helper(object):
     @staticmethod
     def addEventListener(
         emitter: EventEmitter, eventName: str, handler: Callable
-    ) -> Dict[str, Any]:
+    ) -> EEListener:
         """Add handler to the emitter and return emitter/handler."""
         emitter.on(eventName, handler)
         return {"emitter": emitter, "eventName": eventName, "handler": handler}
 
     @staticmethod
-    def removeEventListeners(listeners: List[dict]) -> None:
+    def removeEventListeners(listeners: List[EEListener]) -> None:
         """Remove listeners from emitter."""
         for listener in listeners:
             emitter = listener["emitter"]

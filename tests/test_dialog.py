@@ -1,12 +1,13 @@
 import pytest
 from grappa import should
 
+from .base_test import BaseChromeTest
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestDialog(object):
+
+class TestDialog(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_prompt(self):
-        await self.page.goto(f"{self.url}dialogs.html", dict(waitUntil="networkidle0"))
+        await self.goto_test("dialogs.html", dict(waitUntil="networkidle0"))
         values = []
 
         async def dialog_test(dialog):
@@ -23,7 +24,7 @@ class TestDialog(object):
 
     @pytest.mark.asyncio
     async def test_alert(self):
-        await self.page.goto(f"{self.url}dialogs.html", dict(waitUntil="networkidle0"))
+        await self.goto_test("dialogs.html", dict(waitUntil="networkidle0"))
         values = []
 
         async def dialog_test(dialog):
@@ -39,7 +40,7 @@ class TestDialog(object):
 
     @pytest.mark.asyncio
     async def test_prompt_dismiss(self):
-        await self.page.goto(f"{self.url}dialogs.html", dict(waitUntil="networkidle0"))
+        await self.goto_test("dialogs.html", dict(waitUntil="networkidle0"))
 
         async def dismiss_test(dialog):
             await dialog.dismiss()

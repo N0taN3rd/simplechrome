@@ -10,6 +10,7 @@ from simplechrome.chrome import Chrome
 from simplechrome.launcher import launch
 from simplechrome.page import Page
 from .server import get_app
+from .utils import EEHandler
 
 
 def reaper(oproc):
@@ -22,14 +23,26 @@ def reaper(oproc):
     return kill_it
 
 
-@pytest.yield_fixture(scope="class")
-def test_server(request: SubRequest) -> Generator[str, Any, None]:
-    url = "http://localhost:8888/static/"
+@pytest.fixture
+def ee_helper(request: SubRequest):
+    eeh = EEHandler()
+    yield eeh
+    eeh.clean_up()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_server(request: SubRequest) -> None:
     app = get_app()
+    yield
+    app.clean_up()
+
+
+@pytest.yield_fixture(scope="class")
+def test_server_url(request: SubRequest) -> Generator[str, Any, None]:
+    url = "http://localhost:8888/static/"
     if request.cls is not None:
         request.cls.url = url
     yield url
-    app.clean_up()
 
 
 @pytest.yield_fixture(scope="class")
