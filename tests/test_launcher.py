@@ -1,7 +1,4 @@
-import asyncio
 import os
-from pathlib import Path
-
 import psutil
 import pytest
 from async_timeout import timeout

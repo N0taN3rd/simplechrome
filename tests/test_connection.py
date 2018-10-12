@@ -1,10 +1,10 @@
 import os
-
 import pytest
 from grappa import should
 
 from simplechrome import NetworkError
 from simplechrome.launcher import connect, launch
+from .base_test import BaseChromeTest
 
 
 class TestConnection(object):
@@ -49,8 +49,7 @@ class TestConnection(object):
         )
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestCDPSession(object):
+class TestCDPSession(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_create_session(self):
         client = await self.page.target.createCDPSession()
@@ -60,12 +59,14 @@ class TestCDPSession(object):
         await client.detach()
 
     @pytest.mark.asyncio
-    async def test_send_event(self):
+    async def test_send_event(self, ee_helper):
         client = await self.page.target.createCDPSession()
         await client.send("Network.enable")
         events = []
-        client.on("Network.requestWillBeSent", lambda e: events.append(e))
-        await self.page.goto(self.url + "empty.html")
+        ee_helper.addEventListener(
+            client, "Network.requestWillBeSent", lambda e: events.append(e)
+        )
+        await self.goto_empty()
         events | should.have.length.of(1)
         await client.detach()
 

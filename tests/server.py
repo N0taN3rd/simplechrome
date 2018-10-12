@@ -18,7 +18,7 @@ async def alive():
 
 
 def get_app():
-    app.run(debug=False, verbose=False, host="localhost", port=8888, block=False)
+    app.run(debug=False, host="localhost", port=8888, block=False)
     return app
 
 

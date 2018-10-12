@@ -2,14 +2,14 @@ import pytest
 from grappa import should
 
 from simplechrome.errors import ElementHandleError
+from .base_test import BaseChromeTest
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestBoundingBox(object):
+class TestBoundingBox(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_bounding_box(self):
         await self.page.setViewport({"width": 500, "height": 500})
-        await self.page.goto(f"{self.url}grid.html")
+        await self.goto_test("grid.html")
         elementHandle = await self.page.J(".box:nth-of-type(13)")
         box = await elementHandle.boundingBox()
         box | should.be.equal.to({"x": 100, "y": 50, "width": 50, "height": 50})
@@ -17,7 +17,7 @@ class TestBoundingBox(object):
     @pytest.mark.asyncio
     async def test_nested_frame(self):
         await self.page.setViewport({"width": 500, "height": 500})
-        await self.page.goto(f"{self.url}nested-frames.html")
+        await self.goto_test("nested-frames.html")
         nestedFrame = self.page.frames[1].childFrames[1]
         elementHandle = await nestedFrame.J("div")
         box = await elementHandle.boundingBox()
@@ -27,30 +27,30 @@ class TestBoundingBox(object):
 
     @pytest.mark.asyncio
     async def test_invisible_element(self):
+        await self.goto_empty()
         await self.page.setContent('<div style="display: none;">hi</div>')
         element = await self.page.J("div")
         await element.boundingBox() | should.be.none
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestClick(object):
+class TestClick(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_clik(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         button = await self.page.J("button")
         await button.click()
         await self.page.evaluate("result") | should.be.equal.to("Clicked")
 
     @pytest.mark.asyncio
     async def test_shadow_dom(self):
-        await self.page.goto(f"{self.url}shadow.html")
+        await self.goto_test("shadow.html")
         button = await self.page.evaluateHandle("() => button")
         await button.click()
         await self.page.evaluate("clicked") | should.be.true
 
     @pytest.mark.asyncio
     async def test_text_node(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         buttonTextNode = await self.page.evaluateHandle(
             '() => document.querySelector("button").firstChild'
         )
@@ -60,7 +60,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_detached_node(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         button = await self.page.J("button")
         await self.page.evaluate("btn => btn.remove()", button)
         with pytest.raises(ElementHandleError) as cm:
@@ -69,7 +69,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_hidden_node(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         button = await self.page.J("button")
         await self.page.evaluate('btn => btn.style.display = "none"', button)
         with pytest.raises(ElementHandleError) as cm:
@@ -78,7 +78,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_recursively_hidden_node(self):
-        await self.page.goto(f"{self.url}button.html")
+        await self.goto_test("button.html")
         button = await self.page.J("button")
         await self.page.evaluate(
             'btn => btn.parentElement.style.display = "none"', button
@@ -89,6 +89,7 @@ class TestClick(object):
 
     @pytest.mark.asyncio
     async def test_br_node(self):
+        await self.goto_empty()
         await self.page.setContent("hello<br>goodbye")
         br = await self.page.J("br")
         with pytest.raises(ElementHandleError) as cm:
@@ -96,11 +97,10 @@ class TestClick(object):
         str(cm.value) | should.be.equal.to("Node is not visible.")
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestHover(object):
+class TestHover(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_hover(self):
-        await self.page.goto(f"{self.url}scrollable.html")
+        await self.goto_test("scrollable.html")
         button = await self.page.J("#button-6")
         await button.hover()
         await self.page.evaluate(
@@ -108,10 +108,10 @@ class TestHover(object):
         ) | should.be.equal.to("button-6")
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestQuerySelector(object):
+class TestQuerySelector(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_element_handle_J(self):
+        await self.goto_empty()
         await self.page.setContent(
             """
 <html><body><div class="second"><div class="inner">A</div></div></body></html>
@@ -125,6 +125,7 @@ class TestQuerySelector(object):
 
     @pytest.mark.asyncio
     async def test_element_handle_J_none(self):
+        await self.goto_empty()
         await self.page.setContent(
             """
 <html><body><div class="second"><div class="inner">A</div></div></body></html>
@@ -136,6 +137,7 @@ class TestQuerySelector(object):
 
     @pytest.mark.asyncio
     async def test_element_handle_JJ(self):
+        await self.goto_empty()
         await self.page.setContent(
             """
 <html><body><div>A</div><br/><div>B</div></body></html>
@@ -151,6 +153,7 @@ class TestQuerySelector(object):
 
     @pytest.mark.asyncio
     async def test_element_handle_JJ_empty(self):
+        await self.goto_empty()
         await self.page.setContent(
             """
 <html><body><span>A</span><br/><span>B</span></body></html>
@@ -162,6 +165,7 @@ class TestQuerySelector(object):
 
     @pytest.mark.asyncio
     async def test_element_handle_xpath(self):
+        await self.goto_empty()
         await self.page.setContent(
             '<html><body><div class="second"><div class="inner">A</div></div></body></html>'  # noqa: E501
         )
@@ -173,7 +177,7 @@ class TestQuerySelector(object):
 
     @pytest.mark.asyncio
     async def test_element_handle_xpath_not_found(self):
-        await self.page.goto(self.url + "empty")
+        await self.goto_empty()
         html = await self.page.querySelector("html")
         element = await html.xpath("/div[contains(@class, 'third')]")
         element | should.be.equal.to([])

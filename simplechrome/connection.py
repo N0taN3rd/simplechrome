@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
-import ujson as json
-from asyncio import Future
+import traceback
+from asyncio import Future, AbstractEventLoop
 from concurrent.futures import CancelledError
-from typing import Optional, Dict, Callable, Any
+from typing import Optional, Dict, Callable, Any, ClassVar
 
+import attr
+import ujson as json
 import websockets
 import websockets.protocol
 from pyee import EventEmitter
@@ -27,11 +29,20 @@ def createProtocolError(method, msg) -> str:
     return emsg
 
 
+@attr.dataclass
+class ConnectEvents(object):
+    Disconnected: str = attr.ib(default="Disconnected")
+
+
 class Connection(EventEmitter):
     """Websocket Connection To The Remote Browser"""
 
-    def __init__(self, url: str, delay: int = 0, *args: Any, **kwargs: Any) -> None:
-        super().__init__()
+    Events: ClassVar[ConnectEvents] = ConnectEvents()
+
+    def __init__(
+        self, url: str, delay: int = 0, loop: Optional[AbstractEventLoop] = None
+    ) -> None:
+        super().__init__(loop=loop if loop is not None else asyncio.get_event_loop())
         self._url: str = url
         self._lastId: int = 0
         self._callbacks: Dict[int, Future] = dict()
@@ -41,7 +52,16 @@ class Connection(EventEmitter):
         self._ws: WebSocketClientProtocol = None
         self._recv_fut: Optional[Future] = None
         self._closeCallback: Optional[Callable[[], None]] = None
-        self._loop = asyncio.get_event_loop()
+        self._closed: bool = False
+
+    @staticmethod
+    def from_session(session: "CDPSession") -> "Connection":
+        connection = session._connection
+        if isinstance(connection, Connection):
+            return connection
+        while isinstance(connection, CDPSession):
+            connection = connection._connection
+        return connection
 
     @property
     def url(self) -> str:
@@ -56,12 +76,7 @@ class Connection(EventEmitter):
 
     async def connect(self) -> None:
         self._ws = await websockets.client.connect(
-            self._url,
-            compression=None,
-            max_queue=0,
-            timeout=20,
-            read_limit=2 ** 25,
-            write_limit=2 ** 25,
+            self._url, compression=None, max_queue=0, timeout=20
         )
         self._recv_fut = asyncio.ensure_future(self._recv_loop(), loop=self._loop)
 
@@ -156,13 +171,14 @@ class Connection(EventEmitter):
             else:
                 self.emit(method, params)
         except Exception as e:
-            import traceback
-
             traceback.print_exc()
             print("_on_unsolicited error", e)
             print("_on_unsolicited error", params)
 
     async def _on_close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         if self._closeCallback:
             self._closeCallback()
             self._closeCallback = None
@@ -183,6 +199,8 @@ class Connection(EventEmitter):
             await self._ws.close()
         except:
             pass
+
+        self.emit(self.Events.Disconnected)
 
 
 class CDPSession(EventEmitter):

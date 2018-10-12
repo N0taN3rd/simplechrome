@@ -2,6 +2,7 @@
 """Page module."""
 import asyncio
 import base64
+import aiofiles
 import logging
 import mimetypes
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, TYPE_CHECKING
@@ -907,6 +908,40 @@ class Page(EventEmitter):
                 raise ValueError("Unsupported screenshot " f"mime type: {mimeType}")
         if screenshotType is None:
             screenshotType = "png"
+        if options.get("quality"):
+            if screenshotType != "jpeg":
+                raise ValueError(
+                    f"options.quality is unsupported for the {screenshotType} screenshots"
+                )
+            quality = options.get("quality")
+            if not isinstance(quality, (int, float)):
+                raise ValueError(
+                    f"Expected options.quality to be a int or float but found {type(quality)}"
+                )
+            if not (0 <= quality <= 100):
+                raise ValueError(
+                    f"Expected options.quality to be between 0 and 100 (inclusive), got {quality}"
+                )
+        if not options.get("clip") or not options.get("fullPage"):
+            raise ValueError("options.clip and options.fullPage are exclusive")
+        if options.get("clip"):
+            clip = options.get("clip")
+            if not isinstance(clip.get("x"), (int, float)):
+                raise ValueError(
+                    f"Expected clip.x to be a int or float but found {type(clip.get('x'))}"
+                )
+            if not isinstance(clip.get("y"), (int, float)):
+                raise ValueError(
+                    f"Expected clip.y to be a int or float but found {type(clip.get('y'))}"
+                )
+            if not isinstance(clip.get("width"), (int, float)):
+                raise ValueError(
+                    f"Expected clip.width to be a int or float but found {type(clip.get('width'))}"
+                )
+            if not isinstance(clip.get("height"), (int, float)):
+                raise ValueError(
+                    f"Expected clip.height to be a int or float but found {type(clip.get('height'))}"
+                )
         return await self._screenshotTask(screenshotType, options)
 
     async def _screenshotTask(
@@ -943,8 +978,8 @@ class Page(EventEmitter):
                     "screenOrientation": screenOrientation,
                 },
             )
-
-        if options.get("omitBackground"):
+        shouldSetDefaultBackground = options.get("omitBackground") and format == "png"
+        if shouldSetDefaultBackground:
             await self._client.send(
                 "Emulation.setDefaultBackgroundColorOverride",
                 {"color": {"r": 0, "g": 0, "b": 0, "a": 0}},
@@ -952,19 +987,22 @@ class Page(EventEmitter):
         opt = {"format": format}
         if clip:
             opt["clip"] = clip
+        if options.get("quality"):
+            opt["quality"] = options.get("quality")
         result = await self._client.send("Page.captureScreenshot", opt)
 
-        if options.get("omitBackground"):
+        if shouldSetDefaultBackground:
             await self._client.send("Emulation.setDefaultBackgroundColorOverride")
 
         if options.get("fullPage"):
             await self.setViewport(self._viewport)
-
-        buffer = base64.b64decode(result.get("data", b""))
-        _path = options.get("path")
-        if _path:
-            with open(_path, "wb") as f:
-                f.write(buffer)
+        if result.get("encoding") == "base64":
+            buffer = base64.b64decode(result.get("data", b""))
+        else:
+            buffer = result.get("data")
+        if "path" in options:
+            async with aiofiles.open(options["path"], "wb") as f:
+                await f.write(buffer)
         return buffer
 
     async def _rawScreenshotTask(
@@ -1116,8 +1154,8 @@ class Page(EventEmitter):
         )
         buffer = base64.b64decode(result.get("data", b""))
         if "path" in options:
-            with open(options["path"], "wb") as f:
-                f.write(buffer)
+            async with aiofiles.open(options["path"], "wb") as f:
+                await f.write(buffer)
         return buffer
 
     async def plainText(self) -> str:

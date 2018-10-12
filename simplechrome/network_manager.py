@@ -3,9 +3,11 @@
 
 import asyncio
 import base64
+from asyncio import Future
+
 import ujson as json
 from collections import OrderedDict
-from typing import Awaitable, Dict, Optional, Union, Set
+from typing import Awaitable, Dict, Optional, Union, Set, List
 from urllib.parse import unquote
 
 import attr
@@ -17,6 +19,13 @@ from .frame_manager import FrameManager, Frame
 from .multimap import Multimap
 
 __all__ = ["NetworkManager", "Request", "Response", "SecurityDetails"]
+
+ResponseProtocol = Dict[str, Union[str, Dict]]
+ResponseInfo = Dict[str, Union[str, int, ResponseProtocol]]
+RequestProtocol = Dict[str, Union[str, Dict]]
+RequestInfo = Dict[
+    str, Union[str, int, float, bool, Optional[ResponseInfo], RequestProtocol]
+]
 
 
 @attr.dataclass(slots=True)
@@ -37,24 +46,29 @@ class NetworkManager(EventEmitter):
         super().__init__()
         self._client = client
         self._frameManager = frameManager
-        self._requestIdToRequest: Dict[Optional[str], Request] = dict()
-        self._interceptionIdToRequest: Dict[Optional[str], Request] = dict()
+        self._requestIdToRequest: Dict[str, Request] = dict()
+        self._interceptionIdToRequest: Dict[str, Request] = dict()
+        self._requestIdToRequestWillBeSentEvent: Dict[str, RequestInfo] = dict()
         self._extraHTTPHeaders: OrderedDict[str, str] = OrderedDict()
         self._offline: bool = False
         self._credentials: Optional[Dict[str, str]] = None
         self._attemptedAuthentications: Set[str] = set()
-        self._userRequestInterceptionEnabled = False
-        self._protocolRequestInterceptionEnabled = False
-        self._requestHashToRequestIds = Multimap()
-        self._requestHashToInterceptionIds = Multimap()
+        self._userRequestInterceptionEnabled: bool = False
+        self._protocolRequestInterceptionEnabled: bool = False
+        self._requestHashToRequestIds: Multimap = Multimap()
+        self._requestHashToInterceptionIds: Multimap = Multimap()
 
         self._client.on("Network.requestWillBeSent", self._onRequestWillBeSent)
         self._client.on(
-            "Network.requestServedFromCache", self._onRequestServedFromCache
+            "Network.requestServedFromCache", self._onRequestSeveredFromCache
         )  # noqa: #501
         self._client.on("Network.responseReceived", self._onResponseReceived)
         self._client.on("Network.loadingFinished", self._onLoadingFinished)
         self._client.on("Network.loadingFailed", self._onLoadingFailed)
+        self._client.on('Network.requestIntercepted', self._onRequestIntercepted)
+
+    def setFrameManager(self, frameManager: FrameManager) -> None:
+        self._frameManager = frameManager
 
     async def authenticate(self, credentials: Dict[str, str]) -> None:
         """Provide credentials for http auth."""
@@ -117,6 +131,19 @@ class NetworkManager(EventEmitter):
             self._client.send("Network.setRequestInterception", {"patterns": patterns}),
         )
 
+    def _onRequestWillBeSent(self, event: RequestInfo) -> None:
+        if self._protocolRequestInterceptionEnabled:
+            requestHash = generateRequestHash(event["request"])
+            interceptionId = self._requestHashToInterceptionIds.firstValue(requestHash)
+            if interceptionId:
+                self._onRequest(event, interceptionId)
+                self._requestHashToInterceptionIds.delete(requestHash, interceptionId)
+            else:
+                self._requestHashToRequestIds.set(requestHash, event["requestId"])
+                self._requestIdToRequestWillBeSentEvent[event["requestId"]] = event
+            return
+        self._onRequest(event, None)
+
     def _onRequestIntercepted(self, event: dict) -> None:  # noqa: C901
         if event.get("authChallenge"):
             response = "Default"
@@ -125,8 +152,11 @@ class NetworkManager(EventEmitter):
             elif self._credentials:
                 response = "ProvideCredentials"
                 self._attemptedAuthentications.add(event["interceptionId"])
-            username = getattr(self, "_credentials", {}).get("username")
-            password = getattr(self, "_credentials", {}).get("password")
+            username = None
+            password = None
+            if self._credentials is not None:
+                username = self._credentials.get("username")
+                password = self._credentials.get("password")
             asyncio.ensure_future(
                 self._client.send(
                     "Network.continueInterceptedRequest",
@@ -155,140 +185,56 @@ class NetworkManager(EventEmitter):
 
         requestHash = generateRequestHash(event["request"])
         requestId = self._requestHashToRequestIds.firstValue(requestHash)
-        if requestId:
+        if requestId is not None:
+            requestWillBeSentEvent = self._requestIdToRequestWillBeSentEvent.get(requestId)
+            self._onRequest(requestWillBeSentEvent, event.get('interceptionId'))
             self._requestHashToRequestIds.delete(requestHash, requestId)
-            self._handleRequestStart(
-                requestId,
-                event["interceptionId"],
-                event["request"]["url"],
-                event["resourceType"],
-                event["request"],
-                event["frameId"],
-                event["frameId"],
-            )
+            del self._requestIdToRequestWillBeSentEvent[requestId]
         else:
             self._requestHashToInterceptionIds.set(requestHash, event["interceptionId"])
-            self._handleRequestStart(
-                None,
-                event["interceptionId"],
-                event["request"]["url"],
-                event["resourceType"],
-                event["request"],
-                event["frameId"],
-                event["frameId"],
-            )
 
-    def _onRequestServedFromCache(self, event: Dict) -> None:
+    def _onRequest(
+        self, event: RequestInfo, interceptionId: Optional[str] = None
+    ) -> None:
+        redirectChain: List[Request] = []
+        requestId = event.get("requestId")
+        if event.get("redirectResponse") is not None:
+            request = self._requestIdToRequest.get(requestId)
+            # If we connect late to the target, we could have missed the requestWillBeSent event.
+            if request is not None:
+                self._handleRequestRedirect(request, event)
+                redirectChain = request._redirectChain
+        frame = None
+        if self._frameManager is not None and event.get("frameId") is not None:
+            frame = self._frameManager.frame(event.get("frameId"))
+        request = Request(self._client, frame, interceptionId, self._userRequestInterceptionEnabled, event, redirectChain)
+        self._requestIdToRequest[requestId] = request
+        self.emit(NetworkManager.Events.Request, request)
+
+    def _onRequestSeveredFromCache(self, event: Dict) -> None:
         request = self._requestIdToRequest.get(event.get("requestId"))
-        if request:
+        if request is not None:
             request._fromMemoryCache = True
 
-    def _handleRequestRedirect(
-        self, request: "Request", redirectResponse: dict
-    ) -> None:
-        response = Response(
-            self._client,
-            request,
-            redirectResponse.get("status"),
-            redirectResponse.get("headers"),
-            redirectResponse.get("fromDiskCache"),
-            redirectResponse.get("fromServiceWorker"),
-            redirectResponse.get("securityDetails"),
-            redirectResponse.get("mimeType"),
-            redirectResponse.get("headersText"),
-            redirectResponse.get("requestHeaders"),
-            redirectResponse.get("requestHeadersText"),
-            redirectResponse.get("protocol"),
-            redirectResponse.get("url"),
-        )
+    def _handleRequestRedirect(self, request: "Request", event: RequestInfo) -> None:
+        newEvent: ResponseInfo = dict(**event)
+        newEvent["response"] = event.get("redirectResponse")
+        del newEvent["redirectResponse"]
+        response = Response(self._client, request, newEvent)
+        request._redirectChain.append(request)
         request._response = response
         self._requestIdToRequest.pop(request.requestId, None)
         self._interceptionIdToRequest.pop(request._interceptionId, None)
         self._attemptedAuthentications.discard(request._interceptionId)
         self.emit(NetworkManager.Events.Response, response)
-
-    def _handleRequestStart(
-        self,
-        requestId: Optional[str],
-        interceptionId: str,
-        url: str,
-        resourceType: str,
-        requestPayload: Dict,
-        frameId: Optional[str],
-        initiator: Optional[str],
-    ) -> None:
-        frame = None
-        if frameId and self._frameManager is not None:
-            frame = self._frameManager.frame(frameId)
-
-        request = Request(
-            self._client,
-            requestId,
-            interceptionId,
-            self._userRequestInterceptionEnabled,
-            url,
-            resourceType,
-            requestPayload,
-            frame,
-            initiator,
-        )
-        if requestId:
-            self._requestIdToRequest[requestId] = request
-        if interceptionId:
-            self._interceptionIdToRequest[interceptionId] = request
-        self.emit(NetworkManager.Events.Request, request)
-
-    def _onRequestWillBeSent(self, event: dict) -> None:
-        if self._protocolRequestInterceptionEnabled:
-            if event.get("redirectResponse"):
-                return
-            requestHash = generateRequestHash(event["request"])
-            interceptionId = self._requestHashToInterceptionIds.firstValue(requestHash)
-            request = self._interceptionIdToRequest.get(interceptionId)
-            if request:
-                request.requestId = event["requestId"]
-                self._requestIdToRequest[event["requestId"]] = request
-                self._requestHashToInterceptionIds.delete(requestHash, interceptionId)
-            else:
-                self._requestHashToRequestIds.set(requestHash, event["requestId"])
-            return
-        if event.get("redirectResponse"):
-            request = self._requestIdToRequest[event["requestId"]]
-            if request:
-                redirectResponse = event.get("redirectResponse", {})
-                self._handleRequestRedirect(request, redirectResponse)
-        r = event.get("request", {})
-        self._handleRequestStart(
-            event.get("requestId", ""),
-            "",
-            r.get("url", ""),
-            event.get("type", ""),
-            r,
-            event.get("frameId"),
-            event.get("initiator"),
-        )
+        self.emit(NetworkManager.Events.RequestFinished, request)
 
     def _onResponseReceived(self, event: dict) -> None:
         request = self._requestIdToRequest.get(event["requestId"])
         # FileUpload sends a response without a matching request.
         if not request:
             return
-        _resp = event.get("response", {})
-        response = Response(
-            self._client,
-            request,
-            _resp.get("status", 0),
-            _resp.get("headers", {}),
-            _resp.get("fromDiskCache"),
-            _resp.get("fromServiceWorker"),
-            _resp.get("securityDetails"),
-            _resp.get("mimeType"),
-            _resp.get("headersText"),
-            _resp.get("requestHeaders"),
-            _resp.get("requestHeadersText"),
-            _resp.get("protocol"),
-            _resp.get("url"),
-        )
+        response = Response(self._client, request, event)
         request._response = response
         self.emit(NetworkManager.Events.Response, response)
 
@@ -296,10 +242,13 @@ class NetworkManager(EventEmitter):
         request = self._requestIdToRequest.get(event.get("requestId", ""))
         # For certain requestIds we never receive requestWillBeSent event.
         # @see https://crbug.com/750469
-        if not request:
+        if request is None:
             return
-        request._completePromiseFulfill()
-        request.shouldReportCorbBlocking = event.get("shouldReportCorbBlocking")
+        # Under certain conditions we never get the Network.responseReceived
+        # event from protocol. @see https://crbug.com/883475
+        response = request._response
+        if response is not None and not response._bodyLoadedPromiseFulfill.done():
+            response._bodyLoadedPromiseFulfill.set_result(None)
         self._requestIdToRequest.pop(request.requestId, None)
         self._interceptionIdToRequest.pop(request._interceptionId, None)
         self._attemptedAuthentications.discard(request._interceptionId)
@@ -311,70 +260,130 @@ class NetworkManager(EventEmitter):
         # @see https://crbug.com/750469
         if not request:
             return
-        request.failureText = event.get("errorText")
-        request.wasCanceled = event.get("canceled")
-        request.blockedReason = event.get("blockedReason")
-        request.resourceType = event.get("type", "").lower()
-        request._completePromiseFulfill()
+        request._failureText = event.get("errorText")
+        request._wasCanceled = event.get("canceled")
+        request._blockedReason = event.get("blockedReason")
+        request._type = event.get("type", request._type)
+        response = request._response
+        if response is not None and not response._bodyLoadedPromiseFulfill.done():
+            response._bodyLoadedPromiseFulfill.set_result(None)
         self._requestIdToRequest.pop(request.requestId, None)
-        self._interceptionIdToRequest.pop(request._interceptionId, None)
         self._attemptedAuthentications.discard(request._interceptionId)
         self.emit(NetworkManager.Events.RequestFailed, request)
 
 
+@attr.dataclass(repr=False)
 class Request(object):
-    """Request class."""
+    _client: CDPSession = attr.ib()
+    _frame: Optional[Frame] = attr.ib()
+    _interceptionId: Optional[str] = attr.ib()
+    _allowInterception: bool = attr.ib()
+    _requestInfo: RequestInfo = attr.ib()
+    _redirectChain: List["Request"] = attr.ib()
+    _response: Optional["Response"] = attr.ib(init=False, default=None)
+    _preq: Dict = attr.ib(init=False, default=None)
+    _type: str = attr.ib(init=False, default="")
+    _failureText: str = attr.ib(init=False, default="")
+    _fromMemoryCache: bool = attr.ib(init=False, default=False)
+    _wasCanceled: bool = attr.ib(init=False, default=False)
+    _interceptionHandled: bool = attr.ib(init=False, default=False)
+    _blockedReason: Optional[str] = attr.ib(init=False, default=None)
 
-    def __init__(
-        self,
-        client: CDPSession,
-        requestId: Optional[str],
-        interceptionId: str,
-        allowInterception: bool,
-        url: str,
-        resourceType: str,
-        payload: dict,
-        frame: Optional[Frame],
-        initiator: Optional[str] = None,
-    ) -> None:
-        self._client = client
-        self.requestId = requestId
-        self._interceptionId = interceptionId
-        self._allowInterception = allowInterception
-        self._interceptionHandled = False
-        self._response: Optional[Response] = None
-        self.failureText: Optional[str] = None
-        self._completePromise = asyncio.get_event_loop().create_future()
-        self.wasCanceled: bool = False
-        self.blockedReason: Optional[str] = None
-        self.url: str = url
-        self.initiator: Optional[str] = initiator
-        self.resourceType = resourceType.lower()
-        self.method = payload.get("method")
-        self.postData = payload.get("postData")
-        headers = payload.get("headers", {})
-        self.headers = headers
-        self.frame = frame
-        self.shouldReportCorbBlocking: Optional[bool] = None
+    def __attrs_post_init__(self) -> None:
+        self._preq = self._requestInfo.get("request")
+        self._type = self._preq.get("type")
 
-        self._fromMemoryCache = False
+    @property
+    def wasCanceled(self) -> bool:
+        return self._wasCanceled
 
-    def to_dict(self) -> dict:
-        return dict(
-            url=self.url,
-            method=self.method,
-            requestId=self.requestId,
-            blockedReason=self.blockedReason,
-            initiator=self.initiator,
-            headers=self.headers,
-            resourceType=self.resourceType,
-            wasCanceled=self.wasCanceled,
-            failureText=self.failureText,
-            shouldReportCorbBlocking=self.shouldReportCorbBlocking,
-        )
+    @property
+    def blockedReason(self) -> Optional[str]:
+        return self._blockedReason
 
-    def _completePromiseFulfill(self) -> None:
-        self._completePromise.set_result(None)
+    @property
+    def url(self) -> str:
+        return self._preq.get("url")
+
+    @property
+    def method(self) -> str:
+        return self._preq.get("method")
+
+    @property
+    def postData(self) -> Optional[str]:
+        return self._preq.get("postData")
+
+    @property
+    def headers(self) -> Dict[str, str]:
+        return self._preq.get("headers")
+
+    @property
+    def urlFragment(self) -> Optional[str]:
+        return self._preq.get("urlFragment")
+
+    @property
+    def hasPostData(self) -> Optional[bool]:
+        return self._preq.get("hasPostData")
+
+    @property
+    def requestId(self) -> str:
+        return self._requestInfo.get("requestId")
+
+    @property
+    def loaderId(self) -> str:
+        return self._requestInfo.get("loaderId")
+
+    @property
+    def timeStamp(self) -> int:
+        return self._requestInfo.get("timeStamp")
+
+    @property
+    def wallTime(self) -> float:
+        return self._requestInfo.get("wallTime")
+
+    @property
+    def initiator(self) -> str:
+        return self._requestInfo.get("initiator")
+
+    @property
+    def resourceType(self) -> Optional[str]:
+        return self._type
+
+    @property
+    def frameId(self) -> Optional[str]:
+        return self._requestInfo.get("frameId")
+
+    @property
+    def frame(self) -> Optional[Frame]:
+        return self._frame
+
+    @property
+    def hasUserGesture(self) -> Optional[bool]:
+        return self._requestInfo.get("hasUserGesture")
+
+    @property
+    def documentURL(self) -> str:
+        return self._requestInfo.get("documentURL")
+
+    @property
+    def isNavigationRequest(self) -> bool:
+        return self.requestId == self.loaderId and self.resourceType == "Document"
+
+    @property
+    def initialPriority(self) -> str:
+        return self._preq.get("initialPriority")
+
+    @property
+    def referrerPolicy(self) -> str:
+        return self._preq.get("referrerPolicy")
+
+    @property
+    def isLinkPreload(self) -> Optional[bool]:
+        return self._preq.get("isLinkPreload")
+
+    @property
+    def mixedContentType(self) -> Optional[str]:
+        return self._preq.get("mixedContentType")
 
     @property
     def response(self) -> Optional["Response"]:
@@ -383,6 +392,14 @@ class Request(object):
         If the response has not been recieved, return ``None``.
         """
         return self._response
+
+    @property
+    def redirectChain(self) -> List["Request"]:
+        return self._redirectChain
+
+    @property
+    def failureText(self) -> Optional[str]:
+        return self._failureText
 
     @property
     def failure(self) -> Optional[Dict]:
@@ -398,6 +415,16 @@ class Request(object):
         if not self.failureText:
             return None
         return {"errorText": self.failureText}
+
+    async def get_post_data(self) -> Optional[str]:
+        if not self.hasPostData:
+            return None
+        raw_pd = await self._client.send(
+            "Network.getRequestPostData", dict(requestId=self.requestId)
+        )
+        decoded = base64.b64decode(raw_pd.get("post_data", b"")).decode("utf8")
+        self._preq["postData"] = decoded
+        return decoded
 
     async def continue_(self, overrides: Dict = None) -> None:
         """Continue request with optional request overrides.
@@ -508,6 +535,9 @@ class Request(object):
             dict(interceptionId=self._interceptionId, errorReason=errorReason),
         )
 
+    def to_dict(self) -> dict:
+        return dict(requestId=self.requestId, **self._preq)
+
 
 errorReasons = {
     "aborted": "Aborted",
@@ -527,82 +557,127 @@ errorReasons = {
 }
 
 
+@attr.dataclass(repr=False)
 class Response(object):
-    """Response class represents responses which are recieved by ``Page``."""
+    _client: CDPSession = attr.ib()
+    _request: Request = attr.ib()
+    _responseInfo: ResponseInfo = attr.ib()
+    _contentPromise: Optional[Future] = attr.ib(init=False, default=None)
+    _bodyLoadedPromiseFulfill: Future = attr.ib(init=False, default=None)
+    _pres: Dict = attr.ib(init=False, default=None)
+    _protocol: str = attr.ib(init=False, default="")
+    _encodedDataLength: float = attr.ib(init=False, default=0.0)
 
-    def __init__(
-        self,
-        client: CDPSession,
-        request: Request,
-        status: int,
-        headers: Dict[str, str],
-        fromDiskCache: bool,
-        fromServiceWorker: bool,
-        securityDetails: Optional[dict] = None,
-        mimeType: Optional[str] = None,
-        headersText: Optional[str] = None,
-        requestHeaders: Optional[dict] = None,
-        requestHeadersText: Optional[str] = None,
-        protocol: Optional[str] = None,
-        url: Optional[str] = None,
-    ) -> None:
-        self.mimeType: Optional[str] = mimeType
-        self._url: Optional[str] = url
-        self.headersText: Optional[str] = headersText
-        self.requestHeaders: Optional[dict] = requestHeaders
-        self.requestHeadersText: Optional[str] = requestHeadersText
-        self.protocol: Optional[str] = protocol
-        self._client = client
-        self._request = request
-        self._status = status
-        self._contentPromise = asyncio.get_event_loop().create_future()
-        self._fromDiskCache = fromDiskCache
-        self._fromServiceWorker = fromServiceWorker
-        self._headers = headers
-        self._securityDetails: Optional[dict] = securityDetails
-
-    def to_dict(self) -> dict:
-        return dict(
-            url=self._url,
-            mimeType=self.mimeType,
-            status=self._status,
-            protocol=self.protocol,
-            requestHeaders=self.requestHeaders,
-            requestHeadersText=self.requestHeadersText,
-            headersText=self.headersText,
-            headers=self.headers,
-            requestId=self.requestId,
-        )
-
-    @property
-    def requestId(self) -> str:
-        return self._request.requestId
+    def __attrs_post_init__(self) -> None:
+        self._bodyLoadedPromiseFulfill = asyncio.get_event_loop().create_future()
+        self._pres = self._responseInfo.get("response")
+        sdetails = None
+        if self._pres.get("securityDetails") is not None:
+            sdetails = SecurityDetails(self._pres.get("securityDetails"))
+        self._securityDetails: Optional[SecurityDetails] = sdetails
+        #
+        if (
+            self._securityDetails is not None
+            and self.securityDetails.protocol is not None
+        ):
+            self._protocol = self.securityDetails.protocol
+        else:
+            self._protocol = self._pres.get("protocol")
+        self._encodedDataLength = self._pres.get("encodedDataLength")
 
     @property
     def url(self) -> str:
         """URL of the response."""
-        return self._url
+        return self._pres.get("url")
+
+    @property
+    def protocol(self) -> str:
+        return self._protocol
+
+    @property
+    def mimeType(self) -> Optional[str]:
+        return self._pres.get("mimeType")
 
     @property
     def ok(self) -> bool:
         """Return bool whether this request is successfull (200-299) or not."""
-        return 200 <= self._status <= 299
+        return 200 <= self.status <= 299
 
     @property
     def status(self) -> int:
         """Status code of the response."""
-        return self._status
+        return self._pres.get("status")
 
     @property
-    def headers(self) -> Dict:
-        """Return dictionary of HTTP headers of this response.
+    def headers(self) -> Dict[str, str]:
+        """Return dictionary of HTTP headers of this response."""
+        return self._pres.get("headers")
 
-        All header names are lower-case.
+    @property
+    def headersText(self) -> Optional[str]:
+        return self._pres.get("headersText")
+
+    @property
+    def requestHeaders(self) -> Dict[str, str]:
+        """Return dictionary of HTTP headers of this response."""
+        return self._pres.get("requestHeaders")
+
+    @property
+    def requestHeadersText(self) -> Optional[str]:
+        return self._pres.get("requestHeadersText")
+
+    @property
+    def remoteIPAddress(self) -> Optional[str]:
+        return self._pres.get("remoteIPAddress")
+
+    @property
+    def remotePort(self) -> Optional[int]:
+        return self._pres.get("remotePort")
+
+    @property
+    def requestId(self) -> str:
+        return self._responseInfo.get("requestId")
+
+    @property
+    def loaderId(self) -> str:
+        return self._responseInfo.get("loaderId")
+
+    @property
+    def resourceType(self) -> str:
+        return self._responseInfo.get("resourceType")
+
+    @property
+    def frameId(self) -> Optional[str]:
+        return self._responseInfo.get("frameId")
+
+    @property
+    def timestamp(self) -> int:
+        return self._responseInfo.get("timestamp")
+
+    @property
+    def request(self) -> Request:
+        """Get matching :class:`Request` object."""
+        return self._request
+
+    @property
+    def fromCache(self) -> bool:
+        """Return ``True`` if the response was served from cache.
+
+        Here `cache` is either the browser's disk cache or memory cache.
         """
-        return self._headers
+        return self._pres.get("fromDiskCache") or self._request._fromMemoryCache
 
     @property
-    def securityDetails(self) -> Union[Dict, "SecurityDetails"]:
+    def fromServiceWorker(self) -> bool:
+        """Return ``True`` if the response was served by a service worker."""
+        return self._pres.get("fromServiceWorker")
+
+    @property
+    def encodedDataLength(self) -> float:
+        return self._encodedDataLength
+
+    @property
+    def securityDetails(self) -> Optional["SecurityDetails"]:
         """Return security details associated with this response.
 
         Security details if the response was received over the secure
@@ -610,19 +685,25 @@ class Response(object):
         """
         return self._securityDetails
 
-    async def _bufread(self) -> bytes:
+    @property
+    def securityState(self) -> str:
+        return self._pres.get("securityState")
+
+    async def _bufread(self) -> Union[bytes, str]:
+        if not self._bodyLoadedPromiseFulfill.done():
+            await self._bodyLoadedPromiseFulfill
         response = await self._client.send(
             "Network.getResponseBody", {"requestId": self._request.requestId}
         )
         body = response.get("body", b"")
-        if response.get("base64Encoded"):
+        if response.get("base64Encoded", False):
             return base64.b64decode(body)
         return body
 
     def buffer(self) -> Awaitable[bytes]:
         """Retrun awaitable which resolves to bytes with response body."""
-        if not self._contentPromise.done():
-            return asyncio.ensure_future(self._bufread())
+        if self._contentPromise is None:
+            self._contentPromise = asyncio.ensure_future(self._bufread())
         return self._contentPromise
 
     async def text(self) -> str:
@@ -638,23 +719,8 @@ class Response(object):
         content = await self.text()
         return json.loads(content)
 
-    @property
-    def request(self) -> Request:
-        """Get matching :class:`Request` object."""
-        return self._request
-
-    @property
-    def fromCache(self) -> bool:
-        """Return ``True`` if the response was served from cache.
-
-        Here `cache` is either the browser's disk cache or memory cache.
-        """
-        return self._fromDiskCache or self._request._fromMemoryCache
-
-    @property
-    def fromServiceWorker(self) -> bool:
-        """Return ``True`` if the response was served by a service worker."""
-        return self._fromServiceWorker
+    def to_dict(self) -> Dict:
+        return dict(requestId=self.requestId, **self._pres)
 
     def __repr__(self) -> str:
         repr_args = []
@@ -669,7 +735,7 @@ class Response(object):
         return "Response(" + ", ".join(repr_args) + ")"
 
 
-def generateRequestHash(request: dict) -> str:
+def generateRequestHash(request: RequestInfo) -> str:
     """Generate request hash."""
     normalizedURL = request.get("url", "")
     try:
@@ -700,42 +766,36 @@ def generateRequestHash(request: dict) -> str:
     return json.dumps(_hash)
 
 
+@attr.dataclass
 class SecurityDetails(object):
     """Class represents responses which are received by page."""
 
-    def __init__(
-        self, subjectName: str, issuer: str, validFrom: int, validTo: int, protocol: str
-    ) -> None:
-        self._subjectName = subjectName
-        self._issuer = issuer
-        self._validFrom = validFrom
-        self._validTo = validTo
-        self._protocol = protocol
+    _details: Dict[str, Union[str, int, List[int], List[str]]] = attr.ib()
 
     @property
     def subjectName(self) -> str:
         """Return the subject to which the certificate was issued to."""
-        return self._subjectName
+        return self._details.get("subjectName")
 
     @property
     def issuer(self) -> str:
         """Return a string with the name of issuer of the certificate."""
-        return self._issuer
+        return self._details.get("issuer")
 
     @property
     def validFrom(self) -> int:
         """Return UnixTime of the start of validity of the certificate."""
-        return self._validFrom
+        return self._details.get("validFrom")
 
     @property
     def validTo(self) -> int:
         """Return UnixTime of the end of validity of the certificate."""
-        return self._validTo
+        return self._details.get("validTo")
 
     @property
     def protocol(self) -> str:
         """Return string of with the security protocol, e.g. "TLS1.2"."""
-        return self._protocol
+        return self._details.get("protocol")
 
 
 statusTexts = {

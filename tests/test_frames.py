@@ -1,21 +1,21 @@
 import asyncio
 import time
 
+import pytest
 from async_timeout import timeout
 from grappa import should
-import pytest
 
-from .frame_utils import attachFrame, detachFrame, dumpFrames, navigateFrame
 from simplechrome.errors import ElementHandleError, WaitTimeoutError
+from .base_test import BaseChromeTest
+from .frame_utils import attachFrame, detachFrame, dumpFrames, navigateFrame
 
 addElement = "tag=>document.body.appendChild(document.createElement(tag))"
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestContext(object):
+class TestContext(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_frame_context(self):
-        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
+        await self.goto_empty(waitUntil="load")
         await attachFrame(self.page, "frame1", f"{self.url}empty.html")
         self.page.frames | should.have.length(2)
         frame1 = self.page.frames[0]
@@ -36,21 +36,19 @@ class TestContext(object):
         a2 | should.be.equal.to(2)
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestEvaluateHandle(object):
+class TestEvaluateHandle(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_evaluate_handle(self):
-        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
+        await self.goto_empty(waitUntil="load")
         frame = self.page.mainFrame
         windowHandle = await frame.evaluateHandle("window")
         windowHandle | should.not_be.none
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestEvaluate(object):
+class TestEvaluate(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_frame_evaluate(self):
-        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
+        await self.goto_empty(waitUntil="load")
         await attachFrame(self.page, "frame1", f"{self.url}empty.html")
         len(self.page.frames) | should.be.equal.to(2)
         frame1 = self.page.frames[0]
@@ -63,36 +61,37 @@ class TestEvaluate(object):
         a2 | should.be.equal.to(2)
 
     @pytest.mark.asyncio
-    async def test_frame_evaluate_after_navigation(self):
-        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
+    async def test_frame_evaluate_after_navigation(self, ee_helper):
+        await self.goto_empty(waitUntil="load")
         self.result = None
 
         def frame_navigated(frame):
             self.result = asyncio.ensure_future(frame.evaluate("6 * 7"))
 
-        self.page.on("framenavigated", frame_navigated)
-        await self.page.goto(f"{self.url}empty.html")
+        ee_helper.addEventListener(self.page, "framenavigated", frame_navigated)
+        await self.goto_test("empty.html")
         self.result | should.not_be.none
         await self.result | should.be.equal.to(42)
 
     @pytest.mark.asyncio
     async def test_frame_cross_site(self):
-        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
+        await self.goto_empty(waitUntil="load")
         mainFrame = self.page.mainFrame
         loc = await mainFrame.evaluate("window.location.href")
         loc | should.be.a(str).that.should.be.equal.to(f"{self.url}empty.html")
 
 
-@pytest.mark.usefixtures("chrome_page")
-class TestWaitForFunction(object):
+class TestWaitForFunction(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_wait_for_expression(self):
+        await self.goto_empty(waitUntil="load")
         fut = asyncio.ensure_future(self.page.waitForFunction("window.__FOO === 1"))
         await self.page.evaluate("window.__FOO = 1;")
         await fut
 
     @pytest.mark.asyncio
     async def test_wait_for_function(self):
+        await self.goto_empty(waitUntil="load")
         fut = asyncio.ensure_future(
             self.page.waitForFunction("() => window.__FOO === 2")
         )
@@ -101,6 +100,7 @@ class TestWaitForFunction(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_function_args(self):
+        await self.goto_empty(waitUntil="load")
         fut = asyncio.ensure_future(
             self.page.waitForFunction("(a, b) => a + b === 3", {}, 1, 2)
         )
@@ -108,6 +108,7 @@ class TestWaitForFunction(object):
 
     @pytest.mark.asyncio
     async def test_poll_on_interval(self):
+        await self.goto_empty(waitUntil="load")
         result = []
         start_time = time.perf_counter()
         fut = asyncio.ensure_future(
@@ -127,6 +128,7 @@ class TestWaitForFunction(object):
 
     @pytest.mark.asyncio
     async def test_poll_on_mutation(self):
+        await self.goto_empty(waitUntil="load")
         result = []
         fut = asyncio.ensure_future(
             self.page.waitForFunction(
@@ -145,6 +147,7 @@ class TestWaitForFunction(object):
 
     @pytest.mark.asyncio
     async def test_poll_on_raf(self):
+        await self.goto_empty(waitUntil="load")
         result = []
         fut = asyncio.ensure_future(
             self.page.waitForFunction('() => window.__FOO === "hit"', polling="raf")
@@ -159,6 +162,7 @@ class TestWaitForFunction(object):
 
     @pytest.mark.asyncio
     async def test_bad_polling_value(self):
+        await self.goto_empty(waitUntil="load")
         with pytest.raises(ValueError) as cm:
             await self.page.waitForFunction("() => true", polling="unknown")
         str(cm.value) | should.contain("polling")
@@ -166,23 +170,27 @@ class TestWaitForFunction(object):
 
     @pytest.mark.asyncio
     async def test_negative_polling_value(self):
+        await self.goto_empty(waitUntil="load")
         with pytest.raises(ValueError) as cm:
             await self.page.waitForFunction("() => true", polling=-100)
         str(cm.value) | should.contain("Cannot poll with non-positive interval")
 
     @pytest.mark.asyncio
     async def test_wait_for_fucntion_return_value(self):
+        await self.goto_empty(waitUntil="load")
         result = await self.page.waitForFunction("() => 5")
         await result.jsonValue() | should.be.equal.to(5)
 
     @pytest.mark.asyncio
     async def test_wait_for_function_window(self):
+        await self.goto_empty(waitUntil="load")
         async with timeout(5) as to:
             await self.page.waitForFunction("() => window") | should.not_be.none
         to.expired | should.be.false
 
     @pytest.mark.asyncio
     async def test_wait_for_function_arg_element(self):
+        await self.goto_empty(waitUntil="load")
         await self.page.setContent("<div></div>")
         div = await self.page.J("div")
         fut = asyncio.ensure_future(
@@ -197,10 +205,10 @@ class TestWaitForFunction(object):
         result | should.have.index.at(0).equal.to(True)
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestWaitForSelector(object):
+class TestWaitForSelector(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_wait_for_selector_immediate(self):
+        await self.goto_empty(waitUntil="load")
         frame = self.page.mainFrame
         result = []
         fut = asyncio.ensure_future(frame.waitForSelector("*"))
@@ -216,7 +224,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_after_node_appear(self):
-        await self.page.reload()
+        await self.goto_empty(waitUntil="load")
         frame = self.page.mainFrame
         result = []
         fut = asyncio.ensure_future(frame.waitForSelector("div"))
@@ -233,7 +241,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_inner_html(self):
-        await self.page.reload()
+        await self.goto_empty(waitUntil="load")
         fut = asyncio.ensure_future(self.page.waitForSelector("h3 div"))
         await self.page.evaluate(addElement, "span")
         await self.page.evaluate(
@@ -245,7 +253,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_shortcut_for_main_frame(self):
-        await self.page.reload()
+        await self.goto_empty(waitUntil="load")
         await attachFrame(self.page, "frame1", f"{self.url}empty.html")
         otherFrame = self.page.frames[1]
         result = []
@@ -260,7 +268,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_run_in_specified_frame(self):
-        await self.page.reload()
+        await self.goto_empty(waitUntil="load")
         result = []
         await attachFrame(self.page, "frame1", f"{self.url}empty.html")
         await attachFrame(self.page, "frame2", f"{self.url}empty.html")
@@ -277,12 +285,14 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_fail(self):
+        await self.goto_empty(waitUntil="load")
         await self.page.evaluate("() => document.querySelector = null")
         with pytest.raises(ElementHandleError):
             await self.page.waitForSelector("*")
 
     @pytest.mark.asyncio
     async def test_fail_frame_detached(self):
+        await self.goto_empty(waitUntil="load")
         await attachFrame(self.page, "frame1", f"{self.url}empty.html")
         frame = self.page.frames[1]
         fut = frame.waitForSelector(".box")
@@ -293,8 +303,8 @@ class TestWaitForSelector(object):
     # @pytest.mark.skip("FIXME!!")
     @pytest.mark.asyncio
     async def test_cross_process_navigation(self):
+        await self.goto_empty(waitUntil="load")
         result = []
-        await self.page.goto(f"{self.url}empty.html", dict(waitUntil="load"))
         fut = asyncio.ensure_future(self.page.waitForSelector("h1"))
         fut.add_done_callback(lambda fut: result.append(True))
         await asyncio.sleep(0.1)
@@ -308,7 +318,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_visible(self):
-        await self.page.goto(f"{self.url}empty.html")
+        await self.goto_test("empty.html")
         div = []
         fut = asyncio.ensure_future(self.page.waitForSelector("div", visible=True))
         fut.add_done_callback(lambda fut: div.append(True))
@@ -330,6 +340,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_visible_inner(self):
+        await self.goto_empty(waitUntil="load")
         div = []
         fut = asyncio.ensure_future(
             self.page.waitForSelector("div#inner", visible=True)
@@ -354,6 +365,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_hidden(self):
+        await self.goto_empty(waitUntil="load")
         div = []
         await self.page.setContent('<div style="display: block;"></div>')
         fut = asyncio.ensure_future(self.page.waitForSelector("div", hidden=True))
@@ -368,6 +380,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_display_none(self):
+        await self.goto_empty(waitUntil="load")
         div = []
         await self.page.setContent('<div style="display: block;"></div>')
         fut = asyncio.ensure_future(self.page.waitForSelector("div", hidden=True))
@@ -382,6 +395,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_remove(self):
+        await self.goto_empty(waitUntil="load")
         div = []
         await self.page.setContent("<div></div>")
         fut = asyncio.ensure_future(self.page.waitForSelector("div", hidden=True))
@@ -396,11 +410,13 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_timeout(self):
+        await self.goto_empty(waitUntil="load")
         with pytest.raises(WaitTimeoutError):
             await self.page.waitForSelector("div", timeout=10)
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_node_mutation(self):
+        await self.goto_empty(waitUntil="load")
         div = []
         fut = asyncio.ensure_future(self.page.waitForSelector(".cls"))
         fut.add_done_callback(lambda fut: div.append(True))
@@ -412,6 +428,7 @@ class TestWaitForSelector(object):
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_return_element(self):
+        await self.goto_empty(waitUntil="load")
         selector = asyncio.ensure_future(self.page.waitForSelector(".zombo"))
         await self.page.setContent('<div class="zombo">anything</div>')
         await self.page.evaluate(
@@ -419,11 +436,10 @@ class TestWaitForSelector(object):
         ) | should.be.equal.to("anything")
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestWaitForXPath(object):
+class TestWaitForXPath(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_fancy_xpath(self):
-        await self.page.goto(f"{self.url}empty.html", dict(waitUntil="load"))
+        await self.goto_test("empty.html")
         await self.page.setContent("<p>red heering</p><p>hello world  </p>")
         waitForXPath = await self.page.waitForXPath(
             '//p[normalize-space(.)="hello world"]'
@@ -434,6 +450,7 @@ class TestWaitForXPath(object):
 
     @pytest.mark.asyncio
     async def test_specified_frame(self):
+        await self.goto_empty()
         result = []
         await attachFrame(self.page, "frame1", f"{self.url}empty.html")
         await attachFrame(self.page, "frame2", f"{self.url}empty.html")
@@ -449,17 +466,14 @@ class TestWaitForXPath(object):
 
     @pytest.mark.asyncio
     async def test_evaluation_failed(self):
-        scriptid = await self.page.evaluateOnNewDocument(
-            "function() {document.evaluate = null;}"
-        )
-        await self.page.goto(f"{self.url}empty.html")
+        await self.goto_empty()
+        await self.page.evaluate("document.evaluate = null;")
         with pytest.raises(ElementHandleError):
             await self.page.waitForXPath("*")
-        await self.page.removeScriptToEvaluateOnNewDocument(scriptid)
 
     @pytest.mark.asyncio
     async def test_frame_detached(self):
-        await self.page.goto(f"{self.url}empty.html", dict(waitUntil="load"))
+        await self.goto_empty(waitUntil="load")
         await attachFrame(self.page, "frame1", f"{self.url}empty.html")
         frame = self.page.frames[1]
         waitPromise = frame.waitForXPath('//*[@class="box"]', timeout=1000)
@@ -469,7 +483,7 @@ class TestWaitForXPath(object):
 
     @pytest.mark.asyncio
     async def test_hidden(self):
-        await self.page.goto(f"{self.url}empty.html", dict(waitUntil="load"))
+        await self.goto_empty(waitUntil="load")
         result = []
         await self.page.setContent('<div style="display: block;"></div>')
         waitForXPath = asyncio.ensure_future(
@@ -488,23 +502,26 @@ class TestWaitForXPath(object):
 
     @pytest.mark.asyncio
     async def test_return_element_handle(self):
+        await self.goto_empty(waitUntil="load")
         waitForXPath = self.page.waitForXPath('//*[@class="zombo"]')
         await self.page.setContent('<div class="zombo">anything</div>')
-        asyncio.sleep(0.5)
+        await asyncio.sleep(0.5)
         await self.page.evaluate(
             "x => x.textContent", await waitForXPath
         ) | should.be.equal.to("anything")
 
     @pytest.mark.asyncio
     async def test_text_node(self):
+        await self.goto_empty(waitUntil="load")
         await self.page.setContent("<div>some text</dev>")
-        asyncio.sleep(0.5)
+        await asyncio.sleep(0.5)
         text = await self.page.waitForXPath("//div/text()")
         res = await text.getProperty("nodeType")
         await res.jsonValue() | should.be.equal.to(3)
 
     @pytest.mark.asyncio
     async def test_single_slash(self):
+        await self.goto_empty(waitUntil="load")
         await self.page.setContent("<div>some text</div>")
         waitForXPath = self.page.waitForXPath("/html/body/div")
         await self.page.evaluate(
@@ -512,12 +529,11 @@ class TestWaitForXPath(object):
         ) | should.be.equal.to("some text")
 
 
-@pytest.mark.usefixtures("test_server", "chrome_page")
-class TestFrames(object):
+class TestFrames(BaseChromeTest):
     @pytest.mark.skip("FIXME!!")
     @pytest.mark.asyncio
     async def test_frame_nested(self):
-        await self.page.goto(f"{self.url}nested-frames.html")
+        await self.goto_test("nested-frames.html")
         dumped_frames = dumpFrames(self.page.mainFrame)
         with should(dumped_frames):
             should.have.length.of(3)
@@ -533,10 +549,12 @@ class TestFrames(object):
             )
 
     @pytest.mark.asyncio
-    async def test_frame_events(self):
-        await self.page.goto(f"{self.url}empty.html")
+    async def test_frame_events(self, ee_helper):
+        await self.goto_test("empty.html")
         attachedFrames = []
-        self.page.on("frameattached", lambda f: attachedFrames.append(f))
+        ee_helper.addEventListener(
+            self.page, "frameattached", lambda f: attachedFrames.append(f)
+        )
         await attachFrame(self.page, "frame1", f"{self.url}frame.html")
         with should(attachedFrames):
             should.have.length.of(1)
@@ -545,7 +563,9 @@ class TestFrames(object):
             )
 
         navigatedFrames = []
-        self.page.on("framenavigated", lambda f: navigatedFrames.append(f))
+        ee_helper.addEventListener(
+            self.page, "framenavigated", lambda f: navigatedFrames.append(f)
+        )
         await navigateFrame(self.page, "frame1", f"{self.url}empty.html")
         with should(navigatedFrames):
             should.have.length.of(1)
@@ -554,39 +574,53 @@ class TestFrames(object):
             )
 
         detachedFrames = []
-        self.page.on("framedetached", lambda f: detachedFrames.append(f))
+        ee_helper.addEventListener(
+            self.page, "framedetached", lambda f: detachedFrames.append(f)
+        )
         await detachFrame(self.page, "frame1")
         len(detachedFrames) | should.be.equal.to(1)
         detachedFrames[0].isDetached() | should.be.true
 
     @pytest.mark.asyncio
     async def test_frame_cross_process(self):
-        await self.page.goto(f"{self.url}empty.html")
+        await self.goto_test("empty.html")
         mainFrame = self.page.mainFrame
-        await self.page.goto(f"{self.url}empty.html")
+        await self.goto_test("empty.html")
         self.page.mainFrame | should.be.equal.to(mainFrame)
 
     @pytest.mark.asyncio
-    async def test_frame_events_main(self):
+    async def test_frame_events_main(self, ee_helper):
         # no attach/detach events should be emitted on main frame
         events = []
         navigatedFrames = []
-        self.page.on("frameattached", lambda f: events.append(f))
-        self.page.on("framedetached", lambda f: events.append(f))
-        self.page.on("framenavigated", lambda f: navigatedFrames.append(f))
-        await self.page.goto(f"{self.url}empty.html")
+        ee_helper.addEventListener(
+            self.page, "frameattached", lambda f: events.append(f)
+        )
+        ee_helper.addEventListener(
+            self.page, "framedetached", lambda f: events.append(f)
+        )
+        ee_helper.addEventListener(
+            self.page, "framenavigated", lambda f: navigatedFrames.append(f)
+        )
+        await self.goto_test("empty.html")
         events | should.have.length.of(0)
         len(navigatedFrames) | should.be.equal.to(1)
 
     @pytest.mark.asyncio
-    async def test_frame_events_child(self):
+    async def test_frame_events_child(self, ee_helper):
         attachedFrames = []
         detachedFrames = []
         navigatedFrames = []
-        self.page.on("frameattached", lambda f: attachedFrames.append(f))
-        self.page.on("framedetached", lambda f: detachedFrames.append(f))
-        self.page.on("framenavigated", lambda f: navigatedFrames.append(f))
-        await self.page.goto(f"{self.url}nested-frames.html")
+        ee_helper.addEventListener(
+            self.page, "frameattached", lambda f: attachedFrames.append(f)
+        )
+        ee_helper.addEventListener(
+            self.page, "framedetached", lambda f: detachedFrames.append(f)
+        )
+        ee_helper.addEventListener(
+            self.page, "framenavigated", lambda f: navigatedFrames.append(f)
+        )
+        await self.goto_test("nested-frames.html")
         len(attachedFrames) | should.be.equal.to(4)
         len(detachedFrames) | should.be.equal.to(0)
         len(navigatedFrames) | should.be.equal.to(5)
@@ -594,14 +628,14 @@ class TestFrames(object):
         attachedFrames.clear()
         detachedFrames.clear()
         navigatedFrames.clear()
-        await self.page.goto(f"{self.url}empty.html")
+        await self.goto_test("empty.html")
         len(attachedFrames) | should.be.equal.to(0)
         len(detachedFrames) | should.be.equal.to(4)
         len(navigatedFrames) | should.be.equal.to(1)
 
     @pytest.mark.asyncio
     async def test_frame_name(self):
-        await self.page.goto(f"{self.url}empty.html")
+        await self.goto_test("empty.html")
         await attachFrame(self.page, "FrameId", f"{self.url}empty.html")
         await asyncio.sleep(0.1)
         await self.page.evaluate(
@@ -625,7 +659,7 @@ class TestFrames(object):
 
     @pytest.mark.asyncio
     async def test_frame_parent(self):
-        await self.page.goto(f"{self.url}empty.html")
+        await self.goto_test("empty.html")
         await attachFrame(self.page, "frame1", f"{self.url}empty.html")
         await attachFrame(self.page, "frame2", f"{self.url}empty.html")
         frame1 = self.page.frames[0]
