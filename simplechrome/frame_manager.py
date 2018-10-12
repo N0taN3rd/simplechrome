@@ -44,53 +44,29 @@ class FrameManager(EventEmitter):
 
     def __init__(self, client: CDPSession, frameTree: Dict, page: "Page") -> None:
         """Make new frame manager."""
-        super().__init__()
+        super().__init__(loop=asyncio.get_event_loop())
         self._client = client
         self._page = page
         self._frames: OrderedDict[str, Frame] = OrderedDict()
-        self.mainFrame: Optional[Frame] = None
+        self._mainFrame: Optional[Frame] = None
         self._contextIdToContext: Dict[str, ExecutionContext] = dict()
         self._emits_life = False
+        self._client.on("Page.frameAttached", self._onFrameAttached)
+        self._client.on("Page.frameNavigated", self._onFrameNavigated)
         self._client.on(
-            "Page.frameAttached",
-            lambda event: self._onFrameAttached(
-                event.get("frameId", ""), event.get("parentFrameId", "")
-            ),
+            "Page.navigatedWithinDocument", self._onFrameNavigatedWithinDocument
+        )
+        self._client.on("Page.frameDetached", self._onFrameDetached)
+        self._client.on("Page.frameStoppedLoading", self._onFrameStoppedLoading)
+        self._client.on(
+            "Runtime.executionContextCreated", self._onExecutionContextCreated
         )
         self._client.on(
-            "Page.frameNavigated",
-            lambda event: self._onFrameNavigated(event.get("frame")),
+            "Runtime.executionContextDestroyed", self._onExecutionContextDestroyed
         )
         self._client.on(
-            "Page.navigatedWithinDocument",
-            lambda event: self._onFrameNavigatedWithinDocument(
-                event.get("frameId"), event.get("url")
-            ),
+            "Runtime.executionContextsCleared", self._onExecutionContextsCleared
         )
-        self._client.on(
-            "Page.frameDetached",
-            lambda event: self._onFrameDetached(event.get("frameId")),
-        )
-        self._client.on(
-            "Page.frameStoppedLoading",
-            lambda event: self._onFrameStoppedLoading(event.get("frameId")),
-        )
-
-        self._client.on(
-            "Runtime.executionContextCreated",
-            lambda event: self._onExecutionContextCreated(event),
-        )
-
-        self._client.on(
-            "Runtime.executionContextDestroyed",
-            lambda event: self._onExecutionContextDestroyed(event),
-        )
-
-        self._client.on(
-            "Runtime.executionContextsCleared",
-            lambda event: self._onExecutionContextsCleared(event),
-        )
-
         self._client.on("Page.lifecycleEvent", self._onLifecycleEvent)
 
         self._handleFrameTree(frameTree)
@@ -98,6 +74,10 @@ class FrameManager(EventEmitter):
     @property
     def page(self) -> "Page":
         return self._page
+
+    @property
+    def mainFrame(self) -> "Frame":
+        return self._mainFrame
 
     def enable_lifecycle_emitting(self) -> None:
         self._emits_life = True
@@ -128,14 +108,16 @@ class FrameManager(EventEmitter):
     def _handleFrameTree(self, frameTree: Dict) -> None:
         frame = frameTree["frame"]
         if "parentId" in frame:
-            self._onFrameAttached(frame["id"], frame["parentId"])
+            self._onFrameAttached(frame)
         self._onFrameNavigated(frame)
         if "childFrames" not in frameTree:
             return
         for child in frameTree["childFrames"]:
             self._handleFrameTree(child)
 
-    def _onFrameAttached(self, frameId: str, parentFrameId: str) -> None:
+    def _onFrameAttached(self, eventOrFrame: Dict) -> None:
+        frameId: str = eventOrFrame.get("frameId", "")
+        parentFrameId: str = eventOrFrame.get("parentFrameId", "")
         if frameId in self._frames:
             return
         parentFrame = self._frames.get(parentFrameId)
@@ -143,10 +125,11 @@ class FrameManager(EventEmitter):
         self._frames[frameId] = frame
         self.emit(self.Events.FrameAttached, frame)
 
-    def _onFrameNavigated(self, framePayload: dict) -> None:
+    def _onFrameNavigated(self, eventOrFrame: Dict) -> None:
+        framePayload: Dict = eventOrFrame.get("frame", eventOrFrame)
         isMainFrame = framePayload.get("parentId") is None
         if isMainFrame:
-            frame = self.mainFrame
+            frame = self._mainFrame
         else:
             frame = self._frames.get(framePayload.get("id", ""))
         if not (isMainFrame or frame):
@@ -171,25 +154,29 @@ class FrameManager(EventEmitter):
                 # Initial main frame navigation.
                 frame = Frame(self, self._client, None, _id)
             self._frames[_id] = frame
-            self.mainFrame = frame
+            self._mainFrame = frame
 
         # Update frame payload.
         frame.navigated(framePayload)
         self.emit(FrameManager.Events.FrameNavigated, frame)
 
-    def _onFrameDetached(self, frameId: str) -> None:
+    def _onFrameDetached(self, event: Dict) -> None:
+        frameId: str = event.get("frameId")
         frame = self._frames.get(frameId)
         if frame:
             self._removeFramesRecursively(frame)
 
-    def _onFrameStoppedLoading(self, frameId):
+    def _onFrameStoppedLoading(self, event: Dict) -> None:
+        frameId: str = event.get("frameId")
         frame = self._frames.get(frameId)
         if frame is None:
             return
         frame._onLoadingStopped()
         self.emit(FrameManager.Events.LifecycleEvent, frame)
 
-    def _onFrameNavigatedWithinDocument(self, frameId: str, url: str) -> None:
+    def _onFrameNavigatedWithinDocument(self, event: Dict) -> None:
+        frameId: str = event.get("frameId")
+        url: str = event.get("url")
         frame = self._frames.get(frameId, None)
         if frame is None:
             return
@@ -197,7 +184,7 @@ class FrameManager(EventEmitter):
         self.emit(FrameManager.Events.FrameNavigatedWithinDocument, frame)
         self.emit(FrameManager.Events.FrameNavigated, frame)
 
-    def _onExecutionContextCreated(self, event: dict) -> None:
+    def _onExecutionContextCreated(self, event: Dict) -> None:
         contextPayload = event.get("context")
         if contextPayload.get("auxData"):
             frameId = contextPayload["auxData"]["frameId"]
@@ -211,9 +198,7 @@ class FrameManager(EventEmitter):
         if frame:
             frame._addExecutionContext(context)
 
-    def _onExecutionContextDestroyed(self, event: dict) -> None:
-        # print("Runtime.executionContextDestroyed")
-        # print(event)
+    def _onExecutionContextDestroyed(self, event: Dict) -> None:
         executionContextId = event.get("executionContextId")
         context = self._contextIdToContext.get(executionContextId)
         if not context:
@@ -223,7 +208,7 @@ class FrameManager(EventEmitter):
         if frame:
             frame._removeExecutionContext(context)
 
-    def _onExecutionContextsCleared(self, *args) -> None:
+    def _onExecutionContextsCleared(self, *args: Any) -> None:
         for context in self._contextIdToContext.values():
             frame = context.frame
             if frame:
@@ -807,7 +792,7 @@ class Frame(EventEmitter):
 
         fut.add_done_callback(remove_cb)
         if timeout is not None:
-            return asyncio.wait_for(fut, timeout=timeout, loop=loop)
+            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
         return fut
 
     def loaded_waiter(
@@ -833,7 +818,7 @@ class Frame(EventEmitter):
         fut.add_done_callback(remove_cb)
         self.on(Frame.Events.LifeCycleEvent, on_load)
         if timeout is not None:
-            return asyncio.wait_for(fut, timeout=timeout, loop=loop)
+            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
         return fut
 
     def network_idle_waiter(
@@ -859,7 +844,7 @@ class Frame(EventEmitter):
         fut.add_done_callback(remove_cb)
         self.on(Frame.Events.LifeCycleEvent, onlf)
         if timeout is not None:
-            return asyncio.wait_for(fut, timeout=timeout, loop=loop)
+            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
         return fut
 
         #: Alias to :meth:`querySelector`
@@ -910,22 +895,16 @@ class Frame(EventEmitter):
             self._contextPromise = asyncio.get_event_loop().create_future()
 
     def _contextResolveCallback(self, context: ExecutionContext) -> None:
-        # print(f"Adding context {context} to {self}")
         if self._contextPromise.done():
-            # print(f"Frame {self._url} had context {self._contextPromise.result()}")
             self._contextPromise = asyncio.get_event_loop().create_future()
         self._contextPromise.set_result(context)
-        # print(f"Frame {self._url} now has context {self._contextPromise.result()}")
-        # print()
 
     def _addExecutionContext(self, context: ExecutionContext) -> None:
         if context._isDefault:
-            # print(f"Adding execution context. Frame={self} Context={context}")
             self._setDefaultContext(context)
 
     def _removeExecutionContext(self, context: ExecutionContext) -> None:
         if context._isDefault:
-            # print(f"Removing execution context. Frame={self} Context={context}")
             self._setDefaultContext(None)
 
     def __repr__(self):
