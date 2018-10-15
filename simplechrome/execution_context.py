@@ -44,7 +44,11 @@ class ExecutionContext(object):
         self._isDefault = contextPayload.get("auxData", {}).get("isDefault", False)
 
     @property
-    def frame(self):
+    def id(self) -> str:
+        return self._contextId
+
+    @property
+    def frame(self) -> "Frame":
         return self._frame
 
     async def evaluate(self, pageFunction: str, *args: Any) -> Any:

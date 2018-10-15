@@ -222,14 +222,11 @@ class Page(EventEmitter):
         self.emit(Page.Events.LifecycleEvent, le)
 
     def enable_lifecycle_emitting(self) -> None:
-        _fm = self._frameManager
-        _fm.enable_lifecycle_emitting()
-        _fm.on(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
+        self._frameManager.on(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
 
     def disable_lifecyle_emitting(self) -> None:
-        _fm = self._frameManager
-        _fm.disable_lifecycle_emitting()
-        _fm.remove_listener(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
+        self._frameManager.disable_lifecycle_emitting()
+        self._frameManager.remove_listener(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
 
     async def getWindowDescriptor(self):
         return await self._client.send(
@@ -1188,7 +1185,11 @@ class Page(EventEmitter):
 
     async def close(self) -> None:
         """Close connection."""
-        conn = self._client._connection
+        if self._client._connection is not None:
+            conn = self._client._connection
+        else:
+            conn = self._client
+
         if conn is None:
             raise PageError(
                 "Protocol Error: Connectoin Closed. "

@@ -276,7 +276,7 @@ class NetworkManager(EventEmitter):
 
 @attr.dataclass(repr=False)
 class Request(object):
-    _client: CDPSession = attr.ib()
+    _client: Union[Client, TargetSession] = attr.ib()
     _frame: Optional[Frame] = attr.ib()
     _interceptionId: Optional[str] = attr.ib()
     _allowInterception: bool = attr.ib()
@@ -561,7 +561,7 @@ errorReasons = {
 
 @attr.dataclass(repr=False)
 class Response(object):
-    _client: CDPSession = attr.ib()
+    _client: Union[Client, TargetSession] = attr.ib()
     _request: Request = attr.ib()
     _responseInfo: ResponseInfo = attr.ib()
     _contentPromise: Optional[Future] = attr.ib(init=False, default=None)

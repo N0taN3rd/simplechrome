@@ -2,7 +2,7 @@ import os
 import pytest
 from grappa import should
 
-from simplechrome import NetworkError
+from cripy.client import NetworkError
 from simplechrome.launcher import connect, launch
 from .base_test import BaseChromeTest
 
@@ -60,7 +60,7 @@ class TestCDPSession(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_send_event(self, ee_helper):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createTargetSession()
         await client.send("Network.enable")
         events = []
         ee_helper.addEventListener(

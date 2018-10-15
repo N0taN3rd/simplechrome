@@ -87,7 +87,7 @@ class FrameManager(EventEmitter):
     def enable_lifecycle_emitting(self) -> None:
         self._emits_life = True
 
-    def disable_lifecyle_emitting(self) -> None:
+    def disable_lifecycle_emitting(self) -> None:
         self._emits_life = False
 
     def executionContextById(
@@ -262,6 +262,7 @@ class Frame(EventEmitter):
 
         self._documentPromise: Optional[ElementHandle] = None
         self._contextPromise: Optional[Future] = None
+        self._executionContext: Optional[ExecutionContext] = None
         self._setDefaultContext(None)
         self._at_lifecycle: Optional[str] = None
         self._waitTasks: Set[WaitTask] = set()  # maybe list
@@ -460,13 +461,6 @@ class Frame(EventEmitter):
 }
 """
         await self.evaluate(func, html)
-
-    def isDetached(self) -> bool:
-        """Return ``True`` if this frame is detached.
-
-        Otherwise return ``False``.
-        """
-        return self._detached
 
     async def injectFile(self, filePath: str) -> str:
         """[Deprecated] Inject file to the frame."""
@@ -905,12 +899,14 @@ class Frame(EventEmitter):
                 asyncio.ensure_future(waitTask.rerun())
         else:
             self._documentPromise = None
+            self._executionContext = None
             self._contextPromise = asyncio.get_event_loop().create_future()
 
     def _contextResolveCallback(self, context: ExecutionContext) -> None:
         if self._contextPromise.done():
             self._contextPromise = asyncio.get_event_loop().create_future()
         self._contextPromise.set_result(context)
+        self._executionContext = context
 
     def _addExecutionContext(self, context: ExecutionContext) -> None:
         if context._isDefault:

@@ -1,15 +1,6 @@
 # -*- coding: utf-8 -*-
 """The simple chrome package"""
 
-try:
-    import uvloop
-    import asyncio
-
-    if not isinstance(asyncio.get_event_loop(), uvloop.Loop):
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-except ImportError:
-    pass
-
 from .browser_fetcher import *
 from .chrome import *
 from .connection import *

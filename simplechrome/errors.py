@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import asyncio
 
+from cripy.client import NetworkError
+
 __all__ = [
     "BrowserError",
     "ElementHandleError",
@@ -23,11 +25,6 @@ class ElementHandleError(Exception):  # noqa: D204
 
     pass
 
-
-class NetworkError(Exception):  # noqa: D204
-    """Network/Protocol related exception."""
-
-    pass
 
 
 class PageError(Exception):  # noqa: D204
