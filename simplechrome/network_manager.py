@@ -67,7 +67,7 @@ class NetworkManager(EventEmitter):
         self._client.on("Network.responseReceived", self._onResponseReceived)
         self._client.on("Network.loadingFinished", self._onLoadingFinished)
         self._client.on("Network.loadingFailed", self._onLoadingFailed)
-        self._client.on('Network.requestIntercepted', self._onRequestIntercepted)
+        self._client.on("Network.requestIntercepted", self._onRequestIntercepted)
 
     def setFrameManager(self, frameManager: FrameManager) -> None:
         self._frameManager = frameManager
@@ -188,8 +188,10 @@ class NetworkManager(EventEmitter):
         requestHash = generateRequestHash(event["request"])
         requestId = self._requestHashToRequestIds.firstValue(requestHash)
         if requestId is not None:
-            requestWillBeSentEvent = self._requestIdToRequestWillBeSentEvent.get(requestId)
-            self._onRequest(requestWillBeSentEvent, event.get('interceptionId'))
+            requestWillBeSentEvent = self._requestIdToRequestWillBeSentEvent.get(
+                requestId
+            )
+            self._onRequest(requestWillBeSentEvent, event.get("interceptionId"))
             self._requestHashToRequestIds.delete(requestHash, requestId)
             del self._requestIdToRequestWillBeSentEvent[requestId]
         else:
@@ -209,7 +211,14 @@ class NetworkManager(EventEmitter):
         frame = None
         if self._frameManager is not None and event.get("frameId") is not None:
             frame = self._frameManager.frame(event.get("frameId"))
-        request = Request(self._client, frame, interceptionId, self._userRequestInterceptionEnabled, event, redirectChain)
+        request = Request(
+            self._client,
+            frame,
+            interceptionId,
+            self._userRequestInterceptionEnabled,
+            event,
+            redirectChain,
+        )
         self._requestIdToRequest[requestId] = request
         self.emit(NetworkManager.Events.Request, request)
 

@@ -26,7 +26,6 @@ class ElementHandleError(Exception):  # noqa: D204
     pass
 
 
-
 class PageError(Exception):  # noqa: D204
     """Page/Frame related exception."""
 

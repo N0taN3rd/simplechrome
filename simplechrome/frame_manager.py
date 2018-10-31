@@ -196,11 +196,11 @@ class FrameManager(EventEmitter):
         else:
             frameId = None
 
-        frame = self._frames.get(frameId) if frameId else None
+        frame: Optional[Frame] = self._frames.get(frameId) if frameId else None
         contextID = contextPayload["id"]
         context = ExecutionContext(self._client, contextPayload, frame)
         self._contextIdToContext[contextID] = context
-        if frame:
+        if frame is not None:
             frame._addExecutionContext(context)
 
     def _onExecutionContextDestroyed(self, event: Dict) -> None:
@@ -210,7 +210,7 @@ class FrameManager(EventEmitter):
             return
         del self._contextIdToContext[executionContextId]
         frame = context.frame
-        if frame:
+        if frame is not None:
             frame._removeExecutionContext(context)
 
     def _onExecutionContextsCleared(self, *args: Any) -> None:
@@ -798,7 +798,9 @@ class Frame(EventEmitter):
 
         fut.add_done_callback(remove_cb)
         if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
+            return asyncio.ensure_future(
+                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
+            )
         return fut
 
     def loaded_waiter(
@@ -824,7 +826,9 @@ class Frame(EventEmitter):
         fut.add_done_callback(remove_cb)
         self.on(Frame.Events.LifeCycleEvent, on_load)
         if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
+            return asyncio.ensure_future(
+                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
+            )
         return fut
 
     def network_idle_waiter(
@@ -850,7 +854,9 @@ class Frame(EventEmitter):
         fut.add_done_callback(remove_cb)
         self.on(Frame.Events.LifeCycleEvent, onlf)
         if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
+            return asyncio.ensure_future(
+                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
+            )
         return fut
 
         #: Alias to :meth:`querySelector`

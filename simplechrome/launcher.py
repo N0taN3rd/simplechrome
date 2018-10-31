@@ -169,7 +169,7 @@ class Launcher(object):
 
     async def _find_target(self) -> Dict:
         async with ClientSession() as session:
-            for i in range(100):
+            for i in range(150):
                 await asyncio.sleep(0.1)
                 try:
                     res = await session.get(urljoin(self.url, "json"))

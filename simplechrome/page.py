@@ -226,7 +226,9 @@ class Page(EventEmitter):
 
     def disable_lifecyle_emitting(self) -> None:
         self._frameManager.disable_lifecycle_emitting()
-        self._frameManager.remove_listener(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
+        self._frameManager.remove_listener(
+            FrameManager.Events.LifecycleEvent, self._on_lifecycle
+        )
 
     async def getWindowDescriptor(self):
         return await self._client.send(
