@@ -35,6 +35,7 @@ def test_server(request: SubRequest) -> None:
     app = get_app()
     yield
     app.clean_up()
+    # print('stopping server')
 
 
 @pytest.yield_fixture(scope="class")
@@ -60,14 +61,14 @@ def event_loop() -> Generator[uvloop.Loop, Any, None]:
     loop.close()
 
 
-@pytest.yield_fixture
-async def chrome() -> AsyncGenerator[Chrome, Any]:
-    if os.environ.get("INTRAVIS", None) is not None:
-        browser = await launch(headless=False)
-    else:
-        browser = await launch()
-    yield browser
-    await browser.close()
+# @pytest.yield_fixture
+# async def chrome() -> AsyncGenerator[Chrome, Any]:
+#     if os.environ.get("INTRAVIS", None) is not None:
+#         browser = await launch(headless=False)
+#     else:
+#         browser = await launch()
+#     yield browser
+#     await browser.close()
 
 
 @pytest.yield_fixture(scope="class")

@@ -42,12 +42,12 @@ class NetworkManager(EventEmitter):
     Events: NetworkEvents = NetworkEvents()
 
     def __init__(
-        self, client: Union[Client, TargetSession], frameManager: FrameManager
+        self, client: Union[Client, TargetSession]
     ) -> None:
         """Make new NetworkManager."""
         super().__init__(loop=asyncio.get_event_loop())
         self._client = client
-        self._frameManager = frameManager
+        self._frameManager: Optional["FrameManager"] = None
         self._requestIdToRequest: Dict[str, Request] = dict()
         self._interceptionIdToRequest: Dict[str, Request] = dict()
         self._requestIdToRequestWillBeSentEvent: Dict[str, RequestInfo] = dict()
@@ -69,7 +69,7 @@ class NetworkManager(EventEmitter):
         self._client.on("Network.loadingFailed", self._onLoadingFailed)
         self._client.on("Network.requestIntercepted", self._onRequestIntercepted)
 
-    def setFrameManager(self, frameManager: FrameManager) -> None:
+    def setFrameManager(self, frameManager: "FrameManager") -> None:
         self._frameManager = frameManager
 
     async def authenticate(self, credentials: Dict[str, str]) -> None:
@@ -283,7 +283,7 @@ class NetworkManager(EventEmitter):
         self.emit(NetworkManager.Events.RequestFailed, request)
 
 
-@attr.dataclass(repr=False)
+@attr.dataclass
 class Request(object):
     _client: Union[Client, TargetSession] = attr.ib()
     _frame: Optional[Frame] = attr.ib()
@@ -302,7 +302,7 @@ class Request(object):
 
     def __attrs_post_init__(self) -> None:
         self._preq = self._requestInfo.get("request")
-        self._type = self._preq.get("type")
+        self._type = self._requestInfo.get("type")
 
     @property
     def wasCanceled(self) -> bool:

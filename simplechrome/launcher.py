@@ -170,7 +170,7 @@ class Launcher(object):
     async def _find_target(self) -> Dict:
         async with ClientSession() as session:
             for i in range(150):
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.5)
                 try:
                     res = await session.get(urljoin(self.url, "json"))
                     data = await res.json()
@@ -241,8 +241,8 @@ class Launcher(object):
                 pass
         if self._tmp_user_data_dir and os.path.exists(self._tmp_user_data_dir.name):
             # Force kill chrome only when using temporary userDataDir
-            self.wait_for_chrome_death()
             self._cleanup_tmp_user_data_dir()
+        self.wait_for_chrome_death()
 
     def wait_for_chrome_death(self) -> None:
         """Terminate chrome."""

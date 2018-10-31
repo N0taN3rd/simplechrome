@@ -2,13 +2,14 @@
 import asyncio
 from subprocess import Popen
 from typing import Awaitable, Callable, Dict, List, Optional, Union
-
+from async_timeout import timeout as aiotimeout
 import attr
 from pyee import EventEmitter
 
 from .connection import Client, TargetSession
 from .errors import BrowserError
 from .page import Page
+from .helper import Helper
 
 __all__ = ["Chrome", "BrowserContext", "Target"]
 
@@ -41,14 +42,16 @@ class Chrome(EventEmitter):
         self._screenshotTaskQueue: List = []
         self._connection: Union[Client, TargetSession] = connection
         self._targetInfo = targetInfo
+        browserContextId = None
         if self._targetInfo is not None:
-            self._defaultContext: BrowserContext = BrowserContext(
-                self, targetInfo["browserContextId"] if targetInfo is not None else None
-            )
+            browserContextId = targetInfo.get("browserContextId", None)
+        self._defaultContext: BrowserContext = BrowserContext(
+            connection, self, browserContextId
+        )
         self._contexts: Dict[str, BrowserContext] = dict()
         self._page: Optional[Page] = None
         for contextId in contextIds:
-            self._contexts[contextId] = BrowserContext(self, contextId)
+            self._contexts[contextId] = BrowserContext(connection, self, contextId)
 
         def _dummy_callback() -> Awaitable[None]:
             fut = asyncio.get_event_loop().create_future()
@@ -114,9 +117,46 @@ class Chrome(EventEmitter):
         """Get all targets of this browser."""
         return [target for target in self._targets.values() if target._isInitialized]
 
+    async def waitForTarget(
+        self,
+        predicate: Callable[["Target"], bool],
+        timeout: Optional[Union[int, float]] = 30,
+    ) -> Optional["Target"]:
+        existingTarget = None
+        for target in self._targets.values():
+            if target._isInitialized and predicate(target):
+                existingTarget = target
+                break
+        if existingTarget is not None:
+            return existingTarget
+        existingTargetPromise: asyncio.Future = asyncio.get_event_loop().create_future()
+
+        def check(atarget: "Target") -> None:
+            if predicate(atarget) and not existingTargetPromise.done():
+                existingTargetPromise.set_result(atarget)
+
+        listeners = [
+            Helper.addEventListener(self, Chrome.Events.TargetCreated, check),
+            Helper.addEventListener(self, Chrome.Events.TargetChanged, check),
+        ]
+
+        existingTargetPromise.add_done_callback(
+            lambda future: Helper.removeEventListeners(listeners)
+        )
+
+        if timeout is None:
+            return await existingTargetPromise
+
+        try:
+            async with aiotimeout(timeout):
+                existingTarget = await existingTargetPromise
+        except asyncio.TimeoutError:
+            pass
+
+        return existingTarget
+
     async def newPage(self) -> Page:
-        page = await self._defaultContext.newPage()
-        return page
+        return await self._defaultContext.newPage()
 
     async def pages(self) -> List[Page]:
         """Get all pages of this browser."""
@@ -145,7 +185,7 @@ class Chrome(EventEmitter):
     async def createIncognitoBrowserContext(self) -> "BrowserContext":
         nc = await self._connection.send("Target.createBrowserContext")
         contextId = nc.get("browserContextId")
-        context = BrowserContext(self, contextId)
+        context = BrowserContext(self._connection, self, contextId)
         self._contexts[contextId] = context
         return context
 
@@ -232,17 +272,32 @@ class BrowserContextEvents(object):
 class BrowserContext(EventEmitter):
     Events: BrowserContextEvents = BrowserContextEvents()
 
-    def __init__(self, browser: Chrome, contextId) -> None:
+    def __init__(
+        self,
+        client: Union[Client, TargetSession],
+        browser: Chrome,
+        contextId: Optional[str] = None,
+    ) -> None:
         super().__init__(loop=asyncio.get_event_loop())
+        self.client: Union[Client, TargetSession] = client
         self._browser = browser
         self._id = contextId
 
     def targets(self) -> List["Target"]:
         targets = []
         for t in self._browser.targets():
-            if t.browserContext == self:
+            if t.browserContext is self:
                 targets.append(t)
         return targets
+
+    def waitForTarget(
+        self,
+        predicate: Callable[["Target"], bool],
+        timeout: Optional[Union[int, float]],
+    ) -> Awaitable[Optional["Target"]]:
+        return self._browser.waitForTarget(
+            lambda target: target.browserContext is self and predicate(target), timeout
+        )
 
     async def pages(self) -> List[Page]:
         pages = []
@@ -253,17 +308,62 @@ class BrowserContext(EventEmitter):
                     pages.append(page)
         return pages
 
+    async def clearPermissionOverrides(self) -> None:
+        opts = dict()
+        if self._id is not None:
+            opts["browserContextId"] = self._id
+        await self.client.send("Browser.resetPermissions", opts)
+
+    async def overridePermissions(self, origin: str, permissions: List[str]) -> None:
+        webPermissionToProtocol: Dict[str, str] = {
+            "geolocation": "geolocation",
+            "midi": "midi",
+            "notifications": "notifications",
+            "push": "push",
+            "camera": "videoCapture",
+            "microphone": "audioCapture",
+            "background-sync": "backgroundSync",
+            "ambient-light-sensor": "sensors",
+            "accelerometer": "sensors",
+            "gyroscope": "sensors",
+            "magnetometer": "sensors",
+            "accessibility-events": "accessibilityEvents",
+            "clipboard-read": "clipboardRead",
+            "clipboard-write": "clipboardWrite",
+            "payment-handler": "paymentHandler",
+            # chrome-specific permissions we have.
+            "midi-sysex": "midiSysex",
+        }
+        protocolPermissions = []
+        for permission in permissions:
+            protocolPermission = webPermissionToProtocol.get(permission)
+            if protocolPermission is None:
+                raise Exception(f"Unknown permission {permission}")
+            protocolPermissions.append(protocolPermission)
+        opts = dict(origin=origin, permissions=protocolPermissions)
+        if self._id is not None:
+            opts["browserContextId"] = self._id
+        await self.client.send("Browser.resetPermissions", opts)
+
     def isIncognito(self) -> bool:
         return self._id is not None
 
     def newPage(self) -> Awaitable[Page]:
-        return self._browser.createPageInContext(self._id)
+        cntx = self._id
+        if self is self._browser._defaultContext:
+            cntx = None
+        return self._browser.createPageInContext(cntx)
 
     def browser(self) -> Chrome:
         return self._browser
 
     async def close(self):
-        await self._browser._disposeContext(self._id)
+        cntx = self._id
+        if self is self._browser._defaultContext:
+            cntx = None
+        if cntx is not None:
+            return
+        await self._browser._disposeContext(cntx)
 
 
 class Target(object):

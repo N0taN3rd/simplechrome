@@ -11,6 +11,7 @@ __all__ = [
     "WaitTimeoutError",
     "LauncherError",
     "InputError",
+    "NavigationError"
 ]
 
 
@@ -48,3 +49,7 @@ class InputError(Exception):
     """Input related exception"""
 
     pass
+
+
+class NavigationError(Exception):
+    """For navigation errors"""
