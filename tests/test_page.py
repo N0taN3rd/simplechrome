@@ -179,9 +179,13 @@ class TestOfflineMode(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_offline_mode(self):
         await self.page.setOfflineMode(True)
-        with pytest.raises(PageError):
+        had_error = False
+        try:
             await self.goto_test("empty.html")
+        except Exception as e:
+            had_error = True
         await self.page.setOfflineMode(False)
+        had_error | should.be.true
         res = await self.page.reload()
         res.status | should.be.equal.to(200)
 

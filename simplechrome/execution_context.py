@@ -258,7 +258,7 @@ def computeQuadArea(quad: List[Dict[str, float]]) -> float:
         p1 = quad[i]
         p2 = quad[(i + 1) % qlen]
         area += (p1["x"] * p2["y"] - p2["x"] * p1["y"]) / 2
-    return area
+    return math.fabs(area)
 
 
 class ElementHandle(JSHandle):

@@ -11,6 +11,7 @@ __all__ = [
     "WaitTimeoutError",
     "LauncherError",
     "InputError",
+    "NavigationError"
 ]
 
 
@@ -24,7 +25,6 @@ class ElementHandleError(Exception):  # noqa: D204
     """ElementHandle related exception."""
 
     pass
-
 
 
 class PageError(Exception):  # noqa: D204
@@ -49,3 +49,7 @@ class InputError(Exception):
     """Input related exception"""
 
     pass
+
+
+class NavigationError(Exception):
+    """For navigation errors"""

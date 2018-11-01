@@ -19,8 +19,7 @@ from .errors import PageError
 from .execution_context import JSHandle, ElementHandle, createJSHandle  # noqa: F401
 from .frame_manager import FrameManager, Frame
 from .input import Keyboard, Mouse, Touchscreen
-from .navigator_watcher import NavigatorWatcher
-from .network_manager import NetworkManager, Response, Request
+from .network_manager import NetworkManager, Response
 from .util import merge_dict
 
 if TYPE_CHECKING:
@@ -70,9 +69,6 @@ class Page(EventEmitter):
         a4={"width": 8.27, "height": 11.7},
         a5={"width": 5.83, "height": 8.27},
     )
-
-    def on_dialog(self, handler: Callable) -> None:
-        self.on(Page.Events.Dialog, handler)
 
     @staticmethod
     async def create(
@@ -125,11 +121,11 @@ class Page(EventEmitter):
         self._keyboard = Keyboard(client)
         self._mouse = Mouse(client, self._keyboard)
         self._touchscreen = Touchscreen(client, self._keyboard)
-        self._frameManager = FrameManager(client, frameTree, self)
-        self._networkManager = NetworkManager(client, self._frameManager)
+        self._networkManager = NetworkManager(client)
+        self._frameManager = FrameManager(client, frameTree, self, self._networkManager)
+        self._networkManager.setFrameManager(self._frameManager)
         self._emulationManager = EmulationManager(client)
         self._ignoreHTTPSErrors = ignoreHTTPSErrors
-        self._defaultNavigationTimeout = 30000  # milliseconds
         self._javascriptEnabled = True
         self._lifecycle_emitting = False
         self._viewport = None
@@ -179,8 +175,8 @@ class Page(EventEmitter):
             lambda event: self.emit(Page.Events.DOMContentLoaded),
         )
         client.on("Page.loadEventFired", lambda event: self.emit(Page.Events.Load))
-        client.on("Runtime.consoleAPICalled", lambda event: self._onConsoleAPI(event))
-        client.on("Page.javascriptDialogOpening", lambda event: self._onDialog(event))
+        client.on("Runtime.consoleAPICalled", self._onConsoleAPI)
+        client.on("Page.javascriptDialogOpening", self._onDialog)
         client.on(
             "Runtime.exceptionThrown",
             lambda exception: self._handleException(exception.get("exceptionDetails")),
@@ -193,6 +189,128 @@ class Page(EventEmitter):
             self._closed = True
 
         self._target._isClosedPromise.add_done_callback(closed)
+
+    def enable_lifecycle_emitting(self) -> None:
+        self._frameManager.on(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
+
+    def disable_lifecycle_emitting(self) -> None:
+        self._frameManager.disable_lifecycle_emitting()
+        self._frameManager.remove_listener(
+            FrameManager.Events.LifecycleEvent, self._on_lifecycle
+        )
+
+    @property
+    def frame_manager(self) -> FrameManager:
+        return self._frameManager
+
+    @property
+    def target(self) -> "Target":
+        """Return a target this page created from."""
+        return self._target
+
+    @property
+    def mainFrame(self) -> Optional["Frame"]:
+        """Get main :class:`~simplechrome.frame_manager.Frame` of this page."""
+        return self._frameManager.mainFrame
+
+    @property
+    def keyboard(self) -> Keyboard:
+        """Get :class:`~simplechrome.input.Keyboard` object."""
+        return self._keyboard
+
+    @property
+    def touchscreen(self) -> Touchscreen:
+        """Get :class:`~simplechrome.input.Touchscreen` object."""
+        return self._touchscreen
+
+    @property
+    def url(self) -> str:
+        """Get url of this page."""
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.url
+
+    @property
+    def frames(self) -> List["Frame"]:
+        """Get all frames of this page."""
+        return list(self._frameManager.frames())
+
+    @property
+    def viewport(self) -> dict:
+        """Get viewport dict.
+
+        Field of returned dict is same as :meth:`setViewport`.
+        """
+        return self._viewport
+
+    @property
+    def mouse(self) -> Mouse:
+        """Get :class:`~simplechrome.input.Mouse` object."""
+        return self._mouse
+
+    async def getWindowDescriptor(self):
+        return await self._client.send(
+            "Browser.getWindowForTarget", dict(targetId=self._target._targetId)
+        )
+
+    async def getWindowBounds(self):
+        windowDescriptor = await self.getWindowDescriptor()
+        return windowDescriptor.get("bounds")
+
+    async def setWindowBounds(self, bounds: dict):
+        windowDescriptor = await self.getWindowDescriptor()
+        await self._client.send(
+            "Browser.setWindowBounds",
+            dict(windowId=windowDescriptor["windowId"], bounds=bounds),
+        )
+
+    async def tap(self, selector: str) -> None:
+        """Tap the element which matches the ``selector``.
+
+        :arg str selector: A selector to search element to touch.
+        """
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("no main frame")
+        await frame.tap(selector)
+
+    async def setRequestInterception(self, value: bool) -> None:
+        """Enable/disable request interception."""
+        return await self._networkManager.setRequestInterception(value)
+
+    async def setOfflineMode(self, enabled: bool) -> None:
+        """Set offline mode enable/disable."""
+        await self._networkManager.setOfflineMode(enabled)
+
+    def setDefaultNavigationTimeout(self, timeout: Union[int, float]) -> None:
+        """Change the default maximum navigation timeout.
+
+        This method changes the default timeout of 30 seconds for the following
+        methods:
+
+        * :meth:`goto`
+        * :meth:`goBack`
+        * :meth:`goForward`
+        * :meth:`reload`
+        * :meth:`waitForNavigation`
+
+        :arg int timeout: Maximum navigation time in milliseconds.
+        """
+        self._frameManager.setDefaultNavigationTimeout(timeout)
+
+    def _onCertificateError(self, event: Any) -> None:
+        if not self._ignoreHTTPSErrors:
+            return
+        asyncio.ensure_future(
+            self._client.send(
+                "Security.handleCertificateError",
+                {"eventId": event.get("eventId"), "action": "continue"},
+            )
+        )
+
+    def _onTargetCrashed(self, *args: Any, **kwargs: Any) -> None:
+        self.emit("error", PageError("Page crashed!"))
 
     def _check_worker(self, event: Dict) -> None:
         tinfo = event.get("targetInfo")
@@ -220,105 +338,6 @@ class Page(EventEmitter):
 
     def _on_lifecycle(self, le: Callable) -> None:
         self.emit(Page.Events.LifecycleEvent, le)
-
-    def enable_lifecycle_emitting(self) -> None:
-        self._frameManager.on(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
-
-    def disable_lifecyle_emitting(self) -> None:
-        self._frameManager.disable_lifecycle_emitting()
-        self._frameManager.remove_listener(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
-
-    async def getWindowDescriptor(self):
-        return await self._client.send(
-            "Browser.getWindowForTarget", dict(targetId=self._target._targetId)
-        )
-
-    async def getWindowBounds(self):
-        windowDescriptor = await self.getWindowDescriptor()
-        return windowDescriptor.get("bounds")
-
-    async def setWindowBounds(self, bounds: dict):
-        windowDescriptor = await self.getWindowDescriptor()
-        await self._client.send(
-            "Browser.setWindowBounds",
-            dict(windowId=windowDescriptor["windowId"], bounds=bounds),
-        )
-
-    @property
-    def frame_manager(self) -> FrameManager:
-        return self._frameManager
-
-    @property
-    def target(self) -> "Target":
-        """Return a target this page created from."""
-        return self._target
-
-    def _onTargetCrashed(self, *args: Any, **kwargs: Any) -> None:
-        self.emit("error", PageError("Page crashed!"))
-
-    @property
-    def mainFrame(self) -> Optional["Frame"]:
-        """Get main :class:`~simplechrome.frame_manager.Frame` of this page."""
-        return self._frameManager.mainFrame
-
-    @property
-    def keyboard(self) -> Keyboard:
-        """Get :class:`~simplechrome.input.Keyboard` object."""
-        return self._keyboard
-
-    @property
-    def touchscreen(self) -> Touchscreen:
-        """Get :class:`~simplechrome.input.Touchscreen` object."""
-        return self._touchscreen
-
-    async def tap(self, selector: str) -> None:
-        """Tap the element which matches the ``selector``.
-
-        :arg str selector: A selector to search element to touch.
-        """
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("no main frame")
-        await frame.tap(selector)
-
-    @property
-    def frames(self) -> List["Frame"]:
-        """Get all frames of this page."""
-        return list(self._frameManager.frames())
-
-    async def setRequestInterception(self, value: bool) -> None:
-        """Enable/disable request interception."""
-        return await self._networkManager.setRequestInterception(value)
-
-    async def setOfflineMode(self, enabled: bool) -> None:
-        """Set offline mode enable/disable."""
-        await self._networkManager.setOfflineMode(enabled)
-
-    def setDefaultNavigationTimeout(self, timeout: int) -> None:
-        """Change the default maximum navigation timeout.
-
-        This method changes the default timeout of 30 seconds for the following
-        methods:
-
-        * :meth:`goto`
-        * :meth:`goBack`
-        * :meth:`goForward`
-        * :meth:`reload`
-        * :meth:`waitForNavigation`
-
-        :arg int timeout: Maximum navigation time in milliseconds.
-        """
-        self._defaultNavigationTimeout = timeout
-
-    def _onCertificateError(self, event: Any) -> None:
-        if not self._ignoreHTTPSErrors:
-            return
-        asyncio.ensure_future(
-            self._client.send(
-                "Security.handleCertificateError",
-                {"eventId": event.get("eventId"), "action": "continue"},
-            )
-        )
 
     async def stopLoading(self) -> None:
         await self._client.send("Page.stopLoading")
@@ -424,17 +443,6 @@ class Page(EventEmitter):
         if not frame:
             raise PageError("no main frame.")
         return await frame.xpath(expression)
-
-    #: alias to :meth:`querySelector`
-    J = querySelector
-    #: alias to :meth:`querySelectorEval`
-    Jeval = querySelectorEval
-    #: alias to :meth:`querySelectorAll`
-    JJ = querySelectorAll
-    #: alias to :meth:`querySelectorAllEval`
-    JJeval = querySelectorAllEval
-    #: alias to :meth:`xpath`
-    Jx = xpath
 
     async def cookies(self, *urls: str) -> dict:
         """Get cookies."""
@@ -595,14 +603,6 @@ class Page(EventEmitter):
         )
         self.emit(Page.Events.Dialog, dialog)
 
-    @property
-    def url(self) -> str:
-        """Get url of this page."""
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.url
-
     async def content(self) -> str:
         """Get the whole HTML contents of the page."""
         frame = self.mainFrame
@@ -618,7 +618,7 @@ class Page(EventEmitter):
         await frame.setContent(html)
 
     async def goto(
-        self, url: str, options: Dict[str, Union[str, int, bool]] = None, **kwargs: Any
+        self, url: str, options: Optional[Dict[str, Union[str, int, bool]]] = None, **kwargs: Any
     ) -> Optional[Response]:
         """Go to the ``url``.
 
@@ -628,7 +628,7 @@ class Page(EventEmitter):
 
         Available options are:
 
-        * ``timeout`` (int): Maximum navigation time in milliseconds, defaults
+        * ``timeout`` (int): Maximum navigation time in seconds, defaults
           to 30 seconds, pass ``0`` to desable timeout. The default value can
           be changed by using the :meth:`setDefaultNavigationTimeout` method.
         * ``waitUntil`` (str|List[str]): When to consider navigation succeeded,
@@ -643,48 +643,9 @@ class Page(EventEmitter):
           * ``networkidle2``: when there are no more than 2 network connections
             for at least 500 ms.
         """
-        options = merge_dict(options, kwargs)
-        referrer = self._networkManager.extraHTTPHeaders().get("referer", "")
-        requests: Dict[str, Request] = dict()
+        return await self._frameManager.mainFrame.goto(url, options, **kwargs)
 
-        def set_request(request: Request) -> None:
-            if request.url not in requests:
-                requests[request.url] = request
-
-        eventListeners = [
-            Helper.addEventListener(
-                self._networkManager, NetworkManager.Events.Request, set_request
-            )
-        ]
-
-        mainFrame = self._frameManager.mainFrame
-        if mainFrame is None:
-            raise PageError("No main frame.")
-        timeout = options.get("timeout", self._defaultNavigationTimeout)
-        watcher = NavigatorWatcher(self._frameManager, mainFrame, timeout, options)
-
-        result = await self._navigate(url, referrer)
-        if result is not None:
-            raise PageError(result)
-        result = await watcher.navigationPromise()
-        watcher.cancel()
-        Helper.removeEventListeners(eventListeners)
-        error = result[0].pop().exception()  # type: ignore
-        if error:
-            raise error
-
-        request = requests.get(mainFrame.url)
-        return request.response if request else None
-
-    async def _navigate(self, url: str, referrer: str) -> Optional[str]:
-        response = await self._client.send(
-            "Page.navigate", {"url": url, "referrer": referrer}
-        )
-        if response.get("errorText"):
-            return response["errorText"]
-        return None
-
-    async def reload(self, options: dict = None, **kwargs: Any) -> Optional[Response]:
+    async def reload(self, options: Optional[Dict] = None, **kwargs: Any) -> Optional[Response]:
         """Reload this page.
 
         Available options are same as :meth:`goto` method.
@@ -698,32 +659,13 @@ class Page(EventEmitter):
         return response
 
     async def waitForNavigation(
-        self, options: dict = None, **kwargs: Any
+        self, options: Optional[Dict] = None, **kwargs: Any
     ) -> Optional[Response]:
         """Wait for navigation.
 
         Available options are same as :meth:`goto` method.
         """
-        options = merge_dict(options, kwargs)
-        mainFrame = self._frameManager.mainFrame
-        if mainFrame is None:
-            raise PageError("No main frame.")
-        timeout = options.get("timeout", self._defaultNavigationTimeout)
-        watcher = NavigatorWatcher(self._frameManager, mainFrame, timeout, options)
-        responses: Dict[str, Response] = dict()
-        listener = Helper.addEventListener(
-            self._networkManager,
-            NetworkManager.Events.Response,
-            lambda response: responses.__setitem__(response.url, response),
-        )
-        result = await watcher.navigationPromise()
-        Helper.removeEventListeners([listener])
-        error = result[0].pop().exception()
-        if error:
-            raise error
-
-        response = responses.get(self.url, None)
-        return response
+        return await self._frameManager.mainFrame.waitForNavigation(options, **kwargs)
 
     async def goBack(self, options: dict = None, **kwargs: Any) -> Optional[Response]:
         """Navigate to the previous page in history.
@@ -801,14 +743,6 @@ class Page(EventEmitter):
         self._viewport = viewport
         if needsReload:
             await self.reload()
-
-    @property
-    def viewport(self) -> dict:
-        """Get viewport dict.
-
-        Field of returned dict is same as :meth:`setViewport`.
-        """
-        return self._viewport
 
     async def evaluate(self, pageFunction: str, *args: Any) -> Any:
         """Execute js-function or js-expression on browser and get result.
@@ -957,119 +891,6 @@ class Page(EventEmitter):
                 )
         return await self._screenshotTask(screenshotType, options)
 
-    async def _screenshotTask(
-        self, format: str, options: dict
-    ) -> bytes:  # noqa: C901,E501
-        await self._client.send(
-            "Target.activateTarget", {"targetId": self._target._targetId}
-        )
-        clip = options.get("clip")
-        if clip:
-            clip["scale"] = 1
-
-        if options.get("fullPage", False):
-            metrics = await self._client.send("Page.getLayoutMetrics")
-            width = math.ceil(metrics["contentSize"]["width"])
-            height = math.ceil(metrics["contentSize"]["height"])
-
-            # Overwrite clip for full page at all times.
-            clip = dict(x=0, y=0, width=width, height=height, scale=1)
-            mobile = self._viewport.get("isMobile", False)
-            deviceScaleFactor = self._viewport.get("deviceScaleFactor", 1)
-            landscape = self._viewport.get("isLandscape", False)
-            if landscape:
-                screenOrientation = dict(angle=90, type="landscapePrimary")
-            else:
-                screenOrientation = dict(angle=0, type="portraitPrimary")
-            await self._client.send(
-                "Emulation.setDeviceMetricsOverride",
-                {
-                    "mobile": mobile,
-                    "width": width,
-                    "height": height,
-                    "deviceScaleFactor": deviceScaleFactor,
-                    "screenOrientation": screenOrientation,
-                },
-            )
-        shouldSetDefaultBackground = options.get("omitBackground") and format == "png"
-        if shouldSetDefaultBackground:
-            await self._client.send(
-                "Emulation.setDefaultBackgroundColorOverride",
-                {"color": {"r": 0, "g": 0, "b": 0, "a": 0}},
-            )
-        opt = {"format": format}
-        if clip:
-            opt["clip"] = clip
-        if options.get("quality"):
-            opt["quality"] = options.get("quality")
-        result = await self._client.send("Page.captureScreenshot", opt)
-
-        if shouldSetDefaultBackground:
-            await self._client.send("Emulation.setDefaultBackgroundColorOverride")
-
-        if options.get("fullPage"):
-            await self.setViewport(self._viewport)
-        if result.get("encoding") == "base64":
-            buffer = base64.b64decode(result.get("data", b""))
-        else:
-            buffer = result.get("data")
-        if "path" in options:
-            async with aiofiles.open(options["path"], "wb") as f:
-                await f.write(buffer)
-        return buffer
-
-    async def _rawScreenshotTask(
-        self, format: str, options: dict
-    ) -> bytes:  # noqa: C901,E501
-        await self._client.send(
-            "Target.activateTarget", {"targetId": self._target._targetId}
-        )
-        clip = options.get("clip")
-        if clip:
-            clip["scale"] = 1
-
-        if options.get("fullPage"):
-            metrics = await self._client.send("Page.getLayoutMetrics")
-            width = math.ceil(metrics["contentSize"]["width"])
-            height = math.ceil(metrics["contentSize"]["height"])
-
-            # Overwrite clip for full page at all times.
-            clip = dict(x=0, y=0, width=width, height=height, scale=1)
-            mobile = self._viewport.get("isMobile", False)
-            deviceScaleFactor = self._viewport.get("deviceScaleFactor", 1)
-            landscape = self._viewport.get("isLandscape", False)
-            if landscape:
-                screenOrientation = dict(angle=90, type="landscapePrimary")
-            else:
-                screenOrientation = dict(angle=0, type="portraitPrimary")
-            await self._client.send(
-                "Emulation.setDeviceMetricsOverride",
-                {
-                    "mobile": mobile,
-                    "width": width,
-                    "height": height,
-                    "deviceScaleFactor": deviceScaleFactor,
-                    "screenOrientation": screenOrientation,
-                },
-            )
-
-        if options.get("omitBackground"):
-            await self._client.send(
-                "Emulation.setDefaultBackgroundColorOverride",
-                {"color": {"r": 0, "g": 0, "b": 0, "a": 0}},
-            )
-        opt = {"format": format}
-        if clip:
-            opt["clip"] = clip
-        result = await self._client.send("Page.captureScreenshot", opt)
-
-        if options.get("omitBackground"):
-            await self._client.send("Emulation.setDefaultBackgroundColorOverride")
-
-        if options.get("fullPage"):
-            await self.setViewport(self._viewport)
-        return result.get("data", b"")
-
     async def pdf(self, options: dict = None, **kwargs: Any) -> bytes:
         """Generate a pdf of the page.
 
@@ -1196,11 +1017,6 @@ class Page(EventEmitter):
                 "Most likely the page has been closed."
             )
         await conn.send("Target.closeTarget", {"targetId": self._target._targetId})
-
-    @property
-    def mouse(self) -> Mouse:
-        """Get :class:`~simplechrome.input.Mouse` object."""
-        return self._mouse
 
     async def click(self, selector: str, options: dict = None, **kwargs: Any) -> None:
         """Click element which matches ``selector``.
@@ -1407,6 +1223,130 @@ class Page(EventEmitter):
         if not frame:
             raise PageError("no main frame.")
         return frame.waitForFunction(pageFunction, options, *args, **kwargs)
+
+    async def _screenshotTask(
+            self, format: str, options: dict
+    ) -> bytes:  # noqa: C901,E501
+        await self._client.send(
+            "Target.activateTarget", {"targetId": self._target._targetId}
+        )
+        clip = options.get("clip")
+        if clip:
+            clip["scale"] = 1
+
+        if options.get("fullPage", False):
+            metrics = await self._client.send("Page.getLayoutMetrics")
+            width = math.ceil(metrics["contentSize"]["width"])
+            height = math.ceil(metrics["contentSize"]["height"])
+
+            # Overwrite clip for full page at all times.
+            clip = dict(x=0, y=0, width=width, height=height, scale=1)
+            mobile = self._viewport.get("isMobile", False)
+            deviceScaleFactor = self._viewport.get("deviceScaleFactor", 1)
+            landscape = self._viewport.get("isLandscape", False)
+            if landscape:
+                screenOrientation = dict(angle=90, type="landscapePrimary")
+            else:
+                screenOrientation = dict(angle=0, type="portraitPrimary")
+            await self._client.send(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "mobile": mobile,
+                    "width": width,
+                    "height": height,
+                    "deviceScaleFactor": deviceScaleFactor,
+                    "screenOrientation": screenOrientation,
+                },
+            )
+        shouldSetDefaultBackground = options.get("omitBackground") and format == "png"
+        if shouldSetDefaultBackground:
+            await self._client.send(
+                "Emulation.setDefaultBackgroundColorOverride",
+                {"color": {"r": 0, "g": 0, "b": 0, "a": 0}},
+            )
+        opt = {"format": format}
+        if clip:
+            opt["clip"] = clip
+        if options.get("quality"):
+            opt["quality"] = options.get("quality")
+        result = await self._client.send("Page.captureScreenshot", opt)
+
+        if shouldSetDefaultBackground:
+            await self._client.send("Emulation.setDefaultBackgroundColorOverride")
+
+        if options.get("fullPage"):
+            await self.setViewport(self._viewport)
+        if result.get("encoding") == "base64":
+            buffer = base64.b64decode(result.get("data", b""))
+        else:
+            buffer = result.get("data")
+        if "path" in options:
+            async with aiofiles.open(options["path"], "wb") as f:
+                await f.write(buffer)
+        return buffer
+
+    async def _rawScreenshotTask(
+            self, format: str, options: dict
+    ) -> bytes:  # noqa: C901,E501
+        await self._client.send(
+            "Target.activateTarget", {"targetId": self._target._targetId}
+        )
+        clip = options.get("clip")
+        if clip:
+            clip["scale"] = 1
+
+        if options.get("fullPage"):
+            metrics = await self._client.send("Page.getLayoutMetrics")
+            width = math.ceil(metrics["contentSize"]["width"])
+            height = math.ceil(metrics["contentSize"]["height"])
+
+            # Overwrite clip for full page at all times.
+            clip = dict(x=0, y=0, width=width, height=height, scale=1)
+            mobile = self._viewport.get("isMobile", False)
+            deviceScaleFactor = self._viewport.get("deviceScaleFactor", 1)
+            landscape = self._viewport.get("isLandscape", False)
+            if landscape:
+                screenOrientation = dict(angle=90, type="landscapePrimary")
+            else:
+                screenOrientation = dict(angle=0, type="portraitPrimary")
+            await self._client.send(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "mobile": mobile,
+                    "width": width,
+                    "height": height,
+                    "deviceScaleFactor": deviceScaleFactor,
+                    "screenOrientation": screenOrientation,
+                },
+            )
+
+        if options.get("omitBackground"):
+            await self._client.send(
+                "Emulation.setDefaultBackgroundColorOverride",
+                {"color": {"r": 0, "g": 0, "b": 0, "a": 0}},
+            )
+        opt = {"format": format}
+        if clip:
+            opt["clip"] = clip
+        result = await self._client.send("Page.captureScreenshot", opt)
+
+        if options.get("omitBackground"):
+            await self._client.send("Emulation.setDefaultBackgroundColorOverride")
+
+        if options.get("fullPage"):
+            await self.setViewport(self._viewport)
+        return result.get("data", b"")
+
+    #: alias to :meth:`querySelector`
+    J = querySelector
+    #: alias to :meth:`querySelectorEval`
+    Jeval = querySelectorEval
+    #: alias to :meth:`querySelectorAll`
+    JJ = querySelectorAll
+    #: alias to :meth:`querySelectorAllEval`
+    JJeval = querySelectorAllEval
+    #: alias to :meth:`xpath`
+    Jx = xpath
 
 
 supportedMetrics = (

@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 import urllib3
 
-DEFAULT_REVISION = "594312"
+DEFAULT_REVISION = "599821"
 logger = logging.getLogger(__name__)
 
 __all__ = ["BrowserFetcher", "BF"]

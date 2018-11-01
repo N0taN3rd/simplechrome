@@ -5,21 +5,32 @@ import asyncio
 import logging
 from asyncio import Future
 from collections import OrderedDict
-from typing import Any, Dict, Generator, List, Optional, Union, Set, TYPE_CHECKING
+from typing import (
+    Any,
+    Dict,
+    Generator,
+    List,
+    Optional,
+    Union,
+    Set,
+    TYPE_CHECKING,
+)
 
 import attr
 from pyee import EventEmitter
 
-from .helper import Helper
 from .connection import Client, TargetSession
-from .execution_context import ElementHandle
 from .errors import ElementHandleError, PageError, WaitTimeoutError
 from .errors import NetworkError
+from .execution_context import ElementHandle
 from .execution_context import ExecutionContext, JSHandle
+from .helper import Helper
+from .navigator_watcher import NavigatorWatcher
 from .util import merge_dict
 
 if TYPE_CHECKING:
     from .page import Page
+    from .network_manager import NetworkManager, Response
 
 __all__ = ["FrameManager", "Frame", "WaitTask", "WaitSetupError"]
 
@@ -35,6 +46,12 @@ class FrameManagerEvents(object):
     FrameNavigatedWithinDocument: str = attr.ib(
         default="framenavigatedwithindocument", init=False
     )
+    ExecutionContextCreated: str = attr.ib(
+        default="executioncontextcreated", init=False
+    )
+    ExecutionContextDestroyed: str = attr.ib(
+        default="executioncontextdestroyed", init=False
+    )
 
 
 class FrameManager(EventEmitter):
@@ -46,16 +63,19 @@ class FrameManager(EventEmitter):
         self,
         client: Union[Client, TargetSession],
         frameTree: Dict,
-        page: Optional["Page"],
+        page: Optional["Page"] = None,
+        networkManager: Optional["NetworkManager"] = None,
     ) -> None:
         """Make new frame manager."""
         super().__init__(loop=asyncio.get_event_loop())
         self._client = client
-        self._page = page
         self._frames: OrderedDict[str, Frame] = OrderedDict()
         self._mainFrame: Optional[Frame] = None
         self._contextIdToContext: Dict[str, ExecutionContext] = dict()
         self._emits_life = False
+        self._defaultNavigationTimeout: Union[int, float] = 30
+        self._page = page
+        self._networkManager = networkManager
         self._client.on("Page.frameAttached", self._onFrameAttached)
         self._client.on("Page.frameNavigated", self._onFrameNavigated)
         self._client.on(
@@ -77,12 +97,83 @@ class FrameManager(EventEmitter):
         self._handleFrameTree(frameTree)
 
     @property
+    def mainFrame(self) -> "Frame":
+        return self._mainFrame
+
+    @property
     def page(self) -> "Page":
         return self._page
 
-    @property
-    def mainFrame(self) -> "Frame":
-        return self._mainFrame
+    async def navigateFrame(
+        self, frame: "Frame", url: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional["Response"]:
+        opts = merge_dict(options, kwargs)
+        to = opts.get("timeout", self._defaultNavigationTimeout)
+        referrer = ""
+        if self._networkManager is not None:
+            referrer = self._networkManager.extraHTTPHeaders().get("referrer", "")
+        watcher = NavigatorWatcher(
+            self._client, self, frame, to, opts, self._networkManager
+        )
+        ensureNewDocumentNavigation = False
+
+        async def navigate():
+            nonlocal ensureNewDocumentNavigation
+            try:
+                response = await self._client.send(
+                    "Page.navigate", dict(url=url, referrer=referrer, frameId=frame.id)
+                )
+                ensureNewDocumentNavigation = bool(response.get("loaderId"))
+                errorText = response.get("errorText")
+                if errorText:
+                    return Exception(f"{errorText} at {url}")
+            except Exception as e:
+                return e
+
+        done, pending = await asyncio.wait(
+            [asyncio.ensure_future(navigate()), watcher.timeoutOrTerminationPromise()],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        error = done.pop().result()
+        if error is None:
+            if ensureNewDocumentNavigation:
+                final_prom = watcher.newDocumentNavigationPromise()
+            else:
+                final_prom = watcher.sameDocumentNavigationPromise()
+            done, pending = await asyncio.wait(
+                [watcher.timeoutOrTerminationPromise(), final_prom],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            error = done.pop().result()
+        watcher.dispose()
+        if error is not None:
+            raise error
+        return watcher.navigationResponse
+
+    async def waitForFrameNavigation(
+        self, frame: "Frame", options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional["Response"]:
+        opts = merge_dict(options, kwargs)
+        to = opts.get("timeout", self._defaultNavigationTimeout)
+        watcher = NavigatorWatcher(
+            self._client, self, frame, to, opts, self._networkManager
+        )
+        done, pending = await asyncio.wait(
+            [
+                watcher.timeoutOrTerminationPromise(),
+                watcher.sameDocumentNavigationPromise(),
+                watcher.newDocumentNavigationPromise(),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        watcher.dispose()
+        error = done.pop().result()
+        if error is not None:
+            raise error
+        return watcher.navigationResponse
+
+    def setDefaultNavigationTimeout(self, timeout: Union[int, float]) -> None:
+        self._defaultNavigationTimeout = timeout
 
     def enable_lifecycle_emitting(self) -> None:
         self._emits_life = True
@@ -133,10 +224,12 @@ class FrameManager(EventEmitter):
     def _onFrameNavigated(self, eventOrFrame: Dict) -> None:
         framePayload: Dict = eventOrFrame.get("frame", eventOrFrame)
         isMainFrame = framePayload.get("parentId") is None
+
         if isMainFrame:
             frame = self._mainFrame
         else:
             frame = self._frames.get(framePayload.get("id", ""))
+
         if not (isMainFrame or frame):
             raise PageError(
                 "We either navigate top level or have old version "
@@ -196,11 +289,11 @@ class FrameManager(EventEmitter):
         else:
             frameId = None
 
-        frame = self._frames.get(frameId) if frameId else None
+        frame: Optional[Frame] = self._frames.get(frameId) if frameId else None
         contextID = contextPayload["id"]
         context = ExecutionContext(self._client, contextPayload, frame)
         self._contextIdToContext[contextID] = context
-        if frame:
+        if frame is not None:
             frame._addExecutionContext(context)
 
     def _onExecutionContextDestroyed(self, event: Dict) -> None:
@@ -210,7 +303,7 @@ class FrameManager(EventEmitter):
             return
         del self._contextIdToContext[executionContextId]
         frame = context.frame
-        if frame:
+        if frame is not None:
             frame._removeExecutionContext(context)
 
     def _onExecutionContextsCleared(self, *args: Any) -> None:
@@ -245,7 +338,7 @@ class Frame(EventEmitter):
 
     def __init__(
         self,
-        frameManager: "FrameManager",
+        frameManager: FrameManager,
         client: Union[Client, TargetSession],
         parentFrame: Optional["Frame"],
         frameId: str,
@@ -300,6 +393,10 @@ class Frame(EventEmitter):
         return self._url
 
     @property
+    def id(self) -> str:
+        return self._id
+
+    @property
     def parentFrame(self) -> Optional["Frame"]:
         """Get parent frame.
 
@@ -311,6 +408,16 @@ class Frame(EventEmitter):
     def childFrames(self) -> List["Frame"]:
         """Get child frames."""
         return list(self._childFrames)
+
+    async def goto(
+        self, url: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional["Response"]:
+        return await self._frameManager.navigateFrame(self, url, options, **kwargs)
+
+    async def waitForNavigation(
+        self, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional["Response"]:
+        return await self._frameManager.waitForFrameNavigation(self, options, **kwargs)
 
     def isDetached(self) -> bool:
         """Return ``True`` if this frame is detached.
@@ -798,7 +905,9 @@ class Frame(EventEmitter):
 
         fut.add_done_callback(remove_cb)
         if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
+            return asyncio.ensure_future(
+                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
+            )
         return fut
 
     def loaded_waiter(
@@ -824,7 +933,9 @@ class Frame(EventEmitter):
         fut.add_done_callback(remove_cb)
         self.on(Frame.Events.LifeCycleEvent, on_load)
         if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
+            return asyncio.ensure_future(
+                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
+            )
         return fut
 
     def network_idle_waiter(
@@ -850,7 +961,9 @@ class Frame(EventEmitter):
         fut.add_done_callback(remove_cb)
         self.on(Frame.Events.LifeCycleEvent, onlf)
         if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
+            return asyncio.ensure_future(
+                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
+            )
         return fut
 
         #: Alias to :meth:`querySelector`

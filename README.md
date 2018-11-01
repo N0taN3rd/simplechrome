@@ -1,7 +1,5 @@
 # Simplechrome
-A fork of [pypuppeteer](https://github.com/miyakogi/pyppeteer) used by Webrecorder for QA automation that has been modified to meet our needs.
-
-Simplechrome contains a subset of the full api provided by pypuppeteer and puppeteer, in particular Simplechrome does not support the `Security domain` or `Request interception` 
+An fork of [pypuppeteer](https://github.com/miyakogi/pyppeteer) used by Webrecorder for automation that has been modified to meet our needs.
 
 Notable Additions to the API / code base per our own use-case:
 - Changes to allow control of latests revisions of both Chrome and Chromium
@@ -9,6 +7,7 @@ Notable Additions to the API / code base per our own use-case:
 - Changes to input handling for `evaluateOnNewDocument`
 - Tracking child frame life cyles individually 
 - Less strict application defaults
+- Keeps to date with puppeteer
 
 ## Installation
 
