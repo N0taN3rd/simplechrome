@@ -5,7 +5,7 @@ import pytest
 from async_timeout import timeout
 from grappa import should
 
-from simplechrome.errors import ElementHandleError, WaitTimeoutError
+from simplechrome.errors import ElementHandleError, WaitTimeoutError, NavigationError
 from .base_test import BaseChromeTest
 from .frame_utils import attachFrame, detachFrame, dumpFrames, navigateFrame
 
@@ -34,6 +34,27 @@ class TestContext(BaseChromeTest):
         a2 = await context2.evaluate("() => window.a")
         a1 | should.be.equal.to(1)
         a2 | should.be.equal.to(2)
+
+
+class TestFrameGoto(BaseChromeTest):
+    @pytest.mark.asyncio
+    async def test_navigate_subframes(self):
+        await self.goto_test("one-frame.html")
+        self.page.frames | should.have.length.of(2)
+        self.page.frames[0].url.endswith("one-frame.html") | should.be.true
+        self.page.frames[1].url.endswith("frame.html") | should.be.true
+        res = await self.page.frames[1].goto(self.full_url("empty.html"))
+        res.ok | should.be.true
+        (res.frame is self.page.frames[1]) | should.be.true
+
+    @pytest.mark.asyncio
+    async def test_navigate_subframes_should_fail_when_frame_detaches(self):
+        await self.goto_test("one-frame.html")
+        self.page.frames | should.have.length.of(2)
+        navigationPromise = self.page.frames[1].goto(self.full_url("empty.html"))
+        await self.page.Jeval("iframe", "frame => frame.remove()")
+        with pytest.raises(NavigationError):
+            await navigationPromise
 
 
 class TestEvaluateHandle(BaseChromeTest):
@@ -530,23 +551,21 @@ class TestWaitForXPath(BaseChromeTest):
 
 
 class TestFrames(BaseChromeTest):
-    @pytest.mark.skip("FIXME!!")
     @pytest.mark.asyncio
     async def test_frame_nested(self):
         await self.goto_test("nested-frames.html")
         dumped_frames = dumpFrames(self.page.mainFrame)
-        with should(dumped_frames):
-            should.have.length.of(3)
-            should.have.keys("0", "1", "2")
-            should.have.key("0").that.should.contain.item(
-                f"{self.url}nested-frames.html"
-            )
-            should.have.key("1").that.should.be.equal.to(
-                [f"{self.url}two-frames.html", f"{self.url}frame.html"]
-            )
-            should.have.key("2").that.should.be.equal.to(
-                [f"{self.url}frame.html", f"{self.url}frame.html"]
-            )
+        dumped_frames["0"] | should.contain(
+            "http://localhost:8888/static/nested-frames.html"
+        )
+        dumped_frames["1"] | should.contain(
+            "http://localhost:8888/static/frame.html",
+            "http://localhost:8888/static/two-frames.html",
+        )
+        dumped_frames["2"] | should.contain(
+            "http://localhost:8888/static/frame.html",
+            "http://localhost:8888/static/frame.html",
+        )
 
     @pytest.mark.asyncio
     async def test_frame_events(self, ee_helper):

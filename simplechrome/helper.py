@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """Helper functions."""
-
+import asyncio
 import json
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Callable, Dict, List, Union, Awaitable, Optional
 
 import math
+from async_timeout import timeout as aiotimeout
+from asyncio import AbstractEventLoop
+from .util import ensure_loop
 
 from .connection import Client, TargetSession
 from .errors import ElementHandleError
@@ -130,3 +133,15 @@ class Helper(object):
         elif "=>" in func:
             return True
         return False
+
+    @staticmethod
+    async def timed_wait(
+        awaitable: Awaitable[Any],
+        to: Union[int, float],
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> None:
+        try:
+            async with aiotimeout(to, loop=ensure_loop(loop)):
+                await awaitable
+        except asyncio.TimeoutError:
+            pass

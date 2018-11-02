@@ -3,7 +3,7 @@
 
 import asyncio
 import base64
-from asyncio import Future
+from asyncio import Future, AbstractEventLoop
 
 import ujson as json
 from collections import OrderedDict
@@ -17,15 +17,9 @@ from .connection import Client, TargetSession
 from .errors import NetworkError
 from .frame_manager import FrameManager, Frame
 from .multimap import Multimap
+from .util import ensure_loop
 
 __all__ = ["NetworkManager", "Request", "Response", "SecurityDetails"]
-
-ResponseProtocol = Dict[str, Union[str, Dict]]
-ResponseInfo = Dict[str, Union[str, int, ResponseProtocol]]
-RequestProtocol = Dict[str, Union[str, Dict]]
-RequestInfo = Dict[
-    str, Union[str, int, float, bool, Optional[ResponseInfo], RequestProtocol]
-]
 
 
 @attr.dataclass(slots=True)
@@ -42,15 +36,17 @@ class NetworkManager(EventEmitter):
     Events: NetworkEvents = NetworkEvents()
 
     def __init__(
-        self, client: Union[Client, TargetSession]
+        self,
+        client: Union[Client, TargetSession],
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
         """Make new NetworkManager."""
-        super().__init__(loop=asyncio.get_event_loop())
+        super().__init__(loop=ensure_loop(loop))
         self._client = client
         self._frameManager: Optional["FrameManager"] = None
         self._requestIdToRequest: Dict[str, Request] = dict()
         self._interceptionIdToRequest: Dict[str, Request] = dict()
-        self._requestIdToRequestWillBeSentEvent: Dict[str, RequestInfo] = dict()
+        self._requestIdToRequestWillBeSentEvent: Dict[str, Dict] = dict()
         self._extraHTTPHeaders: OrderedDict[str, str] = OrderedDict()
         self._offline: bool = False
         self._credentials: Optional[Dict[str, str]] = None
@@ -133,7 +129,7 @@ class NetworkManager(EventEmitter):
             self._client.send("Network.setRequestInterception", {"patterns": patterns}),
         )
 
-    def _onRequestWillBeSent(self, event: RequestInfo) -> None:
+    def _onRequestWillBeSent(self, event: Dict) -> None:
         if self._protocolRequestInterceptionEnabled:
             requestHash = generateRequestHash(event["request"])
             interceptionId = self._requestHashToInterceptionIds.firstValue(requestHash)
@@ -146,7 +142,7 @@ class NetworkManager(EventEmitter):
             return
         self._onRequest(event, None)
 
-    def _onRequestIntercepted(self, event: dict) -> None:  # noqa: C901
+    def _onRequestIntercepted(self, event: Dict) -> None:  # noqa: C901
         if event.get("authChallenge"):
             response = "Default"
             if event["interceptionId"] in self._attemptedAuthentications:
@@ -198,7 +194,7 @@ class NetworkManager(EventEmitter):
             self._requestHashToInterceptionIds.set(requestHash, event["interceptionId"])
 
     def _onRequest(
-        self, event: RequestInfo, interceptionId: Optional[str] = None
+        self, event: Dict, interceptionId: Optional[str] = None
     ) -> None:
         redirectChain: List[Request] = []
         requestId = event.get("requestId")
@@ -227,8 +223,8 @@ class NetworkManager(EventEmitter):
         if request is not None:
             request._fromMemoryCache = True
 
-    def _handleRequestRedirect(self, request: "Request", event: RequestInfo) -> None:
-        newEvent: ResponseInfo = dict(**event)
+    def _handleRequestRedirect(self, request: "Request", event: Dict) -> None:
+        newEvent: Dict = dict(**event)
         newEvent["response"] = event.get("redirectResponse")
         del newEvent["redirectResponse"]
         response = Response(self._client, request, newEvent)
@@ -240,7 +236,7 @@ class NetworkManager(EventEmitter):
         self.emit(NetworkManager.Events.Response, response)
         self.emit(NetworkManager.Events.RequestFinished, request)
 
-    def _onResponseReceived(self, event: dict) -> None:
+    def _onResponseReceived(self, event: Dict) -> None:
         request = self._requestIdToRequest.get(event["requestId"])
         # FileUpload sends a response without a matching request.
         if not request:
@@ -249,7 +245,7 @@ class NetworkManager(EventEmitter):
         request._response = response
         self.emit(NetworkManager.Events.Response, response)
 
-    def _onLoadingFinished(self, event: dict) -> None:
+    def _onLoadingFinished(self, event: Dict) -> None:
         request = self._requestIdToRequest.get(event.get("requestId", ""))
         # For certain requestIds we never receive requestWillBeSent event.
         # @see https://crbug.com/750469
@@ -265,7 +261,7 @@ class NetworkManager(EventEmitter):
         self._attemptedAuthentications.discard(request._interceptionId)
         self.emit(NetworkManager.Events.RequestFinished, request)
 
-    def _onLoadingFailed(self, event: dict) -> None:
+    def _onLoadingFailed(self, event: Dict) -> None:
         request = self._requestIdToRequest.get(event["requestId"])
         # For certain requestIds we never receive requestWillBeSent event.
         # @see https://crbug.com/750469
@@ -289,7 +285,7 @@ class Request(object):
     _frame: Optional[Frame] = attr.ib()
     _interceptionId: Optional[str] = attr.ib()
     _allowInterception: bool = attr.ib()
-    _requestInfo: RequestInfo = attr.ib()
+    _requestInfo: Dict = attr.ib()
     _redirectChain: List["Request"] = attr.ib()
     _response: Optional["Response"] = attr.ib(init=False, default=None)
     _preq: Dict = attr.ib(init=False, default=None)
@@ -572,7 +568,7 @@ errorReasons = {
 class Response(object):
     _client: Union[Client, TargetSession] = attr.ib()
     _request: Request = attr.ib()
-    _responseInfo: ResponseInfo = attr.ib()
+    _responseInfo: Dict = attr.ib()
     _contentPromise: Optional[Future] = attr.ib(init=False, default=None)
     _bodyLoadedPromiseFulfill: Future = attr.ib(init=False, default=None)
     _pres: Dict = attr.ib(init=False, default=None)
@@ -586,15 +582,12 @@ class Response(object):
         if self._pres.get("securityDetails") is not None:
             sdetails = SecurityDetails(self._pres.get("securityDetails"))
         self._securityDetails: Optional[SecurityDetails] = sdetails
-        #
-        if (
-            self._securityDetails is not None
-            and self.securityDetails.protocol is not None
-        ):
-            self._protocol = self.securityDetails.protocol
-        else:
-            self._protocol = self._pres.get("protocol")
+        self._protocol = self._pres.get("protocol")
         self._encodedDataLength = self._pres.get("encodedDataLength")
+
+    @property
+    def frame(self) -> Optional[Frame]:
+        return self._request.frame
 
     @property
     def url(self) -> str:
@@ -746,26 +739,27 @@ class Response(object):
         return "Response(" + ", ".join(repr_args) + ")"
 
 
-def generateRequestHash(request: RequestInfo) -> str:
+def generateRequestHash(request: Dict) -> str:
     """Generate request hash."""
-    normalizedURL = request.get("url", "")
+    normalizedURL: str = request.get("url", "")
     try:
         normalizedURL = unquote(normalizedURL)
     except Exception:
         pass
 
-    _hash = {
+    _hash: Dict[str, Union[str, Dict[str, str]]] = {
         "url": normalizedURL,
         "method": request.get("method"),
         "postData": request.get("postData"),
-        "headers": {},
     }
 
+    _new_headers: Dict[str, str] = dict()
+
     if not normalizedURL.startswith("data:"):
-        headers = list(request["headers"].keys())
+        headers: List[str] = list(request["headers"].keys())
         headers.sort()
         for header in headers:
-            headerValue = request["headers"][header]
+            headerValue: str = request["headers"][header]
             header = header.lower()
             if (
                 header == "accept"
@@ -773,7 +767,8 @@ def generateRequestHash(request: RequestInfo) -> str:
                 or header == "x-devtools-emulate-network-conditions-client-id"
             ):  # noqa: E501
                 continue
-            _hash["headers"][header] = headerValue
+            _new_headers[header] = headerValue
+        _hash['headers'] = _new_headers
     return json.dumps(_hash)
 
 
@@ -809,7 +804,7 @@ class SecurityDetails(object):
         return self._details.get("protocol")
 
 
-statusTexts = {
+statusTexts: Dict[str, str] = {
     "100": "Continue",
     "101": "Switching Protocols",
     "102": "Processing",

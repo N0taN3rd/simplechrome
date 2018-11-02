@@ -1,3 +1,7 @@
 pytest
 pytest-asyncio
 psutil
+flake8
+flake8-mypy
+flake8-bugbear
+mypy

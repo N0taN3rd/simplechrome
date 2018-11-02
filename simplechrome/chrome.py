@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import asyncio
+from asyncio import AbstractEventLoop, Future
 from subprocess import Popen
-from typing import Awaitable, Callable, Dict, List, Optional, Union
+from typing import Awaitable, Callable, Dict, List, Optional, Union, Any
 from async_timeout import timeout as aiotimeout
 import attr
 from pyee import EventEmitter
@@ -10,6 +11,7 @@ from .connection import Client, TargetSession
 from .errors import BrowserError
 from .page import Page
 from .helper import Helper
+from .util import ensure_loop
 
 __all__ = ["Chrome", "BrowserContext", "Target"]
 
@@ -32,16 +34,17 @@ class Chrome(EventEmitter):
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
-        closeCallback: Callable[[], Awaitable[None]] = None,
-        targetInfo: Dict = None,
+        closeCallback: Optional[Callable[[], Awaitable[None]]] = None,
+        targetInfo: Optional[Dict] = None,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__(loop=asyncio.get_event_loop())
+        super().__init__(loop=ensure_loop(loop))
         self.process: Optional[Popen] = process
         self.ignoreHTTPSErrors: bool = ignoreHTTPSErrors
-        self._defaultViewport: Dict[str, int] = defaultViewport
+        self._defaultViewport: Optional[Dict[str, int]] = defaultViewport
         self._screenshotTaskQueue: List = []
         self._connection: Union[Client, TargetSession] = connection
-        self._targetInfo = targetInfo
+        self._targetInfo: Optional[Dict] = targetInfo
         browserContextId = None
         if self._targetInfo is not None:
             browserContextId = targetInfo.get("browserContextId", None)
@@ -51,10 +54,10 @@ class Chrome(EventEmitter):
         self._contexts: Dict[str, BrowserContext] = dict()
         self._page: Optional[Page] = None
         for contextId in contextIds:
-            self._contexts[contextId] = BrowserContext(connection, self, contextId)
+            self._contexts[contextId] = BrowserContext(connection, self, contextId, self._loop)
 
         def _dummy_callback() -> Awaitable[None]:
-            fut = asyncio.get_event_loop().create_future()
+            fut = self._loop.create_future()
             fut.set_result(None)
             self.emit(Chrome.Events.Disconnected, None)
             return fut
@@ -79,6 +82,7 @@ class Chrome(EventEmitter):
         process: Optional[Popen] = None,
         closeCallback: Callable[[], Awaitable[None]] = None,
         targetInfo: Optional[Dict] = None,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> "Chrome":
         browser = Chrome(
             connection,
@@ -88,6 +92,7 @@ class Chrome(EventEmitter):
             process,
             closeCallback,
             targetInfo,
+            loop
         )
         await connection.send("Target.setDiscoverTargets", {"discover": True})
         return browser
@@ -108,6 +113,7 @@ class Chrome(EventEmitter):
                 self._defaultViewport,
                 self.ignoreHTTPSErrors,
                 self._screenshotTaskQueue,
+                self._loop
             )
             target._page = page
             self._page = page
@@ -129,7 +135,7 @@ class Chrome(EventEmitter):
                 break
         if existingTarget is not None:
             return existingTarget
-        existingTargetPromise: asyncio.Future = asyncio.get_event_loop().create_future()
+        existingTargetPromise: Future = self._loop.create_future()
 
         def check(atarget: "Target") -> None:
             if predicate(atarget) and not existingTargetPromise.done():
@@ -148,7 +154,7 @@ class Chrome(EventEmitter):
             return await existingTargetPromise
 
         try:
-            async with aiotimeout(timeout):
+            async with aiotimeout(timeout, loop=self._loop):
                 existingTarget = await existingTargetPromise
         except asyncio.TimeoutError:
             pass
@@ -277,8 +283,9 @@ class BrowserContext(EventEmitter):
         client: Union[Client, TargetSession],
         browser: Chrome,
         contextId: Optional[str] = None,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__(loop=asyncio.get_event_loop())
+        super().__init__(loop=ensure_loop(loop))
         self.client: Union[Client, TargetSession] = client
         self._browser = browser
         self._id = contextId
@@ -357,7 +364,7 @@ class BrowserContext(EventEmitter):
     def browser(self) -> Chrome:
         return self._browser
 
-    async def close(self):
+    async def close(self) -> None:
         cntx = self._id
         if self is self._browser._defaultContext:
             cntx = None
@@ -370,16 +377,21 @@ class Target(object):
     """Browser's target class."""
 
     def __init__(
-        self, targetInfo: dict, browserContext: BrowserContext, browser: Chrome
+        self,
+        targetInfo: Dict[str, str],
+        browserContext: BrowserContext,
+        browser: Chrome,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        self._browser = browser
-        self._browserContext = browserContext
-        self._targetInfo = targetInfo
+        self._browser: Chrome = browser
+        self._browserContext: BrowserContext = browserContext
+        self._targetInfo: Dict[str, str] = targetInfo
         self._targetId = targetInfo["targetId"]
-        self._page = None
+        self._page: Optional[Page] = None
+        self._loop = ensure_loop(loop)
 
-        self._isClosedPromise: asyncio.Future = asyncio.get_event_loop().create_future()
-        self._initializedPromise: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._isClosedPromise: Future = self._loop.create_future()
+        self._initializedPromise: Future = self._loop.create_future()
         self._isInitialized = (
             self._targetInfo["type"] != "page" or self._targetInfo["url"] != ""
         )
@@ -411,6 +423,7 @@ class Target(object):
                 self._browser._defaultViewport,
                 self._browser.ignoreHTTPSErrors,
                 self._browser._screenshotTaskQueue,
+                self._loop
             )
             self._page = new_page
             return new_page

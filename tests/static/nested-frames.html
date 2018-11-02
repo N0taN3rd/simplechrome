@@ -12,18 +12,22 @@
             flex-grow: 1;
             flex-shrink: 1;
         }
+
+        ::-webkit-scrollbar {
+            display: none;
+        }
     </style>
 </head>
 <body>
 <script>
-async function attachFrame(frameId, url) {
+  async function attachFrame(frameId, url) {
     const frame = document.createElement('iframe');
     frame.src = url;
     frame.id = frameId;
     document.body.appendChild(frame);
     await new Promise(x => frame.onload = x);
     return 'kazakh';
-}
+  }
 </script>
 <iframe src='./two-frames.html'></iframe>
 <iframe src='./frame.html'></iframe>

@@ -11,7 +11,7 @@ __all__ = [
     "WaitTimeoutError",
     "LauncherError",
     "InputError",
-    "NavigationError"
+    "NavigationError",
 ]
 
 
