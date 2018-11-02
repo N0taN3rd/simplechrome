@@ -11,8 +11,8 @@ from .errors import ElementHandleError, NetworkError
 from .util import merge_dict
 
 if TYPE_CHECKING:
-    from .page import Page
-    from .frame_manager import FrameManager, Frame
+    from .page import Page  # noqa: F401
+    from .frame_manager import FrameManager, Frame  # noqa: F401
 
 
 __all__ = ["ExecutionContext", "JSHandle", "ElementHandle", "createJSHandle"]
@@ -35,13 +35,13 @@ class ExecutionContext(object):
         self,
         client: Union[Client, TargetSession],
         contextPayload: Dict,
-        frame: Optional["Frame"],
+        frame: Optional["Frame"] = None,
     ) -> None:
         self._client = client
         self._frame = frame
-        self._contextId = contextPayload.get("id")
-        self._frameId = frame._id
-        self._isDefault = contextPayload.get("auxData", {}).get("isDefault", False)
+        self._contextId: str = contextPayload.get("id")
+        self._frameId: str = "" if frame is None else frame.id
+        self._isDefault: bool = contextPayload.get("auxData", {}).get("isDefault", False)
 
     @property
     def id(self) -> str:

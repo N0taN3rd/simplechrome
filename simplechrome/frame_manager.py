@@ -3,34 +3,27 @@
 
 import asyncio
 import logging
-from asyncio import Future
+from asyncio import Future, AbstractEventLoop
 from collections import OrderedDict
-from typing import (
-    Any,
-    Dict,
-    Generator,
-    List,
-    Optional,
-    Union,
-    Set,
-    TYPE_CHECKING,
-)
+from typing import Any, Dict, List, Optional, Union, Set, TYPE_CHECKING, ClassVar
 
 import attr
+from async_timeout import timeout as aiotimeout
+import aiofiles
 from pyee import EventEmitter
 
 from .connection import Client, TargetSession
 from .errors import ElementHandleError, PageError, WaitTimeoutError
-from .errors import NetworkError
+from .errors import NavigationError
 from .execution_context import ElementHandle
 from .execution_context import ExecutionContext, JSHandle
 from .helper import Helper
 from .navigator_watcher import NavigatorWatcher
-from .util import merge_dict
+from .util import merge_dict, ensure_loop
 
 if TYPE_CHECKING:
-    from .page import Page
-    from .network_manager import NetworkManager, Response
+    from .page import Page  # noqa: F401
+    from .network_manager import NetworkManager, Response  # noqa: F401
 
 __all__ = ["FrameManager", "Frame", "WaitTask", "WaitSetupError"]
 
@@ -57,7 +50,7 @@ class FrameManagerEvents(object):
 class FrameManager(EventEmitter):
     """FrameManager class."""
 
-    Events: FrameManagerEvents = FrameManagerEvents()
+    Events: ClassVar[FrameManagerEvents] = FrameManagerEvents()
 
     def __init__(
         self,
@@ -65,17 +58,18 @@ class FrameManager(EventEmitter):
         frameTree: Dict,
         page: Optional["Page"] = None,
         networkManager: Optional["NetworkManager"] = None,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
         """Make new frame manager."""
-        super().__init__(loop=asyncio.get_event_loop())
+        super().__init__(loop=ensure_loop(loop))
         self._client = client
         self._frames: OrderedDict[str, Frame] = OrderedDict()
         self._mainFrame: Optional[Frame] = None
-        self._contextIdToContext: Dict[str, ExecutionContext] = dict()
-        self._emits_life = False
+        self._contextIdToContext: Dict[Union[str, int], ExecutionContext] = dict()
+        self._emits_life: bool = False
         self._defaultNavigationTimeout: Union[int, float] = 30
-        self._page = page
-        self._networkManager = networkManager
+        self._page: Optional["Page"] = page
+        self._networkManager: Optional["NetworkManager"] = networkManager
         self._client.on("Page.frameAttached", self._onFrameAttached)
         self._client.on("Page.frameNavigated", self._onFrameNavigated)
         self._client.on(
@@ -113,11 +107,11 @@ class FrameManager(EventEmitter):
         if self._networkManager is not None:
             referrer = self._networkManager.extraHTTPHeaders().get("referrer", "")
         watcher = NavigatorWatcher(
-            self._client, self, frame, to, opts, self._networkManager
+            self._client, self, frame, to, opts, self._networkManager, self._loop
         )
         ensureNewDocumentNavigation = False
 
-        async def navigate():
+        async def navigate() -> Optional[NavigationError]:
             nonlocal ensureNewDocumentNavigation
             try:
                 response = await self._client.send(
@@ -126,23 +120,34 @@ class FrameManager(EventEmitter):
                 ensureNewDocumentNavigation = bool(response.get("loaderId"))
                 errorText = response.get("errorText")
                 if errorText:
-                    return Exception(f"{errorText} at {url}")
+                    return NavigationError(f"Navigation to {url} failed: {errorText}")
             except Exception as e:
-                return e
+                return NavigationError(f"Navigation to {url} failed: {e.args[0]}")
+            return None
 
+        # asyncio.wait does not work like Promise.race
+        # if we were to use watcher.timeoutOrTerminationPromise and there was an error
+        # done would be a task with a result that is a tuple (Task-That-Failed, future still pending)
+        # requiring two result calls :(
         done, pending = await asyncio.wait(
-            [asyncio.ensure_future(navigate()), watcher.timeoutOrTerminationPromise()],
+            {
+                self._loop.create_task(navigate()),
+                watcher.timeoutPromise,
+                watcher.terminationPromise,
+            },
             return_when=asyncio.FIRST_COMPLETED,
+            loop=self._loop,
         )
         error = done.pop().result()
         if error is None:
             if ensureNewDocumentNavigation:
-                final_prom = watcher.newDocumentNavigationPromise()
+                final_prom = watcher.newDocumentNavigationPromise
             else:
-                final_prom = watcher.sameDocumentNavigationPromise()
+                final_prom = watcher.sameDocumentNavigationPromise
             done, pending = await asyncio.wait(
-                [watcher.timeoutOrTerminationPromise(), final_prom],
+                {watcher.timeoutPromise, watcher.terminationPromise, final_prom},
                 return_when=asyncio.FIRST_COMPLETED,
+                loop=self._loop,
             )
             error = done.pop().result()
         watcher.dispose()
@@ -156,15 +161,17 @@ class FrameManager(EventEmitter):
         opts = merge_dict(options, kwargs)
         to = opts.get("timeout", self._defaultNavigationTimeout)
         watcher = NavigatorWatcher(
-            self._client, self, frame, to, opts, self._networkManager
+            self._client, self, frame, to, opts, self._networkManager, self._loop
         )
         done, pending = await asyncio.wait(
-            [
-                watcher.timeoutOrTerminationPromise(),
-                watcher.sameDocumentNavigationPromise(),
-                watcher.newDocumentNavigationPromise(),
-            ],
+            {
+                watcher.timeoutPromise,
+                watcher.terminationPromise,
+                watcher.sameDocumentNavigationPromise,
+                watcher.newDocumentNavigationPromise,
+            },
             return_when=asyncio.FIRST_COMPLETED,
+            loop=self._loop,
         )
         watcher.dispose()
         error = done.pop().result()
@@ -342,8 +349,9 @@ class Frame(EventEmitter):
         client: Union[Client, TargetSession],
         parentFrame: Optional["Frame"],
         frameId: str,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__(loop=asyncio.get_event_loop())
+        super().__init__(loop=ensure_loop(loop))
         self._client: Union[Client, TargetSession] = client
         self._frameManager = frameManager
         self._parentFrame = parentFrame
@@ -574,8 +582,8 @@ class Frame(EventEmitter):
         logger.warning(
             "`injectFile` method is deprecated." " Use `addScriptTag` method instead."
         )
-        with open(filePath) as f:
-            contents = f.read()
+        async with aiofiles.open(filePath, "r") as f:
+            contents = await f.read()
         contents += "/* # sourceURL= {} */".format(filePath.replace("\n", ""))
         return await self.evaluate(contents)
 
@@ -677,9 +685,7 @@ class Frame(EventEmitter):
 
         if isinstance(options.get("content"), str):
             return (
-                await context.evaluateHandle(  # type: ignore
-                    addStyleContent, options["content"]
-                )
+                await context.evaluateHandle(addStyleContent, options["content"])
             ).asElement()
 
         raise ValueError("Provide an object with a `url`, `path` or `content` property")
@@ -793,7 +799,7 @@ class Frame(EventEmitter):
             )
             return fut
         if not isinstance(selectorOrFunctionOrTimeout, str):
-            fut = asyncio.get_event_loop().create_future()
+            fut = self._loop.create_future()
             fut.set_exception(
                 TypeError(
                     "Unsupported target type: " + str(type(selectorOrFunctionOrTimeout))
@@ -885,7 +891,7 @@ class Frame(EventEmitter):
     def navigation_waiter(
         self,
         loop: Optional[asyncio.AbstractEventLoop] = None,
-        timeout: Optional[int] = None,
+        timeout: Optional[Union[int, float]] = None,
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
@@ -894,21 +900,42 @@ class Frame(EventEmitter):
         fut = loop.create_future()
 
         def set_true() -> None:
-            fut.set_result(True)
+            if not fut.done():
+                fut.set_result(True)
 
-        self.once(Frame.Events.Navigated, set_true)
-        myself = self
+        listeners = [Helper.addEventListener(self, Frame.Events.Navigated, set_true)]
 
-        def remove_cb(x: Future) -> None:
-            if x.cancelled():
-                myself.remove_listener(Frame.Events.Navigated, set_true)
-
-        fut.add_done_callback(remove_cb)
+        fut.add_done_callback(lambda f: Helper.removeEventListeners(listeners))
         if timeout is not None:
-            return asyncio.ensure_future(
-                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
-            )
+            return self._loop.create_task(Helper.timed_wait(fut, timeout, loop))
         return fut
+
+    async def _wait_for_life_cycle(
+        self,
+        cycle: str,
+        loop: AbstractEventLoop,
+        timeout: Optional[Union[int, float]] = None,
+    ) -> None:
+        fut: Future = loop.create_future()
+
+        def on_life_cycle(lc: str) -> None:
+            if lc == cycle and not fut.done():
+                fut.set_result(True)
+
+        listeners = [
+            Helper.addEventListener(self, Frame.Events.LifeCycleEvent, on_life_cycle)
+        ]
+
+        fut.add_done_callback(lambda f: Helper.removeEventListeners(listeners))
+
+        if timeout is not None:
+            try:
+                async with aiotimeout(timeout, loop=loop):
+                    await fut
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await fut
 
     def loaded_waiter(
         self,
@@ -917,26 +944,9 @@ class Frame(EventEmitter):
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        fut = loop.create_future()
-
-        def on_load(lf: str) -> None:
-            if lf == "load":
-                fut.set_result(True)
-
-        myself = self
-
-        def remove_cb(x: Any) -> None:
-            myself.remove_listener(Frame.Events.LifeCycleEvent, on_load)
-
-        fut.add_done_callback(remove_cb)
-        self.on(Frame.Events.LifeCycleEvent, on_load)
-        if timeout is not None:
-            return asyncio.ensure_future(
-                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
-            )
-        return fut
+        return self._loop.create_task(
+            self._wait_for_life_cycle("load", ensure_loop(loop), timeout)
+        )
 
     def network_idle_waiter(
         self,
@@ -945,29 +955,11 @@ class Frame(EventEmitter):
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        fut = loop.create_future()
+        return self._loop.create_task(
+            self._wait_for_life_cycle("networkIdle", ensure_loop(loop), timeout)
+        )
 
-        def onlf(lf: str) -> None:
-            if lf == "networkIdle":
-                fut.set_result(True)
-
-        myself = self
-
-        def remove_cb(x: Any) -> None:
-            myself.remove_listener(Frame.Events.LifeCycleEvent, onlf)
-
-        fut.add_done_callback(remove_cb)
-        self.on(Frame.Events.LifeCycleEvent, onlf)
-        if timeout is not None:
-            return asyncio.ensure_future(
-                asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop
-            )
-        return fut
-
-        #: Alias to :meth:`querySelector`
-
+    #: Alias to :meth:`querySelector`
     J = querySelector
     #: Alias to :meth:`xpath`
     Jx = xpath
@@ -978,7 +970,7 @@ class Frame(EventEmitter):
     #: Alias to :meth:`querySelectorAllEval`
     JJeval = querySelectorAllEval
 
-    def _onLoadingStopped(self):
+    def _onLoadingStopped(self) -> None:
         self._lifecycleEvents.add("DOMContentLoaded")
         self._lifecycleEvents.add("load")
 
@@ -1007,17 +999,17 @@ class Frame(EventEmitter):
 
     def _setDefaultContext(self, context: Optional[ExecutionContext]) -> None:
         if context:
-            self._contextResolveCallback(context)  # type: ignore
+            self._contextResolveCallback(context)
             for waitTask in self._waitTasks:
-                asyncio.ensure_future(waitTask.rerun())
+                self._loop.create_task(waitTask.rerun())
         else:
             self._documentPromise = None
             self._executionContext = None
-            self._contextPromise = asyncio.get_event_loop().create_future()
+            self._contextPromise = self._loop.create_future()
 
     def _contextResolveCallback(self, context: ExecutionContext) -> None:
         if self._contextPromise.done():
-            self._contextPromise = asyncio.get_event_loop().create_future()
+            self._contextPromise = self._loop.create_future()
         self._contextPromise.set_result(context)
         self._executionContext = context
 
@@ -1029,7 +1021,7 @@ class Frame(EventEmitter):
         if context._isDefault:
             self._setDefaultContext(None)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Frame(url={self._url}, name={self._name}, detached={self._detached}, id={self._id})"
 
 
@@ -1047,8 +1039,8 @@ class WaitTask(object):
         self,
         frame: Frame,
         predicateBody: str,
-        polling: Union[str, int],
-        timeout: float,
+        polling: Union[str, int, float],
+        timeout: Union[float, int],
         *args: Any,
     ) -> None:
         if isinstance(polling, str):
@@ -1061,8 +1053,8 @@ class WaitTask(object):
             raise ValueError(f"Unknown polling option: {polling}")
 
         self._frame: Frame = frame
-        self._polling: Union[str, int] = polling
-        self._timeout: float = timeout
+        self._polling: Union[str, int, float] = polling
+        self._timeout: Union[float, int] = timeout
         if args or Helper.is_jsfunc(predicateBody):
             self._predicateBody = f"return ({predicateBody})(...args)"
         else:
@@ -1075,19 +1067,18 @@ class WaitTask(object):
 
         loop = asyncio.get_event_loop()
         self.promise = loop.create_future()
-
-        async def timer(timeout: Union[int, float]) -> None:
-            await asyncio.sleep(timeout / 1000)
-            self._timeoutError = True
-            self.terminate(
-                WaitTimeoutError(f"Waiting failed: timeout {timeout}ms exceeds.")
-            )
-
         if timeout:
-            self._timeoutTimer = asyncio.ensure_future(timer(self._timeout))
-        self._runningTask = asyncio.ensure_future(self.rerun())
+            self._timeoutTimer = loop.create_task(self.timeout_timer(self._timeout))
+        loop.create_task(self.rerun())
 
-    def __await__(self) -> Generator:
+    async def timeout_timer(self, to: Union[int, float]) -> None:
+        await asyncio.sleep(to / 1000)
+        self._timeoutError = True
+        self.terminate(
+            WaitTimeoutError(f"Waiting failed: timeout {to / 1000}ms exceeds.")
+        )
+
+    def __await__(self) -> Any:
         """Make this class **awaitable**."""
         yield from self.promise
         return self.promise.result()
@@ -1095,7 +1086,7 @@ class WaitTask(object):
     def terminate(self, error: Exception) -> None:
         """Terminate this task."""
         self._terminated = True
-        if not self.promise.done():
+        if self.promise and not self.promise.done():
             self.promise.set_exception(error)
         self._cleanup()
 
@@ -1138,14 +1129,14 @@ class WaitTask(object):
         # page is navigated and context is destroyed.
         # Try again in the new execution context.
         if (
-            isinstance(error, NetworkError)
+            isinstance(error, Exception)
             and "Execution context was destroyed" in error.args[0]
         ):
             return
 
         # Try again in the new execution context.
         if (
-            isinstance(error, NetworkError)
+            isinstance(error, Exception)
             and "Cannot find context with specified id" in error.args[0]
         ):
             return
@@ -1158,7 +1149,7 @@ class WaitTask(object):
         self._cleanup()
 
     def _cleanup(self) -> None:
-        if self._timeout and not self._timeoutError:
+        if self._timeout and self._timeoutTimer and not self._timeoutTimer.done():
             self._timeoutTimer.cancel()
         self._frame._waitTasks.remove(self)
 

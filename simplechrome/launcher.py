@@ -35,6 +35,9 @@ DEFAULT_ARGS = [
     "--disable-client-side-phishing-detection",
     "--disable-default-apps",
     "--disable-extensions",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-ipc-flooding-protection",
+    '--disable-popup-blocking',
     "--disable-hang-monitor",
     "--disable-prompt-on-repost",
     "--disable-sync",
@@ -63,10 +66,10 @@ Options = Dict[str, Union[int, str, bool, List[str]]]
 async def ensureInitialPage(browser: Chrome) -> None:
     for target in browser.targets():
         if target.type == "page":
-            return
+            return None
     initialPagePromise = asyncio.get_event_loop().create_future()
 
-    def onTargetCreated(newTarget):
+    def onTargetCreated(newTarget: Any) -> None:
         if newTarget.type == "page":
             initialPagePromise.set_result(True)
 
@@ -118,7 +121,7 @@ class Launcher(object):
         if "executablePath" in self.options:
             self.exec = self.options["executablePath"]  # type: ignore
         else:
-            cr = self.options.get("chromium_revision", None)  # type: ignore
+            cr: Optional[str] = self.options.get("chromium_revision", None)
             if not BF.check_chromium(cr):
                 BF.download_chromium()
             self.exec = str(BF.chromium_excutable())
@@ -150,6 +153,7 @@ class Launcher(object):
             self.args.append("about:blank")
 
     async def _get_ws_endpoint(self) -> str:
+        data: Optional[List[Dict[str, str]]] = None
         async with ClientSession() as session:
             for i in range(100):
                 await asyncio.sleep(0.1)
@@ -162,12 +166,14 @@ class Launcher(object):
             else:
                 # cannot connet to browser for 10 seconds
                 raise LauncherError(f"Failed to connect to browser port: {self.url}")
-        for d in data:
-            if d["type"] == "page":
-                return d["webSocketDebuggerUrl"]
+        if data is not None:
+            for d in data:
+                if d["type"] == "page":
+                    return d["webSocketDebuggerUrl"]
         raise LauncherError("Could not find a page to connect to")
 
     async def _find_target(self) -> Dict:
+        data: Optional[List[Dict[str, str]]] = None
         async with ClientSession() as session:
             for i in range(150):
                 await asyncio.sleep(0.5)
@@ -180,9 +186,10 @@ class Launcher(object):
             else:
                 # cannot connet to browser for 10 seconds
                 raise LauncherError(f"Failed to connect to browser port: {self.url}")
-        for d in data:
-            if d["type"] == "page":
-                return d
+        if data is not None:
+            for d in data:
+                if d["type"] == "page":
+                    return d
         raise LauncherError("Could not find a page to connect to")
 
     async def launch(self) -> Chrome:
@@ -212,7 +219,7 @@ class Launcher(object):
 
         target = await self._find_target()
         logger.info(f"Browser listening on: {target['webSocketDebuggerUrl']}")
-        con = await createForWebSocket(target["webSocketDebuggerUrl"])
+        con: Client = await createForWebSocket(target["webSocketDebuggerUrl"])
         targetInfo = await con.send("Target.getTargetInfo", dict(targetId=target["id"]))
         self._connection = con
         self.chrome = await Chrome.create(
@@ -223,6 +230,7 @@ class Launcher(object):
             self.proc,
             self.kill_chrome,
             targetInfo=targetInfo["targetInfo"],
+            loop=asyncio.get_event_loop(),
         )
         await ensureInitialPage(self.chrome)
         return self.chrome
@@ -280,4 +288,5 @@ async def connect(options: Optional[dict] = None, **kwargs: Any) -> Chrome:
         defaultViewport=options.get("defaultViewPort"),
         process=None,
         targetInfo=targetInfo["targetInfo"],
+        loop=asyncio.get_event_loop(),
     )

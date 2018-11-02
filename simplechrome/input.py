@@ -2,7 +2,8 @@
 """Keyboard and Mouse module."""
 
 import asyncio
-from typing import Any, Dict, Set, Union
+import attr
+from typing import Any, Dict, Set, Union, Optional
 
 from .connection import Client, TargetSession
 from .errors import InputError
@@ -12,15 +13,15 @@ from .util import merge_dict
 __all__ = ["Keyboard", "Mouse", "Touchscreen"]
 
 
+@attr.dataclass
 class Keyboard(object):
     """Keyboard class."""
 
-    def __init__(self, client: Union[Client, TargetSession]) -> None:
-        self._client = client
-        self._modifiers = 0
-        self._pressedKeys: Set[str] = set()
+    client: Union[Client, TargetSession] = attr.ib()
+    modifiers: int = attr.ib(init=False, default=0)
+    pressedKeys: Set[str] = attr.ib(init=False, factory=set)
 
-    async def down(self, key: str, options: dict = None, **kwargs: Any) -> None:
+    async def down(self, key: str, options: Optional[Dict] = None, **kwargs: Any) -> None:
         """Dispatches a ``keydown`` event with ``key``.
 
         If ``key`` is a single character and no modifier keys besides ``shift``
@@ -39,19 +40,19 @@ class Keyboard(object):
         options = merge_dict(options, kwargs)
 
         description = self._keyDescriptionForString(key)
-        autoRepeat = description["code"] in self._pressedKeys
-        self._pressedKeys.add(description["code"])
-        self._modifiers |= self._modifierBit(description["key"])
+        autoRepeat = description["code"] in self.pressedKeys
+        self.pressedKeys.add(description["code"])
+        self.modifiers |= self._modifierBit(description["key"])
 
         text = options.get("text")
         if text is None:
             text = description["text"]
 
-        await self._client.send(
+        await self.client.send(
             "Input.dispatchKeyEvent",
             {
                 "type": "keyDown" if text else "rawKeyDown",
-                "modifiers": self._modifiers,
+                "modifiers": self.modifiers,
                 "windowsVirtualKeyCode": description["keyCode"],
                 "code": description["code"],
                 "key": description["key"],
@@ -77,7 +78,7 @@ class Keyboard(object):
     def _keyDescriptionForString(
         self, keyString: str
     ) -> Dict[str, Union[str, int]]:  # noqa: C901
-        shift = self._modifiers & 8
+        shift = self.modifiers & 8
         description = {"key": "", "keyCode": 0, "code": "", "text": "", "location": 0}
 
         definition = keyDefinitions.get(keyString)
@@ -108,7 +109,7 @@ class Keyboard(object):
         if shift and definition.get("shiftText"):
             description["text"] = definition["shiftText"]
 
-        if self._modifiers & ~8:
+        if self.modifiers & ~8:
             description["text"] = ""
 
         return description
@@ -120,14 +121,14 @@ class Keyboard(object):
         """
         description = self._keyDescriptionForString(key)
 
-        self._modifiers &= ~self._modifierBit(description["key"])
-        if description["code"] in self._pressedKeys:
-            self._pressedKeys.remove(description["code"])
-        await self._client.send(
+        self.modifiers &= ~self._modifierBit(description["key"])
+        if description["code"] in self.pressedKeys:
+            self.pressedKeys.remove(description["code"])
+        await self.client.send(
             "Input.dispatchKeyEvent",
             {
                 "type": "keyUp",
-                "modifiers": self._modifiers,
+                "modifiers": self.modifiers,
                 "key": description["key"],
                 "windowsVirtualKeyCode": description["keyCode"],
                 "code": description["code"],
@@ -140,11 +141,11 @@ class Keyboard(object):
 
         This does not send a ``keydown`` or ``keyup`` event.
         """
-        await self._client.send(
+        await self.client.send(
             "Input.dispatchKeyEvent",
             {
                 "type": "char",
-                "modifiers": self._modifiers,
+                "modifiers": self.modifiers,
                 "text": char,
                 "key": char,
                 "unmodifiedText": char,
@@ -175,7 +176,7 @@ class Keyboard(object):
             if delay:
                 await asyncio.sleep(delay / 1000)
 
-    async def press(self, key: str, options: Dict = None, **kwargs: Any) -> None:
+    async def press(self, key: str, options: Optional[Dict] = None, **kwargs: Any) -> None:
         """Press ``key``.
 
         If ``key`` is a single character and no modifier keys besides
@@ -192,25 +193,22 @@ class Keyboard(object):
         * ``delay`` (int|float): Time to wait between ``keydown`` and
           ``keyup``. Defaults to 0.
         """
-        options = merge_dict(options, kwargs)
+        opts = merge_dict(options, kwargs)
 
         await self.down(key, options)
-        if "delay" in options:
-            await asyncio.sleep(options["delay"] / 1000)
+        if "delay" in opts:
+            await asyncio.sleep(options["delay"])
         await self.up(key)
 
 
+@attr.dataclass
 class Mouse(object):
     """Mouse class."""
-
-    def __init__(
-        self, client: Union[Client, TargetSession], keyboard: Keyboard
-    ) -> None:
-        self._client = client
-        self._keyboard = keyboard
-        self._x = 0.0
-        self._y = 0.0
-        self._button = "none"
+    client: Union[Client, TargetSession] = attr.ib()
+    keyboard: Keyboard = attr.ib()
+    _x: float = attr.ib(init=False, default=0.0)
+    _y: float = attr.ib(init=False, default=0.0)
+    _button: str = attr.ib(init=False, default="none")
 
     async def move(
         self, x: float, y: float, options: dict = None, **kwargs: Any
@@ -229,14 +227,14 @@ class Mouse(object):
         for i in range(1, steps + 1):
             x = round(fromX + (self._x - fromX) * (i / steps))
             y = round(fromY + (self._y - fromY) * (i / steps))
-            await self._client.send(
+            await self.client.send(
                 "Input.dispatchMouseEvent",
                 {
                     "type": "mouseMoved",
                     "button": self._button,
                     "x": x,
                     "y": y,
-                    "modifiers": self._keyboard._modifiers,
+                    "modifiers": self.keyboard.modifiers,
                 },
             )
 
@@ -273,14 +271,14 @@ class Mouse(object):
         """
         options = merge_dict(options, kwargs)
         self._button = options.get("button", "left")
-        await self._client.send(
+        await self.client.send(
             "Input.dispatchMouseEvent",
             {
                 "type": "mousePressed",
                 "button": self._button,
                 "x": self._x,
                 "y": self._y,
-                "modifiers": self._keyboard._modifiers,
+                "modifiers": self.keyboard.modifiers,
                 "clickCount": options.get("clickCount") or 1,
             },
         )
@@ -296,28 +294,24 @@ class Mouse(object):
         """
         options = merge_dict(options, kwargs)
         self._button = "none"
-        await self._client.send(
+        await self.client.send(
             "Input.dispatchMouseEvent",
             {
                 "type": "mouseReleased",
                 "button": options.get("button", "left"),
                 "x": self._x,
                 "y": self._y,
-                "modifiers": self._keyboard._modifiers,
+                "modifiers": self.keyboard.modifiers,
                 "clickCount": options.get("clickCount") or 1,
             },
         )
 
 
+@attr.dataclass
 class Touchscreen(object):
     """Touchscreen class."""
-
-    def __init__(
-        self, client: Union[Client, TargetSession], keyboard: Keyboard
-    ) -> None:
-        """Make new touchscreen object."""
-        self._client = client
-        self._keyboard = keyboard
+    client: Union[Client, TargetSession] = attr.ib()
+    keyboard: Keyboard = attr.ib()
 
     async def tap(self, x: float, y: float) -> None:
         """Tap (``x``, ``y``).
@@ -325,19 +319,19 @@ class Touchscreen(object):
         Dispatches a ``touchstart`` and ``touchend`` event.
         """
         touchPoints = [{"x": round(x), "y": round(y)}]
-        await self._client.send(
+        await self.client.send(
             "Input.dispatchTouchEvent",
             {
                 "type": "touchStart",
                 "touchPoints": touchPoints,
-                "modifiers": self._keyboard._modifiers,
+                "modifiers": self.keyboard.modifiers,
             },
         )
-        await self._client.send(
+        await self.client.send(
             "Input.dispatchTouchEvent",
             {
                 "type": "touchEnd",
                 "touchPoints": [],
-                "modifiers": self._keyboard._modifiers,
+                "modifiers": self.keyboard.modifiers,
             },
         )

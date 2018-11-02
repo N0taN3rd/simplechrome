@@ -509,15 +509,15 @@ window.addEventListener('keydown', event => {
     @pytest.mark.asyncio
     async def test_key_modifiers(self):
         keyboard = self.page.keyboard
-        keyboard._modifiers | should.be.equal.to(0)
+        keyboard.modifiers | should.be.equal.to(0)
         await keyboard.down("Shift")
-        keyboard._modifiers | should.be.equal.to(8)
+        keyboard.modifiers | should.be.equal.to(8)
         await keyboard.down("Alt")
-        keyboard._modifiers | should.be.equal.to(9)
+        keyboard.modifiers | should.be.equal.to(9)
         await keyboard.up("Shift")
-        keyboard._modifiers | should.be.equal.to(1)
+        keyboard.modifiers | should.be.equal.to(1)
         await keyboard.up("Alt")
-        keyboard._modifiers | should.be.equal.to(0)
+        keyboard.modifiers | should.be.equal.to(0)
 
     @pytest.mark.asyncio
     async def test_repeat_properly(self):

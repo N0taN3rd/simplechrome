@@ -6,7 +6,7 @@ import aiofiles
 import logging
 import mimetypes
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, TYPE_CHECKING
-
+from asyncio import AbstractEventLoop, Future
 import attr
 import math
 from pyee import EventEmitter
@@ -20,10 +20,11 @@ from .execution_context import JSHandle, ElementHandle, createJSHandle  # noqa: 
 from .frame_manager import FrameManager, Frame
 from .input import Keyboard, Mouse, Touchscreen
 from .network_manager import NetworkManager, Response
-from .util import merge_dict
+from .util import merge_dict, ensure_loop
 
 if TYPE_CHECKING:
-    from .chrome import Target
+    from .chrome import Target  # noqa: F401
+    from .frame_manager import WaitTask  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +78,14 @@ class Page(EventEmitter):
         defaultViewport: Optional[Dict[str, int]] = None,
         ignoreHTTPSErrors: bool = False,
         screenshotTaskQueue: list = None,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> "Page":
         """Async function which makes new page object."""
         await client.send("Page.enable"),
         frameTree = (await client.send("Page.getFrameTree"))["frameTree"]
-        page = Page(client, target, frameTree, ignoreHTTPSErrors, screenshotTaskQueue)
+        page = Page(
+            client, target, frameTree, ignoreHTTPSErrors, screenshotTaskQueue, loop
+        )
 
         await asyncio.gather(
             client.send("Page.setLifecycleEventsEnabled", {"enabled": True}),
@@ -113,22 +117,25 @@ class Page(EventEmitter):
         frameTree: Dict,
         ignoreHTTPSErrors: bool = False,
         screenshotTaskQueue: list = None,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__(loop=asyncio.get_event_loop())
+        super().__init__(loop=ensure_loop(loop))
         self._closed = False
         self._client = client
         self._target = target
         self._keyboard = Keyboard(client)
         self._mouse = Mouse(client, self._keyboard)
         self._touchscreen = Touchscreen(client, self._keyboard)
-        self._networkManager = NetworkManager(client)
-        self._frameManager = FrameManager(client, frameTree, self, self._networkManager)
+        self._networkManager = NetworkManager(client, loop=self._loop)
+        self._frameManager = FrameManager(
+            client, frameTree, self, self._networkManager, self._loop
+        )
         self._networkManager.setFrameManager(self._frameManager)
         self._emulationManager = EmulationManager(client)
         self._ignoreHTTPSErrors = ignoreHTTPSErrors
         self._javascriptEnabled = True
         self._lifecycle_emitting = False
-        self._viewport = None
+        self._viewport: Optional[Dict[str, Union[str, float, bool, int]]] = None
 
         if screenshotTaskQueue is None:
             screenshotTaskQueue = list()
@@ -249,16 +256,16 @@ class Page(EventEmitter):
         """Get :class:`~simplechrome.input.Mouse` object."""
         return self._mouse
 
-    async def getWindowDescriptor(self):
+    async def getWindowDescriptor(self) -> Dict:
         return await self._client.send(
             "Browser.getWindowForTarget", dict(targetId=self._target._targetId)
         )
 
-    async def getWindowBounds(self):
+    async def getWindowBounds(self) -> Dict:
         windowDescriptor = await self.getWindowDescriptor()
         return windowDescriptor.get("bounds")
 
-    async def setWindowBounds(self, bounds: dict):
+    async def setWindowBounds(self, bounds: dict) -> None:
         windowDescriptor = await self.getWindowDescriptor()
         await self._client.send(
             "Browser.setWindowBounds",
@@ -320,21 +327,21 @@ class Page(EventEmitter):
                 asyncio.ensure_future(
                     self._client.send(
                         "Target.detachFromTarget", {"sessionId": event.get("sessionId")}
-                    )
+                    ),
+                    loop=self._loop,
                 )
 
     def _onLogEntryAdded(self, event: Dict) -> None:
         entry = event.get("entry")
         args = entry.get("args")
         if args is not None:
-
-            async def release() -> None:
-                for arg in args:
-                    await Helper.releaseObject(self._client, arg)
-
-            asyncio.ensure_future(release())
+            self._loop.create_task(self._release_log_args(args))
         if entry.get("source", "") != "worker":
             self.emit(Page.Events.LogEntry, entry)
+
+    async def _release_log_args(self, args: List[Dict]) -> None:
+        for arg in args:
+            await Helper.releaseObject(self._client, arg)
 
     def _on_lifecycle(self, le: Callable) -> None:
         self.emit(Page.Events.LifecycleEvent, le)
@@ -618,7 +625,10 @@ class Page(EventEmitter):
         await frame.setContent(html)
 
     async def goto(
-        self, url: str, options: Optional[Dict[str, Union[str, int, bool]]] = None, **kwargs: Any
+        self,
+        url: str,
+        options: Optional[Dict[str, Union[str, int, bool]]] = None,
+        **kwargs: Any,
     ) -> Optional[Response]:
         """Go to the ``url``.
 
@@ -645,7 +655,9 @@ class Page(EventEmitter):
         """
         return await self._frameManager.mainFrame.goto(url, options, **kwargs)
 
-    async def reload(self, options: Optional[Dict] = None, **kwargs: Any) -> Optional[Response]:
+    async def reload(
+        self, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional[Response]:
         """Reload this page.
 
         Available options are same as :meth:`goto` method.
@@ -716,6 +728,9 @@ class Page(EventEmitter):
 
     async def setJavaScriptEnabled(self, enabled: bool) -> None:
         """Set JavaScript enable/disable."""
+        if self._javascriptEnabled == enabled:
+            return
+        self._javascriptEnabled = enabled
         await self._client.send(
             "Emulation.setScriptExecutionDisabled", {"value": not enabled}
         )
@@ -761,7 +776,7 @@ class Page(EventEmitter):
         return await frame.evaluate(pageFunction, *args)
 
     async def evaluateOnNewDocument(
-        self, pageFunction: str, *args: str, raw=False
+        self, pageFunction: str, *args: str, raw: bool=False
     ) -> Dict[str, int]:
         """Add a JavaScript function to the document.
 
@@ -1096,10 +1111,10 @@ class Page(EventEmitter):
     def waitFor(
         self,
         selectorOrFunctionOrTimeout: Union[str, int, float],
-        options: dict = None,
+        options: Optional[Dict] = None,
         *args: Any,
         **kwargs: Any,
-    ) -> Awaitable:
+    ) -> Union[Future, "WaitTask"]:
         """Wait for function, timeout, or element which matches on page.
 
         This method behaves differently with respect to the first argument:
@@ -1134,7 +1149,7 @@ class Page(EventEmitter):
 
     def waitForSelector(
         self, selector: str, options: dict = None, **kwargs: Any
-    ) -> Awaitable:
+    ) -> Union[Future, "WaitTask"]:
         """Wait until element which matches ``selector`` appears on page.
 
         Wait for the ``selector`` to appear in page. If at the moment of
@@ -1164,7 +1179,7 @@ class Page(EventEmitter):
 
     def waitForXPath(
         self, xpath: str, options: dict = None, **kwargs: Any
-    ) -> Awaitable:
+    ) -> Union[Future, "WaitTask"]:
         """Wait until eleemnt which matches ``xpath`` appears on page.
 
         Wait for the ``xpath`` to appear in page. If the moment of calling the
@@ -1195,7 +1210,7 @@ class Page(EventEmitter):
 
     def waitForFunction(
         self, pageFunction: str, options: dict = None, *args: str, **kwargs: Any
-    ) -> Awaitable:
+    ) -> Union[Future, "WaitTask"]:
         """Wait until the function completes and returns a truethy value.
 
         :arg Any args: Arguments to pass to ``pageFunction``.
@@ -1225,7 +1240,7 @@ class Page(EventEmitter):
         return frame.waitForFunction(pageFunction, options, *args, **kwargs)
 
     async def _screenshotTask(
-            self, format: str, options: dict
+        self, format: str, options: dict
     ) -> bytes:  # noqa: C901,E501
         await self._client.send(
             "Target.activateTarget", {"targetId": self._target._targetId}
@@ -1286,7 +1301,7 @@ class Page(EventEmitter):
         return buffer
 
     async def _rawScreenshotTask(
-            self, format: str, options: dict
+        self, format: str, options: dict
     ) -> bytes:  # noqa: C901,E501
         await self._client.send(
             "Target.activateTarget", {"targetId": self._target._targetId}
@@ -1328,7 +1343,7 @@ class Page(EventEmitter):
         opt = {"format": format}
         if clip:
             opt["clip"] = clip
-        result = await self._client.send("Page.captureScreenshot", opt)
+        result: Dict[str, bytes] = await self._client.send("Page.captureScreenshot", opt)
 
         if options.get("omitBackground"):
             await self._client.send("Emulation.setDefaultBackgroundColorOverride")
