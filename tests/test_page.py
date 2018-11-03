@@ -216,6 +216,7 @@ class TestWaitFor(BaseChromeTest):
         await self.goto_test("grid.html")
         await fut
         result | should.have.length.of(1)
+        await self.goto_test("empty.html")
 
     @pytest.mark.asyncio
     async def test_wait_for_xpath(self):
