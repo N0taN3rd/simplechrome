@@ -7,7 +7,7 @@ from asyncio import Future, AbstractEventLoop
 
 import ujson as json
 from collections import OrderedDict
-from typing import Awaitable, Dict, Optional, Union, Set, List
+from typing import Awaitable, Dict, Optional, Union, Set, List, ClassVar
 from urllib.parse import unquote
 
 import attr
@@ -33,7 +33,7 @@ class NetworkEvents(object):
 class NetworkManager(EventEmitter):
     """NetworkManager class."""
 
-    Events: NetworkEvents = NetworkEvents()
+    Events: ClassVar[NetworkEvents] = NetworkEvents()
 
     def __init__(
         self,

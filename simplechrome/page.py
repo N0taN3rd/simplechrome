@@ -5,7 +5,7 @@ import base64
 import aiofiles
 import logging
 import mimetypes
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Any, ClassVar, Callable, Dict, List, Optional, Union, TYPE_CHECKING
 from asyncio import AbstractEventLoop, Future
 import attr
 import math
@@ -56,9 +56,9 @@ class PageEvents(object):
 
 class Page(EventEmitter):
 
-    Events: PageEvents = PageEvents()
+    Events: ClassVar[PageEvents] = PageEvents()
 
-    PaperFormats: Dict[str, Dict[str, float]] = dict(
+    PaperFormats: ClassVar[Dict[str, Dict[str, float]]] = dict(
         letter={"width": 8.5, "height": 11},
         legal={"width": 8.5, "height": 14},
         tabloid={"width": 11, "height": 17},
@@ -652,6 +652,17 @@ class Page(EventEmitter):
             for at least 500 ms.
           * ``networkidle2``: when there are no more than 2 network connections
             for at least 500 ms.
+
+        * ``all_frames`` (bool): should all frames or only the top frame be checked
+           for the the value of ``waitUntil``, defaults to `True`
+
+        * ``transition`` (str): Intended transition type. Can be one of:
+
+          * `link`, `typed`, `address_bar`, `auto_bookmark`, `auto_subframe`, `manual_subframe`, `generated`,
+            `auto_toplevel`, `form_submit`, `reload`, `keyword`, `keyword_generated`, `other`.
+
+        * ``referrer`` (str): Referrer URL. Defaults to the referrer value set using page.setExtraHTTPHeaders
+        if that key exists
         """
         return await self._frameManager.mainFrame.goto(url, options, **kwargs)
 

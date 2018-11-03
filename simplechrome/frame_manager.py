@@ -103,20 +103,31 @@ class FrameManager(EventEmitter):
     ) -> Optional["Response"]:
         opts = merge_dict(options, kwargs)
         to = opts.get("timeout", self._defaultNavigationTimeout)
-        referrer = ""
-        if self._networkManager is not None:
-            referrer = self._networkManager.extraHTTPHeaders().get("referrer", "")
+        nav_args = dict(url=url, frameId=frame.id)
+
+        if "transition" in opts:
+            nav_args["transitionType"] = opts.get("transition")
+
+        supplied_referrer: bool = "referrer" in opts
+        if supplied_referrer:
+            nav_args["referrer"] = opts.get('referrer')
+
+        if not supplied_referrer and self._networkManager is not None:
+            referer = self._networkManager.extraHTTPHeaders().get('referrer')
+            if referer:
+                nav_args["referrer"] = referer
+
         watcher = NavigatorWatcher(
             self._client, self, frame, to, opts, self._networkManager, self._loop
         )
+
         ensureNewDocumentNavigation = False
 
         async def navigate() -> Optional[NavigationError]:
             nonlocal ensureNewDocumentNavigation
             try:
-                response = await self._client.send(
-                    "Page.navigate", dict(url=url, referrer=referrer, frameId=frame.id)
-                )
+                response = await self._client.send("Page.navigate", nav_args)
+                # if we navigated within document i.e history modification then loaderId is None
                 ensureNewDocumentNavigation = bool(response.get("loaderId"))
                 errorText = response.get("errorText")
                 if errorText:
@@ -1075,7 +1086,7 @@ class WaitTask(object):
         await asyncio.sleep(to / 1000)
         self._timeoutError = True
         self.terminate(
-            WaitTimeoutError(f"Waiting failed: timeout {to / 1000}ms exceeds.")
+            WaitTimeoutError(f"Waiting failed: timeout {to}ms exceeds.")
         )
 
     def __await__(self) -> Any:
