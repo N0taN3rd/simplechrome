@@ -7,7 +7,7 @@ import os
 
 from .helper import Helper
 from .connection import Client, TargetSession
-from .errors import ElementHandleError, NetworkError
+from .errors import ElementHandleError, NetworkError, EvaluationError
 from .util import merge_dict
 
 if TYPE_CHECKING:
@@ -41,7 +41,9 @@ class ExecutionContext(object):
         self._frame = frame
         self._contextId: str = contextPayload.get("id")
         self._frameId: str = "" if frame is None else frame.id
-        self._isDefault: bool = contextPayload.get("auxData", {}).get("isDefault", False)
+        self._isDefault: bool = contextPayload.get("auxData", {}).get(
+            "isDefault", False
+        )
 
     @property
     def id(self) -> str:
@@ -51,12 +53,14 @@ class ExecutionContext(object):
     def frame(self) -> "Frame":
         return self._frame
 
-    async def evaluate(self, pageFunction: str, *args: Any) -> Any:
+    async def evaluate(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> Any:
         """Execute ``pageFunction`` on this context.
 
         Details see :meth:`simplechrome.page.Page.evaluate`.
         """
-        handle = await self.evaluateHandle(pageFunction, *args)
+        handle = await self.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
         try:
             result = await handle.jsonValue()
         except NetworkError as e:
@@ -64,16 +68,18 @@ class ExecutionContext(object):
                 return
             if "Object couldn't be returned by value" in e.args[0]:
                 return
-            raise
+            raise EvaluationError(e.args[0])
         await handle.dispose()
         return result
 
-    async def evaluateHandle(self, pageFunction: str, *args: Any) -> "JSHandle":
+    async def evaluateHandle(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> "JSHandle":
         """Execute ``pageFunction`` on this context.
 
         Details see :meth:`simplechrome.page.Page.evaluateHandle`.
         """
-        if not Helper.is_jsfunc(pageFunction):
+        if withCliAPI or not Helper.is_jsfunc(pageFunction):
             _obj = await self._client.send(
                 "Runtime.evaluate",
                 {
@@ -82,11 +88,12 @@ class ExecutionContext(object):
                     "returnByValue": False,
                     "awaitPromise": True,
                     "userGesture": True,
+                    "includeCommandLineAPI": withCliAPI,
                 },
             )
             exceptionDetails = _obj.get("exceptionDetails")
             if exceptionDetails:
-                raise ElementHandleError(
+                raise EvaluationError(
                     "Evaluation failed: {}".format(
                         Helper.getExceptionMessage(exceptionDetails)
                     )
@@ -106,13 +113,36 @@ class ExecutionContext(object):
         )
         exceptionDetails = _obj.get("exceptionDetails")
         if exceptionDetails:
-            raise ElementHandleError(
+            raise EvaluationError(
                 "Evaluation failed: {}".format(
                     Helper.getExceptionMessage(exceptionDetails)
                 )
             )
         remoteObject = _obj.get("result")
         return createJSHandle(self, remoteObject)
+
+    async def evaluate_expression(
+        self, expression: str, withCliAPI: bool = False
+    ) -> Any:
+        results = await self._client.send(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "contextId": self._contextId,
+                "returnByValue": True,
+                "awaitPromise": True,
+                "userGesture": True,
+                "includeCommandLineAPI": withCliAPI,
+            },
+        )
+        exceptionDetails = results.get("exceptionDetails")
+        if exceptionDetails:
+            raise EvaluationError(
+                "Evaluation failed: {}".format(
+                    Helper.getExceptionMessage(exceptionDetails)
+                )
+            )
+        return Helper.valueFromRemoteObject(results['result'])
 
     async def queryObjects(self, prototypeHandle: "JSHandle") -> "JSHandle":
         """Send query.

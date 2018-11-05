@@ -470,25 +470,44 @@ class Frame(EventEmitter):
         """
         return await self._contextPromise
 
-    async def evaluateHandle(self, pageFunction: str, *args: Any) -> JSHandle:
-        """Execute fucntion on this frame.
+    async def evaluateHandle(self, pageFunction: str, *args: Any, withCliAPI: bool = False) -> JSHandle:
+        """Evaluates the js-function or js-expression in the current frame retrieving the results
+        as a JSHandle.
 
-        Details see :meth:`simplechrome.page.Page.evaluateHandle`.
+        :param str pageFunction: String of js-function/expression to be executed
+                               in the browser.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        If this keyword argument is true args are ignored
         """
         context = await self.executionContext()
         if context is None:
             raise PageError("this frame has no context.")
-        return await context.evaluateHandle(pageFunction, *args)
+        return await context.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
 
-    async def evaluate(self, pageFunction: str, *args: Any) -> Any:
-        """Evaluate pageFunction on this frame.
+    async def evaluate(self, pageFunction: str, *args: Any, withCliAPI: bool = False) -> Any:
+        """Evaluates the js-function or js-expression in the current frame retrieving the results
+        of the evaluation.
 
-        Details see :meth:`simplechrome.page.Page.evaluate`.
+        :param str pageFunction: String of js-function/expression to be executed
+                               in the browser.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        If this keyword argument is true args are ignored
         """
         context = await self.executionContext()
         if context is None:
             raise ElementHandleError("ExecutionContext is None.")
-        return await context.evaluate(pageFunction, *args)
+        return await context.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
+
+    async def evaluate_expression(self, expression: str, withCliAPI: bool = False) -> Any:
+        """Evaluates the js expression in the frame returning the results by value.
+
+        :param str expression: The js expression to be evaluated in the main frame.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        """
+        context = await self.executionContext()
+        if context is None:
+            raise ElementHandleError("ExecutionContext is None.")
+        return await context.evaluate_expression(expression, withCliAPI=withCliAPI)
 
     async def querySelector(self, selector: str) -> Optional[ElementHandle]:
         """Get element which matches `selector` string.
