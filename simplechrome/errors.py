@@ -12,6 +12,7 @@ __all__ = [
     "LauncherError",
     "InputError",
     "NavigationError",
+    "EvaluationError"
 ]
 
 
@@ -53,3 +54,7 @@ class InputError(Exception):
 
 class NavigationError(Exception):
     """For navigation errors"""
+
+
+class EvaluationError(Exception):
+    """For evaluation errors"""

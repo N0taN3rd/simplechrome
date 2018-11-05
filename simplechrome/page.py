@@ -770,21 +770,30 @@ class Page(EventEmitter):
         if needsReload:
             await self.reload()
 
-    async def evaluate(self, pageFunction: str, *args: Any) -> Any:
-        """Execute js-function or js-expression on browser and get result.
+    async def evaluate(self, pageFunction: str, *args: Any, withCliAPI: bool = False) -> Any:
+        """Evaluates the js-function or js-expression in the main frame retrieving the results
+        of the valuation.
 
-        :arg str pageFunction: String of js-function/expression to be executed
-                               on the browser.
-        :arg bool force_expr: If True, evaluate `pageFunction` as expression.
-                              If False (default), try to automatically detect
-                              function or expression.
-
-        note: ``force_expr`` option is a keyword only argument.
+        :param str pageFunction: String of js-function/expression to be executed
+                               in the browser.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        If this keyword argument is true args are ignored
         """
         frame = self.mainFrame
         if frame is None:
             raise PageError("No main frame.")
-        return await frame.evaluate(pageFunction, *args)
+        return await frame.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
+
+    async def evaluate_expression(self, expression: str, withCliAPI: bool = False) -> Any:
+        """Evaluates the js expression in the main frame returning the results by value.
+
+        :param str expression: The js expression to be evaluated in the main frame.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        """
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("No main frame.")
+        return await frame.evaluate_expression(expression, withCliAPI=withCliAPI)
 
     async def evaluateOnNewDocument(
         self, pageFunction: str, *args: str, raw: bool=False

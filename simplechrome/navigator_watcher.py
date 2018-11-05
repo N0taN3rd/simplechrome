@@ -115,11 +115,6 @@ class NavigatorWatcher(object):
         self._navigationRequest = request
 
     def dispose(self) -> None:
-        self._sameDocumentNavigationPromise: Future = self.loop.create_future()
-        self._newDocumentNavigationPromise: Future = self.loop.create_future()
-        self._terminationPromise: Future = self.loop.create_future()
-        self._timeoutPromise: Union[Future, Task] = self._createTimeoutPromise()
-
         Helper.removeEventListeners(self._eventListeners)
         if self._terminationPromise and not self._terminationPromise.done():
             self._terminationPromise.cancel()

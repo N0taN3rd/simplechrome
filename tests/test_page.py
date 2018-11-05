@@ -5,7 +5,7 @@ import time
 import pytest
 from grappa import should
 
-from simplechrome.errors import ElementHandleError, PageError, NavigationError
+from simplechrome.errors import ElementHandleError, PageError, NavigationError, EvaluationError
 from .base_test import BaseChromeTest
 from .frame_utils import attachFrame
 
@@ -54,9 +54,9 @@ class TestEvaluate(BaseChromeTest):
         frameEvaluation.result() | should.be.equal.to(42)
 
     @pytest.mark.asyncio
-    async def test_paromise_reject(self):
+    async def test_promise_reject(self):
         await self.goto_empty(waitUntil="load")
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(EvaluationError) as cm:
             await self.page.evaluate("() => not.existing.object.property")
         str(cm.value) | should.contain("not is not defined")
 
@@ -187,7 +187,7 @@ class TestOfflineMode(BaseChromeTest):
         await self.page.setOfflineMode(False)
         had_error | should.be.true
         res = await self.page.reload()
-        res.status | should.be.equal.to(200)
+        (res.status in [200, 304]) | should.be.true
 
     @pytest.mark.asyncio
     async def test_emulate_navigator_offline(self):
