@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 
-from cripy.client import NetworkError
+from cripy.errors import NetworkError
 
 __all__ = [
     "BrowserError",

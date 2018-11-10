@@ -5,7 +5,7 @@ import asyncio
 import attr
 from typing import Any, Dict, Set, Union, Optional
 
-from .connection import Client, TargetSession
+from .connection import ClientType
 from .errors import InputError
 from .us_keyboard_layout import keyDefinitions
 from .util import merge_dict
@@ -17,7 +17,7 @@ __all__ = ["Keyboard", "Mouse", "Touchscreen"]
 class Keyboard(object):
     """Keyboard class."""
 
-    client: Union[Client, TargetSession] = attr.ib()
+    client: ClientType = attr.ib()
     modifiers: int = attr.ib(init=False, default=0)
     pressedKeys: Set[str] = attr.ib(init=False, factory=set)
 
@@ -204,7 +204,7 @@ class Keyboard(object):
 @attr.dataclass
 class Mouse(object):
     """Mouse class."""
-    client: Union[Client, TargetSession] = attr.ib()
+    client: ClientType = attr.ib()
     keyboard: Keyboard = attr.ib()
     _x: float = attr.ib(init=False, default=0.0)
     _y: float = attr.ib(init=False, default=0.0)
@@ -310,7 +310,7 @@ class Mouse(object):
 @attr.dataclass
 class Touchscreen(object):
     """Touchscreen class."""
-    client: Union[Client, TargetSession] = attr.ib()
+    client: ClientType = attr.ib()
     keyboard: Keyboard = attr.ib()
 
     async def tap(self, x: float, y: float) -> None:

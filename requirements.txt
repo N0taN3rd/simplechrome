@@ -10,4 +10,4 @@ async-timeout
 aiofiles
 urllib3
 attrs
-git+ssh://git@github.com/webrecorder/chrome-remote-interface-py.git@no-gevent-simplechrome-cdp-unification
+git+https://github.com/webrecorder/chrome-remote-interface-py.git#egg=cripy

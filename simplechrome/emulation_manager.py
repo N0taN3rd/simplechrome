@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """Emulation Managet module."""
-from typing import Union
 from .helper import Helper
-from .connection import Client, TargetSession
+from .connection import ClientType
 
 __all__ = ["EmulationManager"]
 
@@ -10,7 +9,7 @@ __all__ = ["EmulationManager"]
 class EmulationManager(object):
     """EmulationManager class."""
 
-    def __init__(self, client: Union[Client, TargetSession]) -> None:
+    def __init__(self, client: ClientType) -> None:
         """Make new elmulation manager."""
         self._client = client
         self._emulatingMobile = False

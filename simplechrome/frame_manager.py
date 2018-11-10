@@ -12,7 +12,7 @@ from async_timeout import timeout as aiotimeout
 import aiofiles
 from pyee import EventEmitter
 
-from .connection import Client, TargetSession
+from .connection import ClientType
 from .errors import ElementHandleError, PageError, WaitTimeoutError
 from .errors import NavigationError
 from .execution_context import ElementHandle
@@ -54,7 +54,7 @@ class FrameManager(EventEmitter):
 
     def __init__(
         self,
-        client: Union[Client, TargetSession],
+        client: ClientType,
         frameTree: Dict,
         page: Optional["Page"] = None,
         networkManager: Optional["NetworkManager"] = None,
@@ -62,7 +62,7 @@ class FrameManager(EventEmitter):
     ) -> None:
         """Make new frame manager."""
         super().__init__(loop=ensure_loop(loop))
-        self._client = client
+        self._client: ClientType = client
         self._frames: OrderedDict[str, Frame] = OrderedDict()
         self._mainFrame: Optional[Frame] = None
         self._contextIdToContext: Dict[Union[str, int], ExecutionContext] = dict()
@@ -357,13 +357,13 @@ class Frame(EventEmitter):
     def __init__(
         self,
         frameManager: FrameManager,
-        client: Union[Client, TargetSession],
+        client: ClientType,
         parentFrame: Optional["Frame"],
         frameId: str,
         loop: Optional[AbstractEventLoop] = None,
     ) -> None:
         super().__init__(loop=ensure_loop(loop))
-        self._client: Union[Client, TargetSession] = client
+        self._client: ClientType = client
         self._frameManager = frameManager
         self._parentFrame = parentFrame
         self._url: str = ""

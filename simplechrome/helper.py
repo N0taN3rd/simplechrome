@@ -9,7 +9,7 @@ from async_timeout import timeout as aiotimeout
 from asyncio import AbstractEventLoop
 from .util import ensure_loop
 
-from .connection import Client, TargetSession
+from .connection import ClientType
 from .errors import ElementHandleError
 from pyee import EventEmitter
 
@@ -101,7 +101,7 @@ class Helper(object):
 
     @staticmethod
     async def releaseObject(
-        client: Union[Client, TargetSession], remoteObject: dict
+        client: ClientType, remoteObject: dict
     ) -> None:
         """Release remote object."""
         objectId = remoteObject.get("objectId")
@@ -145,3 +145,7 @@ class Helper(object):
                 await awaitable
         except asyncio.TimeoutError:
             pass
+
+    @staticmethod
+    def waitForEvent(emitter, eventName: str):
+        pass

@@ -7,7 +7,7 @@ from typing import Dict, Optional, Union, Any, List, TYPE_CHECKING
 
 from async_timeout import timeout
 
-from .connection import Client, TargetSession
+from .connection import connection_from_session, ClientType, Connection
 from .errors import NavigationError
 from .helper import Helper
 from .util import merge_dict, ensure_loop
@@ -30,7 +30,7 @@ WaitToProtocolLifecycle = {
 class NavigatorWatcher(object):
     def __init__(
         self,
-        client: Union[Client, TargetSession],
+        client: ClientType,
         frameManager: "FrameManager",
         frame: "Frame",
         navTimeout: Optional[Union[int, float]] = None,
@@ -51,8 +51,8 @@ class NavigatorWatcher(object):
         self._navigationRequest: Optional["Request"] = None
         self._eventListeners = [
             Helper.addEventListener(
-                client._connection if isinstance(client, TargetSession) else client,
-                Client.Events.Disconnected,
+                connection_from_session(client),
+                Connection.Events.Disconnected,
                 lambda: self._terminate(
                     NavigationError(
                         "Navigation failed because browser has disconnected!"

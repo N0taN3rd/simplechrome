@@ -4,7 +4,7 @@ from typing import ClassVar, Union
 
 import attr
 
-from .connection import Client, TargetSession
+from .connection import ClientType
 
 __all__ = ["Dialog"]
 
@@ -24,7 +24,7 @@ class Dialog(object):
     Dialog objects are dispatched by page via the ``dialog`` event.
     """
 
-    client: Union[Client, TargetSession] = attr.ib(repr=False)
+    client: ClientType = attr.ib(repr=False)
     type: str = attr.ib()
     message: str = attr.ib()
     defaultValue: str = attr.ib(default="")

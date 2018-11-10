@@ -2,7 +2,7 @@ import os
 import pytest
 from grappa import should
 
-from cripy.client import NetworkError
+from cripy.errors import NetworkError
 from simplechrome.launcher import connect, launch
 from .base_test import BaseChromeTest
 
