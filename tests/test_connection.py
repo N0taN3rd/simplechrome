@@ -2,7 +2,7 @@ import os
 import pytest
 from grappa import should
 
-from simplechrome import NetworkError
+from cripy.errors import NetworkError
 from simplechrome.launcher import connect, launch
 from .base_test import BaseChromeTest
 
@@ -52,7 +52,7 @@ class TestConnection(object):
 class TestCDPSession(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_create_session(self):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createTargetSession()
         await client.send("Runtime.enable")
         await client.send("Runtime.evaluate", {"expression": 'window.foo = "bar"'})
         await self.page.evaluate("window.foo") | should.be.equal.to("bar")
@@ -60,7 +60,7 @@ class TestCDPSession(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_send_event(self, ee_helper):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createTargetSession()
         await client.send("Network.enable")
         events = []
         ee_helper.addEventListener(
@@ -72,7 +72,7 @@ class TestCDPSession(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_enable_disable_domain(self):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createTargetSession()
         await client.send("Runtime.enable")
         await client.send("Runtime.disable")
         res = await client.send(
@@ -84,7 +84,7 @@ class TestCDPSession(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_detach(self):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createTargetSession()
         await client.send("Runtime.enable")
         evalResponse = await client.send(
             "Runtime.evaluate", {"expression": "1 + 2", "returnByValue": True}

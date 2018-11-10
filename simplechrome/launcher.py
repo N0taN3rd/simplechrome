@@ -18,7 +18,7 @@ from aiohttp import ClientSession, ClientConnectorError
 
 from .browser_fetcher import BF
 from .chrome import Chrome
-from .connection import Connection
+from .connection import ClientType, createForWebSocket
 from .errors import LauncherError
 from .util import merge_dict
 from .helper import Helper
@@ -35,6 +35,9 @@ DEFAULT_ARGS = [
     "--disable-client-side-phishing-detection",
     "--disable-default-apps",
     "--disable-extensions",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-ipc-flooding-protection",
+    '--disable-popup-blocking',
     "--disable-hang-monitor",
     "--disable-prompt-on-repost",
     "--disable-sync",
@@ -63,10 +66,10 @@ Options = Dict[str, Union[int, str, bool, List[str]]]
 async def ensureInitialPage(browser: Chrome) -> None:
     for target in browser.targets():
         if target.type == "page":
-            return
+            return None
     initialPagePromise = asyncio.get_event_loop().create_future()
 
-    def onTargetCreated(newTarget):
+    def onTargetCreated(newTarget: Any) -> None:
         if newTarget.type == "page":
             initialPagePromise.set_result(True)
 
@@ -86,7 +89,7 @@ class Launcher(object):
         self.exec: str = ""
         self._args_setup()
         self.chrome: Optional[Chrome] = None
-        self._connection: Optional[Connection] = None
+        self._connection: Optional[ClientType] = None
         self.proc: Optional[subprocess.Popen] = None
         self.cmd: List[str] = [self.exec] + self.args
 
@@ -118,7 +121,7 @@ class Launcher(object):
         if "executablePath" in self.options:
             self.exec = self.options["executablePath"]  # type: ignore
         else:
-            cr = self.options.get("chromium_revision", None)  # type: ignore
+            cr: Optional[str] = self.options.get("chromium_revision", None)
             if not BF.check_chromium(cr):
                 BF.download_chromium()
             self.exec = str(BF.chromium_excutable())
@@ -150,6 +153,7 @@ class Launcher(object):
             self.args.append("about:blank")
 
     async def _get_ws_endpoint(self) -> str:
+        data: Optional[List[Dict[str, str]]] = None
         async with ClientSession() as session:
             for i in range(100):
                 await asyncio.sleep(0.1)
@@ -162,9 +166,30 @@ class Launcher(object):
             else:
                 # cannot connet to browser for 10 seconds
                 raise LauncherError(f"Failed to connect to browser port: {self.url}")
-        for d in data:
-            if d["type"] == "page":
-                return d["webSocketDebuggerUrl"]
+        if data is not None:
+            for d in data:
+                if d["type"] == "page":
+                    return d["webSocketDebuggerUrl"]
+        raise LauncherError("Could not find a page to connect to")
+
+    async def _find_target(self) -> Dict:
+        data: Optional[List[Dict[str, str]]] = None
+        async with ClientSession() as session:
+            for i in range(150):
+                await asyncio.sleep(0.5)
+                try:
+                    res = await session.get(urljoin(self.url, "json"))
+                    data = await res.json()
+                    break
+                except ClientConnectorError as e:
+                    continue
+            else:
+                # cannot connet to browser for 10 seconds
+                raise LauncherError(f"Failed to connect to browser port: {self.url}")
+        if data is not None:
+            for d in data:
+                if d["type"] == "page":
+                    return d
         raise LauncherError("Could not find a page to connect to")
 
     async def launch(self) -> Chrome:
@@ -192,9 +217,10 @@ class Launcher(object):
             if self.options.get("handleSIGHUP", True):
                 signal.signal(signal.SIGHUP, _close_process)
 
-        wsurl = await self._get_ws_endpoint()
-        logger.info(f"Browser listening on: {wsurl}")
-        con = await Connection.createForWebSocket(wsurl)
+        target = await self._find_target()
+        logger.info(f"Browser listening on: {target['webSocketDebuggerUrl']}")
+        con: ClientType = await createForWebSocket(target["webSocketDebuggerUrl"])
+        targetInfo = await con.send("Target.getTargetInfo", dict(targetId=target["id"]))
         self._connection = con
         self.chrome = await Chrome.create(
             con,
@@ -203,6 +229,8 @@ class Launcher(object):
             self.options.get("defaultViewPort"),
             self.proc,
             self.kill_chrome,
+            targetInfo=targetInfo["targetInfo"],
+            loop=asyncio.get_event_loop(),
         )
         await ensureInitialPage(self.chrome)
         return self.chrome
@@ -221,8 +249,8 @@ class Launcher(object):
                 pass
         if self._tmp_user_data_dir and os.path.exists(self._tmp_user_data_dir.name):
             # Force kill chrome only when using temporary userDataDir
-            self.wait_for_chrome_death()
             self._cleanup_tmp_user_data_dir()
+        self.wait_for_chrome_death()
 
     def wait_for_chrome_death(self) -> None:
         """Terminate chrome."""
@@ -242,22 +270,23 @@ class Launcher(object):
             raise IOError("Unable to remove Temporary User Data")
 
 
-async def launch(options: dict = None, **kwargs: Any) -> Chrome:
+async def launch(options: Optional[dict] = None, **kwargs: Any) -> Chrome:
     return await Launcher(options, **kwargs).launch()
 
 
-async def connect(options: dict = None, **kwargs: Any) -> Chrome:
+async def connect(options: Optional[dict] = None, **kwargs: Any) -> Chrome:
     options = merge_dict(options, kwargs)
     browserWSEndpoint = options.get("browserWSEndpoint")
     if not browserWSEndpoint:
         raise LauncherError("Need `browserWSEndpoint` option.")
-    connectionDelay = options.get("slowMo", 0)
-    connection = await Connection.createForWebSocket(browserWSEndpoint, connectionDelay)
+    con = await createForWebSocket(browserWSEndpoint)
+    targetInfo = await con.send("Target.getTargetInfo")
     return await Chrome.create(
-        connection,
+        con,
         contextIds=[],
         ignoreHTTPSErrors=options.get("ignoreHTTPSErrors", False),
         defaultViewport=options.get("defaultViewPort"),
         process=None,
-        closeCallback=lambda: connection.send("Browser.close"),
+        targetInfo=targetInfo["targetInfo"],
+        loop=asyncio.get_event_loop(),
     )

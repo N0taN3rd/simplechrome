@@ -5,7 +5,7 @@ import time
 import pytest
 from grappa import should
 
-from simplechrome.errors import ElementHandleError, PageError
+from simplechrome.errors import ElementHandleError, PageError, NavigationError, EvaluationError
 from .base_test import BaseChromeTest
 from .frame_utils import attachFrame
 
@@ -54,9 +54,9 @@ class TestEvaluate(BaseChromeTest):
         frameEvaluation.result() | should.be.equal.to(42)
 
     @pytest.mark.asyncio
-    async def test_paromise_reject(self):
+    async def test_promise_reject(self):
         await self.goto_empty(waitUntil="load")
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(EvaluationError) as cm:
             await self.page.evaluate("() => not.existing.object.property")
         str(cm.value) | should.contain("not is not defined")
 
@@ -179,11 +179,15 @@ class TestOfflineMode(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_offline_mode(self):
         await self.page.setOfflineMode(True)
-        with pytest.raises(PageError):
+        had_error = False
+        try:
             await self.goto_test("empty.html")
+        except Exception as e:
+            had_error = True
         await self.page.setOfflineMode(False)
+        had_error | should.be.true
         res = await self.page.reload()
-        res.status | should.be.equal.to(200)
+        (res.status in [200, 304]) | should.be.true
 
     @pytest.mark.asyncio
     async def test_emulate_navigator_offline(self):
@@ -212,6 +216,7 @@ class TestWaitFor(BaseChromeTest):
         await self.goto_test("grid.html")
         await fut
         result | should.have.length.of(1)
+        await self.goto_test("empty.html")
 
     @pytest.mark.asyncio
     async def test_wait_for_xpath(self):
@@ -465,3 +470,11 @@ class TestUrl(BaseChromeTest):
         self.page.url | should.be.equal.to("about:blank")
         await self.goto_test("empty.html")
         self.page.url | should.be.equal.to(self.url + "empty.html")
+
+
+class TestGoto(BaseChromeTest):
+    @pytest.mark.asyncio
+    async def test_goto_time_out(self):
+        with pytest.raises(NavigationError, message="Navigation Timeout Exceeded: 5 seconds exceeded"):
+            await self.goto_test('never-loads1.html', waitUntil="load", timeout=5)
+

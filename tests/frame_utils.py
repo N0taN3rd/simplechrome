@@ -42,7 +42,7 @@ def dumpFrames(frame: Frame) -> DefaultDict[str, List[str]]:
     results = defaultdict(list)
     results["0"].append(frame.url)
     depth = 1
-    frames = list(map(lambda x: dict(f=x, depth=depth), frame.childFrames))
+    frames: List = list(map(lambda x: dict(f=x, depth=depth), frame.childFrames))
     while frames:
         cf = frames.pop()
         f = cf.get("f")

@@ -6,7 +6,7 @@ import gc
 import socket
 from typing import Dict, Optional, Any
 
-__all__ = ["get_free_port", "merge_dict"]
+__all__ = ["get_free_port", "merge_dict", "ensure_loop"]
 
 
 def get_free_port() -> int:
@@ -30,4 +30,13 @@ def merge_dict(dict1: Optional[Dict], dict2: Optional[Dict]) -> Dict[str, Any]:
 
 
 def loop_factory() -> AbstractEventLoop:
+    return get_event_loop()
+
+
+def ensure_loop(loop: Optional[AbstractEventLoop] = None) -> AbstractEventLoop:
+    """Helper method for checking if the loop is none and if so use asyncio.get_event_loop
+    to retrieve it otherwise the loop is passed through
+    """
+    if loop is not None:
+        return loop
     return get_event_loop()

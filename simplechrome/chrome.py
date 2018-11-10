@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 import asyncio
+from asyncio import AbstractEventLoop, Future
 from subprocess import Popen
-from typing import Awaitable, Callable, Dict, List, Optional
-
+from typing import Awaitable, Callable, Dict, List, Optional, Union, Any
+from async_timeout import timeout as aiotimeout
 import attr
 from pyee import EventEmitter
 
-from .connection import Connection, CDPSession
+from .connection import ClientType, SessionType
 from .errors import BrowserError
 from .page import Page
+from .helper import Helper
+from .util import ensure_loop
 
 __all__ = ["Chrome", "BrowserContext", "Target"]
 
@@ -26,28 +29,35 @@ class Chrome(EventEmitter):
 
     def __init__(
         self,
-        connection: Connection,
+        connection: ClientType,
         contextIds: List[str],
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
-        closeCallback: Callable[[], Awaitable[None]] = None,
+        closeCallback: Optional[Callable[[], Awaitable[None]]] = None,
+        targetInfo: Optional[Dict] = None,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(loop=ensure_loop(loop))
         self.process: Optional[Popen] = process
         self.ignoreHTTPSErrors: bool = ignoreHTTPSErrors
-        self._defaultViewport: Dict[str, int] = defaultViewport
+        self._defaultViewport: Optional[Dict[str, int]] = defaultViewport
         self._screenshotTaskQueue: List = []
-        self._connection: Connection = connection
-
-        self._defaultContext: BrowserContext = BrowserContext(self, None)
-
+        self._connection: ClientType = connection
+        self._targetInfo: Optional[Dict] = targetInfo
+        browserContextId = None
+        if self._targetInfo is not None:
+            browserContextId = targetInfo.get("browserContextId", None)
+        self._defaultContext: BrowserContext = BrowserContext(
+            connection, self, browserContextId
+        )
         self._contexts: Dict[str, BrowserContext] = dict()
+        self._page: Optional[Page] = None
         for contextId in contextIds:
-            self._contexts[contextId] = BrowserContext(self, contextId)
+            self._contexts[contextId] = BrowserContext(connection, self, contextId, self._loop)
 
         def _dummy_callback() -> Awaitable[None]:
-            fut = asyncio.get_event_loop().create_future()
+            fut = self._loop.create_future()
             fut.set_result(None)
             self.emit(Chrome.Events.Disconnected, None)
             return fut
@@ -65,12 +75,14 @@ class Chrome(EventEmitter):
 
     @staticmethod
     async def create(
-        connection: Connection,
+        connection: ClientType,
         contextIds: List[str],
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
         closeCallback: Callable[[], Awaitable[None]] = None,
+        targetInfo: Optional[Dict] = None,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> "Chrome":
         browser = Chrome(
             connection,
@@ -79,17 +91,78 @@ class Chrome(EventEmitter):
             defaultViewport,
             process,
             closeCallback,
+            targetInfo,
+            loop
         )
         await connection.send("Target.setDiscoverTargets", {"discover": True})
         return browser
+
+    async def page(self) -> Page:
+        """The default page for the target connected to"""
+        if self._page is None:
+            targetId = self._targetInfo["targetId"]
+            if targetId in self._targets:
+                target = self._targets[targetId]
+            else:
+                target = Target(self._targetInfo, self._defaultContext, self)
+                self._targets[targetId] = target
+            await target._initializedPromise
+            page = await Page.create(
+                self._connection,
+                target,
+                self._defaultViewport,
+                self.ignoreHTTPSErrors,
+                self._screenshotTaskQueue,
+                self._loop
+            )
+            target._page = page
+            self._page = page
+        return self._page
 
     def targets(self) -> List["Target"]:
         """Get all targets of this browser."""
         return [target for target in self._targets.values() if target._isInitialized]
 
+    async def waitForTarget(
+        self,
+        predicate: Callable[["Target"], bool],
+        timeout: Optional[Union[int, float]] = 30,
+    ) -> Optional["Target"]:
+        existingTarget = None
+        for target in self._targets.values():
+            if target._isInitialized and predicate(target):
+                existingTarget = target
+                break
+        if existingTarget is not None:
+            return existingTarget
+        existingTargetPromise: Future = self._loop.create_future()
+
+        def check(atarget: "Target") -> None:
+            if predicate(atarget) and not existingTargetPromise.done():
+                existingTargetPromise.set_result(atarget)
+
+        listeners = [
+            Helper.addEventListener(self, Chrome.Events.TargetCreated, check),
+            Helper.addEventListener(self, Chrome.Events.TargetChanged, check),
+        ]
+
+        existingTargetPromise.add_done_callback(
+            lambda future: Helper.removeEventListeners(listeners)
+        )
+
+        if timeout is None:
+            return await existingTargetPromise
+
+        try:
+            async with aiotimeout(timeout, loop=self._loop):
+                existingTarget = await existingTargetPromise
+        except asyncio.TimeoutError:
+            pass
+
+        return existingTarget
+
     async def newPage(self) -> Page:
-        page = await self._defaultContext.newPage()
-        return page
+        return await self._defaultContext.newPage()
 
     async def pages(self) -> List[Page]:
         """Get all pages of this browser."""
@@ -118,7 +191,7 @@ class Chrome(EventEmitter):
     async def createIncognitoBrowserContext(self) -> "BrowserContext":
         nc = await self._connection.send("Target.createBrowserContext")
         contextId = nc.get("browserContextId")
-        context = BrowserContext(self, contextId)
+        context = BrowserContext(self._connection, self, contextId)
         self._contexts[contextId] = context
         return context
 
@@ -205,17 +278,33 @@ class BrowserContextEvents(object):
 class BrowserContext(EventEmitter):
     Events: BrowserContextEvents = BrowserContextEvents()
 
-    def __init__(self, browser: Chrome, contextId) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        client: ClientType,
+        browser: Chrome,
+        contextId: Optional[str] = None,
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> None:
+        super().__init__(loop=ensure_loop(loop))
+        self.client: ClientType = client
         self._browser = browser
         self._id = contextId
 
     def targets(self) -> List["Target"]:
         targets = []
         for t in self._browser.targets():
-            if t.browserContext == self:
+            if t.browserContext is self:
                 targets.append(t)
         return targets
+
+    def waitForTarget(
+        self,
+        predicate: Callable[["Target"], bool],
+        timeout: Optional[Union[int, float]],
+    ) -> Awaitable[Optional["Target"]]:
+        return self._browser.waitForTarget(
+            lambda target: target.browserContext is self and predicate(target), timeout
+        )
 
     async def pages(self) -> List[Page]:
         pages = []
@@ -226,33 +315,83 @@ class BrowserContext(EventEmitter):
                     pages.append(page)
         return pages
 
+    async def clearPermissionOverrides(self) -> None:
+        opts = dict()
+        if self._id is not None:
+            opts["browserContextId"] = self._id
+        await self.client.send("Browser.resetPermissions", opts)
+
+    async def overridePermissions(self, origin: str, permissions: List[str]) -> None:
+        webPermissionToProtocol: Dict[str, str] = {
+            "geolocation": "geolocation",
+            "midi": "midi",
+            "notifications": "notifications",
+            "push": "push",
+            "camera": "videoCapture",
+            "microphone": "audioCapture",
+            "background-sync": "backgroundSync",
+            "ambient-light-sensor": "sensors",
+            "accelerometer": "sensors",
+            "gyroscope": "sensors",
+            "magnetometer": "sensors",
+            "accessibility-events": "accessibilityEvents",
+            "clipboard-read": "clipboardRead",
+            "clipboard-write": "clipboardWrite",
+            "payment-handler": "paymentHandler",
+            # chrome-specific permissions we have.
+            "midi-sysex": "midiSysex",
+        }
+        protocolPermissions = []
+        for permission in permissions:
+            protocolPermission = webPermissionToProtocol.get(permission)
+            if protocolPermission is None:
+                raise Exception(f"Unknown permission {permission}")
+            protocolPermissions.append(protocolPermission)
+        opts = dict(origin=origin, permissions=protocolPermissions)
+        if self._id is not None:
+            opts["browserContextId"] = self._id
+        await self.client.send("Browser.resetPermissions", opts)
+
     def isIncognito(self) -> bool:
         return self._id is not None
 
     def newPage(self) -> Awaitable[Page]:
-        return self._browser.createPageInContext(self._id)
+        cntx = self._id
+        if self is self._browser._defaultContext:
+            cntx = None
+        return self._browser.createPageInContext(cntx)
 
     def browser(self) -> Chrome:
         return self._browser
 
-    async def close(self):
-        await self._browser._disposeContext(self._id)
+    async def close(self) -> None:
+        cntx = self._id
+        if self is self._browser._defaultContext:
+            cntx = None
+        if cntx is not None:
+            return
+        await self._browser._disposeContext(cntx)
 
 
 class Target(object):
     """Browser's target class."""
 
     def __init__(
-        self, targetInfo: dict, browserContext: BrowserContext, browser: Chrome
+        self,
+        targetInfo: Dict[str, str],
+        browserContext: BrowserContext,
+        browser: Chrome,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        self._browser = browser
-        self._browserContext = browserContext
-        self._targetInfo = targetInfo
+        self._browser: Chrome = browser
+        self._browserContext: BrowserContext = browserContext
+        self._targetInfo: Dict[str, str] = targetInfo
         self._targetId = targetInfo["targetId"]
-        self._page = None
+        self._page: Optional[Page] = None
+        self._loop = ensure_loop(loop)
 
-        self._isClosedPromise: asyncio.Future = asyncio.get_event_loop().create_future()
-        self._initializedPromise: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._isClosedPromise: Future = self._loop.create_future()
+        self._initializedPromise: Future = self._loop.create_future()
         self._isInitialized = (
             self._targetInfo["type"] != "page" or self._targetInfo["url"] != ""
         )
@@ -266,9 +405,9 @@ class Target(object):
     def _closedCallback(self) -> None:
         self._isClosedPromise.set_result(None)
 
-    async def createCDPSession(self) -> CDPSession:
+    async def createTargetSession(self) -> SessionType:
         """Create a Chrome Devtools Protocol session attached to the target."""
-        return await self._browser._connection.createSession(self._targetId)
+        return await self._browser._connection.createTargetSession(self._targetId)
 
     async def page(self) -> Optional[Page]:
         """Get page of this target."""
@@ -277,13 +416,14 @@ class Target(object):
             or self._targetInfo["type"] == "background_page"
         )
         if is_page and self._page is None:
-            client = await self._browser._connection.createSession(self._targetId)
+            client = await self._browser._connection.createTargetSession(self._targetId)
             new_page = await Page.create(
                 client,
                 self,
                 self._browser._defaultViewport,
                 self._browser.ignoreHTTPSErrors,
                 self._browser._screenshotTaskQueue,
+                self._loop
             )
             self._page = new_page
             return new_page

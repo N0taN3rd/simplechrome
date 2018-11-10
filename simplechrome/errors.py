@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import asyncio
 
+from cripy.errors import NetworkError
+
 __all__ = [
     "BrowserError",
     "ElementHandleError",
@@ -9,6 +11,8 @@ __all__ = [
     "WaitTimeoutError",
     "LauncherError",
     "InputError",
+    "NavigationError",
+    "EvaluationError"
 ]
 
 
@@ -20,12 +24,6 @@ class BrowserError(Exception):  # noqa: D204
 
 class ElementHandleError(Exception):  # noqa: D204
     """ElementHandle related exception."""
-
-    pass
-
-
-class NetworkError(Exception):  # noqa: D204
-    """Network/Protocol related exception."""
 
     pass
 
@@ -52,3 +50,11 @@ class InputError(Exception):
     """Input related exception"""
 
     pass
+
+
+class NavigationError(Exception):
+    """For navigation errors"""
+
+
+class EvaluationError(Exception):
+    """For evaluation errors"""

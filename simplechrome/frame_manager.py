@@ -3,23 +3,27 @@
 
 import asyncio
 import logging
-from asyncio import Future
+from asyncio import Future, AbstractEventLoop
 from collections import OrderedDict
-from typing import Any, Dict, Generator, List, Optional, Union, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Union, Set, TYPE_CHECKING, ClassVar
 
 import attr
+from async_timeout import timeout as aiotimeout
+import aiofiles
 from pyee import EventEmitter
 
-from .helper import Helper
-from .connection import CDPSession
-from .execution_context import ElementHandle
+from .connection import ClientType
 from .errors import ElementHandleError, PageError, WaitTimeoutError
-from .errors import NetworkError
+from .errors import NavigationError
+from .execution_context import ElementHandle
 from .execution_context import ExecutionContext, JSHandle
-from .util import merge_dict
+from .helper import Helper
+from .navigator_watcher import NavigatorWatcher
+from .util import merge_dict, ensure_loop
 
 if TYPE_CHECKING:
-    from .page import Page
+    from .page import Page  # noqa: F401
+    from .network_manager import NetworkManager, Response  # noqa: F401
 
 __all__ = ["FrameManager", "Frame", "WaitTask", "WaitSetupError"]
 
@@ -35,22 +39,37 @@ class FrameManagerEvents(object):
     FrameNavigatedWithinDocument: str = attr.ib(
         default="framenavigatedwithindocument", init=False
     )
+    ExecutionContextCreated: str = attr.ib(
+        default="executioncontextcreated", init=False
+    )
+    ExecutionContextDestroyed: str = attr.ib(
+        default="executioncontextdestroyed", init=False
+    )
 
 
 class FrameManager(EventEmitter):
     """FrameManager class."""
 
-    Events: FrameManagerEvents = FrameManagerEvents()
+    Events: ClassVar[FrameManagerEvents] = FrameManagerEvents()
 
-    def __init__(self, client: CDPSession, frameTree: Dict, page: "Page") -> None:
+    def __init__(
+        self,
+        client: ClientType,
+        frameTree: Dict,
+        page: Optional["Page"] = None,
+        networkManager: Optional["NetworkManager"] = None,
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> None:
         """Make new frame manager."""
-        super().__init__(loop=asyncio.get_event_loop())
-        self._client = client
-        self._page = page
+        super().__init__(loop=ensure_loop(loop))
+        self._client: ClientType = client
         self._frames: OrderedDict[str, Frame] = OrderedDict()
         self._mainFrame: Optional[Frame] = None
-        self._contextIdToContext: Dict[str, ExecutionContext] = dict()
-        self._emits_life = False
+        self._contextIdToContext: Dict[Union[str, int], ExecutionContext] = dict()
+        self._emits_life: bool = False
+        self._defaultNavigationTimeout: Union[int, float] = 30
+        self._page: Optional["Page"] = page
+        self._networkManager: Optional["NetworkManager"] = networkManager
         self._client.on("Page.frameAttached", self._onFrameAttached)
         self._client.on("Page.frameNavigated", self._onFrameNavigated)
         self._client.on(
@@ -72,17 +91,112 @@ class FrameManager(EventEmitter):
         self._handleFrameTree(frameTree)
 
     @property
+    def mainFrame(self) -> "Frame":
+        return self._mainFrame
+
+    @property
     def page(self) -> "Page":
         return self._page
 
-    @property
-    def mainFrame(self) -> "Frame":
-        return self._mainFrame
+    async def navigateFrame(
+        self, frame: "Frame", url: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional["Response"]:
+        opts = merge_dict(options, kwargs)
+        to = opts.get("timeout", self._defaultNavigationTimeout)
+        nav_args = dict(url=url, frameId=frame.id)
+
+        if "transition" in opts:
+            nav_args["transitionType"] = opts.get("transition")
+
+        supplied_referrer: bool = "referrer" in opts
+        if supplied_referrer:
+            nav_args["referrer"] = opts.get('referrer')
+
+        if not supplied_referrer and self._networkManager is not None:
+            referer = self._networkManager.extraHTTPHeaders().get('referrer')
+            if referer:
+                nav_args["referrer"] = referer
+
+        watcher = NavigatorWatcher(
+            self._client, self, frame, to, opts, self._networkManager, self._loop
+        )
+
+        ensureNewDocumentNavigation = False
+
+        async def navigate() -> Optional[NavigationError]:
+            nonlocal ensureNewDocumentNavigation
+            try:
+                response = await self._client.send("Page.navigate", nav_args)
+                # if we navigated within document i.e history modification then loaderId is None
+                ensureNewDocumentNavigation = bool(response.get("loaderId"))
+                errorText = response.get("errorText")
+                if errorText:
+                    return NavigationError(f"Navigation to {url} failed: {errorText}")
+            except Exception as e:
+                return NavigationError(f"Navigation to {url} failed: {e.args[0]}")
+            return None
+
+        # asyncio.wait does not work like Promise.race
+        # if we were to use watcher.timeoutOrTerminationPromise and there was an error
+        # done would be a task with a result that is a tuple (Task-That-Failed, future still pending)
+        # requiring two result calls :(
+        done, pending = await asyncio.wait(
+            {
+                self._loop.create_task(navigate()),
+                watcher.timeoutPromise,
+                watcher.terminationPromise,
+            },
+            return_when=asyncio.FIRST_COMPLETED,
+            loop=self._loop,
+        )
+        error = done.pop().result()
+        if error is None:
+            if ensureNewDocumentNavigation:
+                final_prom = watcher.newDocumentNavigationPromise
+            else:
+                final_prom = watcher.sameDocumentNavigationPromise
+            done, pending = await asyncio.wait(
+                {watcher.timeoutPromise, watcher.terminationPromise, final_prom},
+                return_when=asyncio.FIRST_COMPLETED,
+                loop=self._loop,
+            )
+            error = done.pop().result()
+        watcher.dispose()
+        if error is not None:
+            raise error
+        return watcher.navigationResponse
+
+    async def waitForFrameNavigation(
+        self, frame: "Frame", options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional["Response"]:
+        opts = merge_dict(options, kwargs)
+        to = opts.get("timeout", self._defaultNavigationTimeout)
+        watcher = NavigatorWatcher(
+            self._client, self, frame, to, opts, self._networkManager, self._loop
+        )
+        done, pending = await asyncio.wait(
+            {
+                watcher.timeoutPromise,
+                watcher.terminationPromise,
+                watcher.sameDocumentNavigationPromise,
+                watcher.newDocumentNavigationPromise,
+            },
+            return_when=asyncio.FIRST_COMPLETED,
+            loop=self._loop,
+        )
+        watcher.dispose()
+        error = done.pop().result()
+        if error is not None:
+            raise error
+        return watcher.navigationResponse
+
+    def setDefaultNavigationTimeout(self, timeout: Union[int, float]) -> None:
+        self._defaultNavigationTimeout = timeout
 
     def enable_lifecycle_emitting(self) -> None:
         self._emits_life = True
 
-    def disable_lifecyle_emitting(self) -> None:
+    def disable_lifecycle_emitting(self) -> None:
         self._emits_life = False
 
     def executionContextById(
@@ -128,10 +242,12 @@ class FrameManager(EventEmitter):
     def _onFrameNavigated(self, eventOrFrame: Dict) -> None:
         framePayload: Dict = eventOrFrame.get("frame", eventOrFrame)
         isMainFrame = framePayload.get("parentId") is None
+
         if isMainFrame:
             frame = self._mainFrame
         else:
             frame = self._frames.get(framePayload.get("id", ""))
+
         if not (isMainFrame or frame):
             raise PageError(
                 "We either navigate top level or have old version "
@@ -191,11 +307,11 @@ class FrameManager(EventEmitter):
         else:
             frameId = None
 
-        frame = self._frames.get(frameId) if frameId else None
+        frame: Optional[Frame] = self._frames.get(frameId) if frameId else None
         contextID = contextPayload["id"]
         context = ExecutionContext(self._client, contextPayload, frame)
         self._contextIdToContext[contextID] = context
-        if frame:
+        if frame is not None:
             frame._addExecutionContext(context)
 
     def _onExecutionContextDestroyed(self, event: Dict) -> None:
@@ -205,7 +321,7 @@ class FrameManager(EventEmitter):
             return
         del self._contextIdToContext[executionContextId]
         frame = context.frame
-        if frame:
+        if frame is not None:
             frame._removeExecutionContext(context)
 
     def _onExecutionContextsCleared(self, *args: Any) -> None:
@@ -240,13 +356,14 @@ class Frame(EventEmitter):
 
     def __init__(
         self,
-        frameManager: "FrameManager",
-        client: CDPSession,
+        frameManager: FrameManager,
+        client: ClientType,
         parentFrame: Optional["Frame"],
         frameId: str,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__()
-        self._client: CDPSession = client
+        super().__init__(loop=ensure_loop(loop))
+        self._client: ClientType = client
         self._frameManager = frameManager
         self._parentFrame = parentFrame
         self._url: str = ""
@@ -257,6 +374,7 @@ class Frame(EventEmitter):
 
         self._documentPromise: Optional[ElementHandle] = None
         self._contextPromise: Optional[Future] = None
+        self._executionContext: Optional[ExecutionContext] = None
         self._setDefaultContext(None)
         self._at_lifecycle: Optional[str] = None
         self._waitTasks: Set[WaitTask] = set()  # maybe list
@@ -294,6 +412,10 @@ class Frame(EventEmitter):
         return self._url
 
     @property
+    def id(self) -> str:
+        return self._id
+
+    @property
     def parentFrame(self) -> Optional["Frame"]:
         """Get parent frame.
 
@@ -306,6 +428,23 @@ class Frame(EventEmitter):
         """Get child frames."""
         return list(self._childFrames)
 
+    async def goto(
+        self, url: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional["Response"]:
+        return await self._frameManager.navigateFrame(self, url, options, **kwargs)
+
+    async def waitForNavigation(
+        self, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Optional["Response"]:
+        return await self._frameManager.waitForFrameNavigation(self, options, **kwargs)
+
+    def isDetached(self) -> bool:
+        """Return ``True`` if this frame is detached.
+
+        Otherwise return ``False``.
+        """
+        return self._detached
+
     def navigatedWithinDocument(self, url: str) -> None:
         self._url = url
         self.navigations.append(url)
@@ -313,7 +452,7 @@ class Frame(EventEmitter):
     def navigated(self, framePayload: dict) -> None:
         self._name = framePayload.get("name", "")
         self._url = framePayload.get("url", "")
-        self.navigations.append(self.url)
+        self.navigations.append(self._url)
         if self._emits_life:
             self.emit(Frame.Events.Navigated)
 
@@ -331,25 +470,44 @@ class Frame(EventEmitter):
         """
         return await self._contextPromise
 
-    async def evaluateHandle(self, pageFunction: str, *args: Any) -> JSHandle:
-        """Execute fucntion on this frame.
+    async def evaluateHandle(self, pageFunction: str, *args: Any, withCliAPI: bool = False) -> JSHandle:
+        """Evaluates the js-function or js-expression in the current frame retrieving the results
+        as a JSHandle.
 
-        Details see :meth:`simplechrome.page.Page.evaluateHandle`.
+        :param str pageFunction: String of js-function/expression to be executed
+                               in the browser.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        If this keyword argument is true args are ignored
         """
         context = await self.executionContext()
         if context is None:
             raise PageError("this frame has no context.")
-        return await context.evaluateHandle(pageFunction, *args)
+        return await context.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
 
-    async def evaluate(self, pageFunction: str, *args: Any) -> Any:
-        """Evaluate pageFunction on this frame.
+    async def evaluate(self, pageFunction: str, *args: Any, withCliAPI: bool = False) -> Any:
+        """Evaluates the js-function or js-expression in the current frame retrieving the results
+        of the evaluation.
 
-        Details see :meth:`simplechrome.page.Page.evaluate`.
+        :param str pageFunction: String of js-function/expression to be executed
+                               in the browser.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        If this keyword argument is true args are ignored
         """
         context = await self.executionContext()
         if context is None:
             raise ElementHandleError("ExecutionContext is None.")
-        return await context.evaluate(pageFunction, *args)
+        return await context.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
+
+    async def evaluate_expression(self, expression: str, withCliAPI: bool = False) -> Any:
+        """Evaluates the js expression in the frame returning the results by value.
+
+        :param str expression: The js expression to be evaluated in the main frame.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        """
+        context = await self.executionContext()
+        if context is None:
+            raise ElementHandleError("ExecutionContext is None.")
+        return await context.evaluate_expression(expression, withCliAPI=withCliAPI)
 
     async def querySelector(self, selector: str) -> Optional[ElementHandle]:
         """Get element which matches `selector` string.
@@ -449,20 +607,13 @@ class Frame(EventEmitter):
 """
         await self.evaluate(func, html)
 
-    def isDetached(self) -> bool:
-        """Return ``True`` if this frame is detached.
-
-        Otherwise return ``False``.
-        """
-        return self._detached
-
     async def injectFile(self, filePath: str) -> str:
         """[Deprecated] Inject file to the frame."""
         logger.warning(
             "`injectFile` method is deprecated." " Use `addScriptTag` method instead."
         )
-        with open(filePath) as f:
-            contents = f.read()
+        async with aiofiles.open(filePath, "r") as f:
+            contents = await f.read()
         contents += "/* # sourceURL= {} */".format(filePath.replace("\n", ""))
         return await self.evaluate(contents)
 
@@ -564,9 +715,7 @@ class Frame(EventEmitter):
 
         if isinstance(options.get("content"), str):
             return (
-                await context.evaluateHandle(  # type: ignore
-                    addStyleContent, options["content"]
-                )
+                await context.evaluateHandle(addStyleContent, options["content"])
             ).asElement()
 
         raise ValueError("Provide an object with a `url`, `path` or `content` property")
@@ -680,7 +829,7 @@ class Frame(EventEmitter):
             )
             return fut
         if not isinstance(selectorOrFunctionOrTimeout, str):
-            fut = asyncio.get_event_loop().create_future()
+            fut = self._loop.create_future()
             fut.set_exception(
                 TypeError(
                     "Unsupported target type: " + str(type(selectorOrFunctionOrTimeout))
@@ -772,7 +921,7 @@ class Frame(EventEmitter):
     def navigation_waiter(
         self,
         loop: Optional[asyncio.AbstractEventLoop] = None,
-        timeout: Optional[int] = None,
+        timeout: Optional[Union[int, float]] = None,
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
@@ -781,19 +930,42 @@ class Frame(EventEmitter):
         fut = loop.create_future()
 
         def set_true() -> None:
-            fut.set_result(True)
+            if not fut.done():
+                fut.set_result(True)
 
-        self.once(Frame.Events.Navigated, set_true)
-        myself = self
+        listeners = [Helper.addEventListener(self, Frame.Events.Navigated, set_true)]
 
-        def remove_cb(x: Future) -> None:
-            if x.cancelled():
-                myself.remove_listener(Frame.Events.Navigated, set_true)
-
-        fut.add_done_callback(remove_cb)
+        fut.add_done_callback(lambda f: Helper.removeEventListeners(listeners))
         if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
+            return self._loop.create_task(Helper.timed_wait(fut, timeout, loop))
         return fut
+
+    async def _wait_for_life_cycle(
+        self,
+        cycle: str,
+        loop: AbstractEventLoop,
+        timeout: Optional[Union[int, float]] = None,
+    ) -> None:
+        fut: Future = loop.create_future()
+
+        def on_life_cycle(lc: str) -> None:
+            if lc == cycle and not fut.done():
+                fut.set_result(True)
+
+        listeners = [
+            Helper.addEventListener(self, Frame.Events.LifeCycleEvent, on_life_cycle)
+        ]
+
+        fut.add_done_callback(lambda f: Helper.removeEventListeners(listeners))
+
+        if timeout is not None:
+            try:
+                async with aiotimeout(timeout, loop=loop):
+                    await fut
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await fut
 
     def loaded_waiter(
         self,
@@ -802,24 +974,9 @@ class Frame(EventEmitter):
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        fut = loop.create_future()
-
-        def on_load(lf: str) -> None:
-            if lf == "load":
-                fut.set_result(True)
-
-        myself = self
-
-        def remove_cb(x: Any) -> None:
-            myself.remove_listener(Frame.Events.LifeCycleEvent, on_load)
-
-        fut.add_done_callback(remove_cb)
-        self.on(Frame.Events.LifeCycleEvent, on_load)
-        if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
-        return fut
+        return self._loop.create_task(
+            self._wait_for_life_cycle("load", ensure_loop(loop), timeout)
+        )
 
     def network_idle_waiter(
         self,
@@ -828,27 +985,11 @@ class Frame(EventEmitter):
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        fut = loop.create_future()
+        return self._loop.create_task(
+            self._wait_for_life_cycle("networkIdle", ensure_loop(loop), timeout)
+        )
 
-        def onlf(lf: str) -> None:
-            if lf == "networkIdle":
-                fut.set_result(True)
-
-        myself = self
-
-        def remove_cb(x: Any) -> None:
-            myself.remove_listener(Frame.Events.LifeCycleEvent, onlf)
-
-        fut.add_done_callback(remove_cb)
-        self.on(Frame.Events.LifeCycleEvent, onlf)
-        if timeout is not None:
-            return asyncio.ensure_future(asyncio.wait_for(fut, timeout=timeout, loop=loop), loop=loop)
-        return fut
-
-        #: Alias to :meth:`querySelector`
-
+    #: Alias to :meth:`querySelector`
     J = querySelector
     #: Alias to :meth:`xpath`
     Jx = xpath
@@ -859,7 +1000,7 @@ class Frame(EventEmitter):
     #: Alias to :meth:`querySelectorAllEval`
     JJeval = querySelectorAllEval
 
-    def _onLoadingStopped(self):
+    def _onLoadingStopped(self) -> None:
         self._lifecycleEvents.add("DOMContentLoaded")
         self._lifecycleEvents.add("load")
 
@@ -867,6 +1008,7 @@ class Frame(EventEmitter):
         if name == "init":
             self._loaderId = loaderId
             self._lifecycleEvents.clear()
+            self.navigations.clear()
             self._at_lifecycle = "init"
         else:
             self._lifecycleEvents.add(name)
@@ -887,17 +1029,19 @@ class Frame(EventEmitter):
 
     def _setDefaultContext(self, context: Optional[ExecutionContext]) -> None:
         if context:
-            self._contextResolveCallback(context)  # type: ignore
+            self._contextResolveCallback(context)
             for waitTask in self._waitTasks:
-                asyncio.ensure_future(waitTask.rerun())
+                self._loop.create_task(waitTask.rerun())
         else:
             self._documentPromise = None
-            self._contextPromise = asyncio.get_event_loop().create_future()
+            self._executionContext = None
+            self._contextPromise = self._loop.create_future()
 
     def _contextResolveCallback(self, context: ExecutionContext) -> None:
         if self._contextPromise.done():
-            self._contextPromise = asyncio.get_event_loop().create_future()
+            self._contextPromise = self._loop.create_future()
         self._contextPromise.set_result(context)
+        self._executionContext = context
 
     def _addExecutionContext(self, context: ExecutionContext) -> None:
         if context._isDefault:
@@ -907,7 +1051,7 @@ class Frame(EventEmitter):
         if context._isDefault:
             self._setDefaultContext(None)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Frame(url={self._url}, name={self._name}, detached={self._detached}, id={self._id})"
 
 
@@ -925,8 +1069,8 @@ class WaitTask(object):
         self,
         frame: Frame,
         predicateBody: str,
-        polling: Union[str, int],
-        timeout: float,
+        polling: Union[str, int, float],
+        timeout: Union[float, int],
         *args: Any,
     ) -> None:
         if isinstance(polling, str):
@@ -939,8 +1083,8 @@ class WaitTask(object):
             raise ValueError(f"Unknown polling option: {polling}")
 
         self._frame: Frame = frame
-        self._polling: Union[str, int] = polling
-        self._timeout: float = timeout
+        self._polling: Union[str, int, float] = polling
+        self._timeout: Union[float, int] = timeout
         if args or Helper.is_jsfunc(predicateBody):
             self._predicateBody = f"return ({predicateBody})(...args)"
         else:
@@ -953,19 +1097,18 @@ class WaitTask(object):
 
         loop = asyncio.get_event_loop()
         self.promise = loop.create_future()
-
-        async def timer(timeout: Union[int, float]) -> None:
-            await asyncio.sleep(timeout / 1000)
-            self._timeoutError = True
-            self.terminate(
-                WaitTimeoutError(f"Waiting failed: timeout {timeout}ms exceeds.")
-            )
-
         if timeout:
-            self._timeoutTimer = asyncio.ensure_future(timer(self._timeout))
-        self._runningTask = asyncio.ensure_future(self.rerun())
+            self._timeoutTimer = loop.create_task(self.timeout_timer(self._timeout))
+        loop.create_task(self.rerun())
 
-    def __await__(self) -> Generator:
+    async def timeout_timer(self, to: Union[int, float]) -> None:
+        await asyncio.sleep(to / 1000)
+        self._timeoutError = True
+        self.terminate(
+            WaitTimeoutError(f"Waiting failed: timeout {to}ms exceeds.")
+        )
+
+    def __await__(self) -> Any:
         """Make this class **awaitable**."""
         yield from self.promise
         return self.promise.result()
@@ -973,7 +1116,7 @@ class WaitTask(object):
     def terminate(self, error: Exception) -> None:
         """Terminate this task."""
         self._terminated = True
-        if not self.promise.done():
+        if self.promise and not self.promise.done():
             self.promise.set_exception(error)
         self._cleanup()
 
@@ -1016,14 +1159,14 @@ class WaitTask(object):
         # page is navigated and context is destroyed.
         # Try again in the new execution context.
         if (
-            isinstance(error, NetworkError)
+            isinstance(error, Exception)
             and "Execution context was destroyed" in error.args[0]
         ):
             return
 
         # Try again in the new execution context.
         if (
-            isinstance(error, NetworkError)
+            isinstance(error, Exception)
             and "Cannot find context with specified id" in error.args[0]
         ):
             return
@@ -1036,7 +1179,7 @@ class WaitTask(object):
         self._cleanup()
 
     def _cleanup(self) -> None:
-        if self._timeout and not self._timeoutError:
+        if self._timeout and self._timeoutTimer and not self._timeoutTimer.done():
             self._timeoutTimer.cancel()
         self._frame._waitTasks.remove(self)
 

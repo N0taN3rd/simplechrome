@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Dialog module."""
-from typing import ClassVar
+from typing import ClassVar, Union
 
 import attr
 
-from .connection import CDPSession
+from .connection import ClientType
 
 __all__ = ["Dialog"]
 
@@ -24,11 +24,11 @@ class Dialog(object):
     Dialog objects are dispatched by page via the ``dialog`` event.
     """
 
-    client: CDPSession = attr.ib(repr=False)
+    client: ClientType = attr.ib(repr=False)
     type: str = attr.ib()
     message: str = attr.ib()
     defaultValue: str = attr.ib(default="")
-    handled: str = attr.ib(default=False)
+    handled: bool = attr.ib(default=False)
     Type: ClassVar[DialogType] = DialogType()
 
     async def accept(self, promptText: str = "") -> None:

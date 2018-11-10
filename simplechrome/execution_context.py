@@ -6,13 +6,13 @@ import math
 import os
 
 from .helper import Helper
-from .connection import CDPSession
-from .errors import ElementHandleError, NetworkError
+from .connection import ClientType
+from .errors import ElementHandleError, NetworkError, EvaluationError
 from .util import merge_dict
 
 if TYPE_CHECKING:
-    from .page import Page
-    from .frame_manager import FrameManager, Frame
+    from .page import Page  # noqa: F401
+    from .frame_manager import FrameManager, Frame  # noqa: F401
 
 
 __all__ = ["ExecutionContext", "JSHandle", "ElementHandle", "createJSHandle"]
@@ -32,24 +32,35 @@ def createJSHandle(
 
 class ExecutionContext(object):
     def __init__(
-        self, client: CDPSession, contextPayload: Dict, frame: Optional["Frame"]
+        self,
+        client: ClientType,
+        contextPayload: Dict,
+        frame: Optional["Frame"] = None,
     ) -> None:
         self._client = client
         self._frame = frame
-        self._contextId = contextPayload.get("id")
-        self._frameId = frame._id
-        self._isDefault = contextPayload.get("auxData", {}).get("isDefault", False)
+        self._contextId: str = contextPayload.get("id")
+        self._frameId: str = "" if frame is None else frame.id
+        self._isDefault: bool = contextPayload.get("auxData", {}).get(
+            "isDefault", False
+        )
 
     @property
-    def frame(self):
+    def id(self) -> str:
+        return self._contextId
+
+    @property
+    def frame(self) -> "Frame":
         return self._frame
 
-    async def evaluate(self, pageFunction: str, *args: Any) -> Any:
+    async def evaluate(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> Any:
         """Execute ``pageFunction`` on this context.
 
         Details see :meth:`simplechrome.page.Page.evaluate`.
         """
-        handle = await self.evaluateHandle(pageFunction, *args)
+        handle = await self.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
         try:
             result = await handle.jsonValue()
         except NetworkError as e:
@@ -57,16 +68,18 @@ class ExecutionContext(object):
                 return
             if "Object couldn't be returned by value" in e.args[0]:
                 return
-            raise
+            raise EvaluationError(e.args[0])
         await handle.dispose()
         return result
 
-    async def evaluateHandle(self, pageFunction: str, *args: Any) -> "JSHandle":
+    async def evaluateHandle(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> "JSHandle":
         """Execute ``pageFunction`` on this context.
 
         Details see :meth:`simplechrome.page.Page.evaluateHandle`.
         """
-        if not Helper.is_jsfunc(pageFunction):
+        if withCliAPI or not Helper.is_jsfunc(pageFunction):
             _obj = await self._client.send(
                 "Runtime.evaluate",
                 {
@@ -75,11 +88,12 @@ class ExecutionContext(object):
                     "returnByValue": False,
                     "awaitPromise": True,
                     "userGesture": True,
+                    "includeCommandLineAPI": withCliAPI,
                 },
             )
             exceptionDetails = _obj.get("exceptionDetails")
             if exceptionDetails:
-                raise ElementHandleError(
+                raise EvaluationError(
                     "Evaluation failed: {}".format(
                         Helper.getExceptionMessage(exceptionDetails)
                     )
@@ -99,13 +113,36 @@ class ExecutionContext(object):
         )
         exceptionDetails = _obj.get("exceptionDetails")
         if exceptionDetails:
-            raise ElementHandleError(
+            raise EvaluationError(
                 "Evaluation failed: {}".format(
                     Helper.getExceptionMessage(exceptionDetails)
                 )
             )
         remoteObject = _obj.get("result")
         return createJSHandle(self, remoteObject)
+
+    async def evaluate_expression(
+        self, expression: str, withCliAPI: bool = False
+    ) -> Any:
+        results = await self._client.send(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "contextId": self._contextId,
+                "returnByValue": True,
+                "awaitPromise": True,
+                "userGesture": True,
+                "includeCommandLineAPI": withCliAPI,
+            },
+        )
+        exceptionDetails = results.get("exceptionDetails")
+        if exceptionDetails:
+            raise EvaluationError(
+                "Evaluation failed: {}".format(
+                    Helper.getExceptionMessage(exceptionDetails)
+                )
+            )
+        return Helper.valueFromRemoteObject(results['result'])
 
     async def queryObjects(self, prototypeHandle: "JSHandle") -> "JSHandle":
         """Send query.
@@ -162,7 +199,10 @@ class JSHandle(object):
     """
 
     def __init__(
-        self, context: ExecutionContext, client: CDPSession, remoteObject: Dict
+        self,
+        context: ExecutionContext,
+        client: ClientType,
+        remoteObject: Dict,
     ) -> None:
         self._context = context
         self._client = client
@@ -248,14 +288,14 @@ def computeQuadArea(quad: List[Dict[str, float]]) -> float:
         p1 = quad[i]
         p2 = quad[(i + 1) % qlen]
         area += (p1["x"] * p2["y"] - p2["x"] * p1["y"]) / 2
-    return area
+    return math.fabs(area)
 
 
 class ElementHandle(JSHandle):
     def __init__(
         self,
         context: ExecutionContext,
-        client: CDPSession,
+        client: ClientType,
         remoteObject: dict,
         page: "Page",
         frameManager: "FrameManager",

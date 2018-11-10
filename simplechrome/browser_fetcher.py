@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 import urllib3
 
-DEFAULT_REVISION = "594312"
+DEFAULT_REVISION = "604907"
 logger = logging.getLogger(__name__)
 
 __all__ = ["BrowserFetcher", "BF"]
@@ -20,7 +20,7 @@ class BrowserFetcher(object):
         self.downloads_folder: Path = Path.home() / ".simplechrome" / "local-chromium"
         self.default_download_host: str = "https://storage.googleapis.com"
         self.download_host: str = os.environ.get(
-            "WRBUGS_DOWNLOAD_HOST", self.default_download_host
+            "CHROMIUM_DOWNLOAD_HOST", self.default_download_host
         )
         self.base_url: str = f"{self.download_host}/chromium-browser-snapshots"
         self.revision: str = DEFAULT_REVISION
