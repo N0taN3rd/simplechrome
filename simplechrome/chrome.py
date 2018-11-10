@@ -7,7 +7,7 @@ from async_timeout import timeout as aiotimeout
 import attr
 from pyee import EventEmitter
 
-from .connection import Client, TargetSession
+from .connection import ClientType, SessionType
 from .errors import BrowserError
 from .page import Page
 from .helper import Helper
@@ -29,7 +29,7 @@ class Chrome(EventEmitter):
 
     def __init__(
         self,
-        connection: Union[Client, TargetSession],
+        connection: ClientType,
         contextIds: List[str],
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
@@ -43,7 +43,7 @@ class Chrome(EventEmitter):
         self.ignoreHTTPSErrors: bool = ignoreHTTPSErrors
         self._defaultViewport: Optional[Dict[str, int]] = defaultViewport
         self._screenshotTaskQueue: List = []
-        self._connection: Union[Client, TargetSession] = connection
+        self._connection: ClientType = connection
         self._targetInfo: Optional[Dict] = targetInfo
         browserContextId = None
         if self._targetInfo is not None:
@@ -75,7 +75,7 @@ class Chrome(EventEmitter):
 
     @staticmethod
     async def create(
-        connection: Client,
+        connection: ClientType,
         contextIds: List[str],
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
@@ -280,13 +280,13 @@ class BrowserContext(EventEmitter):
 
     def __init__(
         self,
-        client: Union[Client, TargetSession],
+        client: ClientType,
         browser: Chrome,
         contextId: Optional[str] = None,
         loop: Optional[AbstractEventLoop] = None,
     ) -> None:
         super().__init__(loop=ensure_loop(loop))
-        self.client: Union[Client, TargetSession] = client
+        self.client: ClientType = client
         self._browser = browser
         self._id = contextId
 
@@ -405,7 +405,7 @@ class Target(object):
     def _closedCallback(self) -> None:
         self._isClosedPromise.set_result(None)
 
-    async def createTargetSession(self) -> TargetSession:
+    async def createTargetSession(self) -> SessionType:
         """Create a Chrome Devtools Protocol session attached to the target."""
         return await self._browser._connection.createTargetSession(self._targetId)
 

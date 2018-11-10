@@ -12,14 +12,14 @@ import math
 from pyee import EventEmitter
 
 from .helper import Helper
-from .connection import Client, TargetSession
+from .connection import ClientType, connection_from_session
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import PageError
 from .execution_context import JSHandle, ElementHandle, createJSHandle  # noqa: F401
 from .frame_manager import FrameManager, Frame
 from .input import Keyboard, Mouse, Touchscreen
-from .network_manager import NetworkManager, Response
+from .network_manager import NetworkManager, Response, Request
 from .util import merge_dict, ensure_loop
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["Page", "ConsoleMessage", "create"]
 
 
-@attr.dataclass(slots=True)
+@attr.dataclass(slots=True, frozen=True)
 class PageEvents(object):
     Close: str = attr.ib(default="close")
     Console: str = attr.ib(default="console")
@@ -73,7 +73,7 @@ class Page(EventEmitter):
 
     @staticmethod
     async def create(
-        client: Union[Client, TargetSession],
+        client: ClientType,
         target: "Target",
         defaultViewport: Optional[Dict[str, int]] = None,
         ignoreHTTPSErrors: bool = False,
@@ -112,7 +112,7 @@ class Page(EventEmitter):
 
     def __init__(
         self,
-        client: Union[Client, TargetSession],
+        client: ClientType,
         target: "Target",
         frameTree: Dict,
         ignoreHTTPSErrors: bool = False,
@@ -197,15 +197,6 @@ class Page(EventEmitter):
 
         self._target._isClosedPromise.add_done_callback(closed)
 
-    def enable_lifecycle_emitting(self) -> None:
-        self._frameManager.on(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
-
-    def disable_lifecycle_emitting(self) -> None:
-        self._frameManager.disable_lifecycle_emitting()
-        self._frameManager.remove_listener(
-            FrameManager.Events.LifecycleEvent, self._on_lifecycle
-        )
-
     @property
     def frame_manager(self) -> FrameManager:
         return self._frameManager
@@ -256,40 +247,6 @@ class Page(EventEmitter):
         """Get :class:`~simplechrome.input.Mouse` object."""
         return self._mouse
 
-    async def getWindowDescriptor(self) -> Dict:
-        return await self._client.send(
-            "Browser.getWindowForTarget", dict(targetId=self._target._targetId)
-        )
-
-    async def getWindowBounds(self) -> Dict:
-        windowDescriptor = await self.getWindowDescriptor()
-        return windowDescriptor.get("bounds")
-
-    async def setWindowBounds(self, bounds: dict) -> None:
-        windowDescriptor = await self.getWindowDescriptor()
-        await self._client.send(
-            "Browser.setWindowBounds",
-            dict(windowId=windowDescriptor["windowId"], bounds=bounds),
-        )
-
-    async def tap(self, selector: str) -> None:
-        """Tap the element which matches the ``selector``.
-
-        :arg str selector: A selector to search element to touch.
-        """
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("no main frame")
-        await frame.tap(selector)
-
-    async def setRequestInterception(self, value: bool) -> None:
-        """Enable/disable request interception."""
-        return await self._networkManager.setRequestInterception(value)
-
-    async def setOfflineMode(self, enabled: bool) -> None:
-        """Set offline mode enable/disable."""
-        await self._networkManager.setOfflineMode(enabled)
-
     def setDefaultNavigationTimeout(self, timeout: Union[int, float]) -> None:
         """Change the default maximum navigation timeout.
 
@@ -306,45 +263,100 @@ class Page(EventEmitter):
         """
         self._frameManager.setDefaultNavigationTimeout(timeout)
 
-    def _onCertificateError(self, event: Any) -> None:
-        if not self._ignoreHTTPSErrors:
-            return
-        asyncio.ensure_future(
-            self._client.send(
-                "Security.handleCertificateError",
-                {"eventId": event.get("eventId"), "action": "continue"},
-            )
+    def enable_lifecycle_emitting(self) -> None:
+        self._frameManager.on(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
+
+    def disable_lifecycle_emitting(self) -> None:
+        self._frameManager.disable_lifecycle_emitting()
+        self._frameManager.remove_listener(
+            FrameManager.Events.LifecycleEvent, self._on_lifecycle
         )
 
-    def _onTargetCrashed(self, *args: Any, **kwargs: Any) -> None:
-        self.emit("error", PageError("Page crashed!"))
+    async def setBypassCSP(self, enabled: bool) -> None:
+        await self._client.send("Page.setBypassCSP", {"enabled": enabled})
 
-    def _check_worker(self, event: Dict) -> None:
-        tinfo = event.get("targetInfo")
-        if tinfo is not None:
-            type_ = tinfo["type"]
-            if type_ != "worker":
-                asyncio.ensure_future(
-                    self._client.send(
-                        "Target.detachFromTarget", {"sessionId": event.get("sessionId")}
-                    ),
-                    loop=self._loop,
-                )
+    async def setJavaScriptEnabled(self, enabled: bool) -> None:
+        """Set JavaScript enable/disable."""
+        if self._javascriptEnabled == enabled:
+            return
+        self._javascriptEnabled = enabled
+        await self._client.send(
+            "Emulation.setScriptExecutionDisabled", {"value": not enabled}
+        )
 
-    def _onLogEntryAdded(self, event: Dict) -> None:
-        entry = event.get("entry")
-        args = entry.get("args")
-        if args is not None:
-            self._loop.create_task(self._release_log_args(args))
-        if entry.get("source", "") != "worker":
-            self.emit(Page.Events.LogEntry, entry)
+    async def setViewport(self, viewport: Dict) -> None:
+        """Set viewport.
 
-    async def _release_log_args(self, args: List[Dict]) -> None:
-        for arg in args:
-            await Helper.releaseObject(self._client, arg)
+        Available options are:
+            * ``width`` (int): page width in pixel.
+            * ``height`` (int): page height in pixel.
+            * ``deviceScaleFactor`` (float): Default to 1.0.
+            * ``isMobile`` (bool): Default to ``False``.
+            * ``hasTouch`` (bool): Default to ``False``.
+            * ``isLandscape`` (bool): Default to ``False``.
+        """
+        needsReload = await self._emulationManager.emulateViewport(viewport)
+        self._viewport = viewport
+        if needsReload:
+            await self.reload()
 
-    def _on_lifecycle(self, le: Callable) -> None:
-        self.emit(Page.Events.LifecycleEvent, le)
+    async def setWindowBounds(self, bounds: dict) -> None:
+        windowDescriptor = await self.getWindowDescriptor()
+        await self._client.send(
+            "Browser.setWindowBounds",
+            dict(windowId=windowDescriptor["windowId"], bounds=bounds),
+        )
+
+    async def setRequestInterception(self, value: bool) -> None:
+        """Enable/disable request interception."""
+        return await self._networkManager.setRequestInterception(value)
+
+    async def setOfflineMode(self, enabled: bool) -> None:
+        """Set offline mode enable/disable."""
+        await self._networkManager.setOfflineMode(enabled)
+
+    async def setExtraHTTPHeaders(self, headers: Dict[str, str]) -> None:
+        """Set extra http headers."""
+        return await self._networkManager.setExtraHTTPHeaders(headers)
+
+    async def setUserAgent(self, userAgent: str) -> None:
+        """Set user agent to use in this page."""
+        return await self._networkManager.setUserAgent(userAgent)
+
+    async def setContent(self, html: str) -> None:
+        """Set content to this page."""
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("No main frame.")
+        await frame.setContent(html)
+
+    async def setCacheEnabled(self, enabled: bool = True) -> None:
+        """Enable/Disable cache for each request.
+
+        By default, caching is enabled.
+        """
+        await self._client.send(
+            "Network.setCacheDisabled", {"cacheDisabled": not enabled}
+        )
+
+    async def getWindowDescriptor(self) -> Dict:
+        return await self._client.send(
+            "Browser.getWindowForTarget", dict(targetId=self._target._targetId)
+        )
+
+    async def getWindowBounds(self) -> Dict:
+        windowDescriptor = await self.getWindowDescriptor()
+        return windowDescriptor.get("bounds")
+
+    async def tap(self, selector: str) -> None:
+        """Tap the element which matches the ``selector``.
+
+        :arg str selector: A selector to search element to touch.
+        """
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("no main frame")
+        await frame.tap(selector)
 
     async def stopLoading(self) -> None:
         await self._client.send("Page.stopLoading")
@@ -454,7 +466,7 @@ class Page(EventEmitter):
     async def cookies(self, *urls: str) -> dict:
         """Get cookies."""
         if not urls:
-            urls = (self.url,)
+            urls = [self.url]
         resp = await self._client.send("Network.getCookies", {"urls": urls})
         return resp.get("cookies", {})
 
@@ -539,76 +551,10 @@ class Page(EventEmitter):
         """
         return await self._networkManager.authenticate(credentials)
 
-    async def setExtraHTTPHeaders(self, headers: Dict[str, str]) -> None:
-        """Set extra http headers."""
-        return await self._networkManager.setExtraHTTPHeaders(headers)
-
-    async def setUserAgent(self, userAgent: str) -> None:
-        """Set user agent to use in this page."""
-        return await self._networkManager.setUserAgent(userAgent)
-
     async def metrics(self) -> Dict[str, Any]:
         """Get metrics."""
         response = await self._client.send("Performance.getMetrics")
         return self._buildMetricsObject(response["metrics"])
-
-    def _emitMetrics(self, event: Dict) -> None:
-        self.emit(
-            Page.Events.Metrics,
-            {
-                "title": event["title"],
-                "metrics": self._buildMetricsObject(event["metrics"]),
-            },
-        )
-
-    def _buildMetricsObject(self, metrics: List) -> Dict[str, Any]:
-        result = {}
-        for metric in metrics or []:
-            if metric["name"] in supportedMetrics:
-                result[metric["name"]] = metric["value"]
-        return result
-
-    def _handleException(self, exceptionDetails: Dict) -> None:
-        message = Helper.getExceptionMessage(exceptionDetails)
-        self.emit(Page.Events.PageError, PageError(message))
-
-    def _onConsoleAPI(self, event: dict) -> None:
-        context = self._frameManager.executionContextById(
-            event.get("executionContextId")
-        )
-        values = []
-        for arg in event.get("args", []):
-            values.append(createJSHandle(context, arg))
-        if not self.listeners(Page.Events.Console):
-            for arg in values:
-                asyncio.ensure_future(arg.dispose())
-            return
-        textTokens = []
-        for arg in values:
-            remoteObject = arg._remoteObject
-            if remoteObject.get("objectId"):
-                textTokens.append(arg.toString())
-            else:
-                textTokens.append(str(Helper.valueFromRemoteObject(remoteObject)))
-
-        message = ConsoleMessage(event["type"], " ".join(textTokens), values)
-        self.emit(Page.Events.Console, message)
-
-    def _onDialog(self, event: Any) -> None:
-        dialogType = ""
-        _type = event.get("type")
-        if _type == "alert":
-            dialogType = Dialog.Type.Alert
-        elif _type == "confirm":
-            dialogType = Dialog.Type.Confirm
-        elif _type == "prompt":
-            dialogType = Dialog.Type.Prompt
-        elif _type == "beforeunload":
-            dialogType = Dialog.Type.BeforeUnload
-        dialog = Dialog(
-            self._client, dialogType, event.get("message"), event.get("defaultPrompt")
-        )
-        self.emit(Page.Events.Dialog, dialog)
 
     async def content(self) -> str:
         """Get the whole HTML contents of the page."""
@@ -616,13 +562,6 @@ class Page(EventEmitter):
         if frame is None:
             raise PageError("No main frame.")
         return await frame.content()
-
-    async def setContent(self, html: str) -> None:
-        """Set content to this page."""
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("No main frame.")
-        await frame.setContent(html)
 
     async def goto(
         self,
@@ -737,15 +676,6 @@ class Page(EventEmitter):
         await self.setViewport(options.get("viewport", {}))
         await self.setUserAgent(options.get("userAgent", ""))
 
-    async def setJavaScriptEnabled(self, enabled: bool) -> None:
-        """Set JavaScript enable/disable."""
-        if self._javascriptEnabled == enabled:
-            return
-        self._javascriptEnabled = enabled
-        await self._client.send(
-            "Emulation.setScriptExecutionDisabled", {"value": not enabled}
-        )
-
     async def emulateMedia(self, mediaType: Optional[str] = None) -> None:
         """Emulate css media type of the page."""
         if mediaType not in ["screen", "print", None, ""]:
@@ -754,23 +684,9 @@ class Page(EventEmitter):
             "Emulation.setEmulatedMedia", {"media": mediaType or ""}
         )
 
-    async def setViewport(self, viewport: Dict) -> None:
-        """Set viewport.
-
-        Available options are:
-            * ``width`` (int): page width in pixel.
-            * ``height`` (int): page height in pixel.
-            * ``deviceScaleFactor`` (float): Default to 1.0.
-            * ``isMobile`` (bool): Default to ``False``.
-            * ``hasTouch`` (bool): Default to ``False``.
-            * ``isLandscape`` (bool): Default to ``False``.
-        """
-        needsReload = await self._emulationManager.emulateViewport(viewport)
-        self._viewport = viewport
-        if needsReload:
-            await self.reload()
-
-    async def evaluate(self, pageFunction: str, *args: Any, withCliAPI: bool = False) -> Any:
+    async def evaluate(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> Any:
         """Evaluates the js-function or js-expression in the main frame retrieving the results
         of the valuation.
 
@@ -784,7 +700,9 @@ class Page(EventEmitter):
             raise PageError("No main frame.")
         return await frame.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
 
-    async def evaluate_expression(self, expression: str, withCliAPI: bool = False) -> Any:
+    async def evaluate_expression(
+        self, expression: str, withCliAPI: bool = False
+    ) -> Any:
         """Evaluates the js expression in the main frame returning the results by value.
 
         :param str expression: The js expression to be evaluated in the main frame.
@@ -796,7 +714,7 @@ class Page(EventEmitter):
         return await frame.evaluate_expression(expression, withCliAPI=withCliAPI)
 
     async def evaluateOnNewDocument(
-        self, pageFunction: str, *args: str, raw: bool=False
+        self, pageFunction: str, *args: str, raw: bool = False
     ) -> Dict[str, int]:
         """Add a JavaScript function to the document.
 
@@ -821,15 +739,6 @@ class Page(EventEmitter):
         if not isinstance(identifier, dict):
             identifier = dict(identifier=identifier)
         await self._client.send("Page.removeScriptToEvaluateOnNewDocument", identifier)
-
-    async def setCacheEnabled(self, enabled: bool = True) -> None:
-        """Enable/Disable cache for each request.
-
-        By default, caching is enabled.
-        """
-        await self._client.send(
-            "Network.setCacheDisabled", {"cacheDisabled": not enabled}
-        )
 
     async def raw_screenshot(self, options: dict = None, **kwargs: Any) -> bytes:
         options = merge_dict(options, kwargs)
@@ -1003,6 +912,8 @@ class Page(EventEmitter):
             convertPrintParameterToInches(marginOptions.get("right")) or 0
         )  # noqa: E501
 
+        preferCSSPageSize = options.get("preferCSSPageSize", False)
+
         result = await self._client.send(
             "Page.printToPDF",
             dict(
@@ -1019,6 +930,7 @@ class Page(EventEmitter):
                 marginLeft=marginLeft,
                 marginRight=marginRight,
                 pageRanges=pageRanges,
+                preferCSSPageSize=preferCSSPageSize,
             ),
         )
         buffer = base64.b64decode(result.get("data", b""))
@@ -1041,10 +953,7 @@ class Page(EventEmitter):
 
     async def close(self) -> None:
         """Close connection."""
-        if self._client._connection is not None:
-            conn = self._client._connection
-        else:
-            conn = self._client
+        conn = connection_from_session(self._client)
 
         if conn is None:
             raise PageError(
@@ -1363,7 +1272,9 @@ class Page(EventEmitter):
         opt = {"format": format}
         if clip:
             opt["clip"] = clip
-        result: Dict[str, bytes] = await self._client.send("Page.captureScreenshot", opt)
+        result: Dict[str, bytes] = await self._client.send(
+            "Page.captureScreenshot", opt
+        )
 
         if options.get("omitBackground"):
             await self._client.send("Emulation.setDefaultBackgroundColorOverride")
@@ -1371,6 +1282,104 @@ class Page(EventEmitter):
         if options.get("fullPage"):
             await self.setViewport(self._viewport)
         return result.get("data", b"")
+
+    def _onCertificateError(self, event: Any) -> None:
+        if not self._ignoreHTTPSErrors:
+            return
+        asyncio.ensure_future(
+            self._client.send(
+                "Security.handleCertificateError",
+                {"eventId": event.get("eventId"), "action": "continue"},
+            )
+        )
+
+    def _onTargetCrashed(self, *args: Any, **kwargs: Any) -> None:
+        self.emit("error", PageError("Page crashed!"))
+
+    def _check_worker(self, event: Dict) -> None:
+        tinfo = event.get("targetInfo")
+        if tinfo is not None:
+            type_ = tinfo["type"]
+            if type_ != "worker":
+                asyncio.ensure_future(
+                    self._client.send(
+                        "Target.detachFromTarget", {"sessionId": event.get("sessionId")}
+                    ),
+                    loop=self._loop,
+                )
+
+    def _onLogEntryAdded(self, event: Dict) -> None:
+        entry = event.get("entry")
+        args = entry.get("args")
+        if args is not None:
+            self._loop.create_task(self._release_log_args(args))
+        if entry.get("source", "") != "worker":
+            self.emit(Page.Events.LogEntry, entry)
+
+    def _on_lifecycle(self, le: Callable) -> None:
+        self.emit(Page.Events.LifecycleEvent, le)
+
+    def _emitMetrics(self, event: Dict) -> None:
+        self.emit(
+            Page.Events.Metrics,
+            {
+                "title": event["title"],
+                "metrics": self._buildMetricsObject(event["metrics"]),
+            },
+        )
+
+    def _buildMetricsObject(self, metrics: List) -> Dict[str, Any]:
+        result: Dict[str, Any] = {}
+        for metric in metrics or []:
+            if metric["name"] in supportedMetrics:
+                result[metric["name"]] = metric["value"]
+        return result
+
+    def _handleException(self, exceptionDetails: Dict) -> None:
+        message = Helper.getExceptionMessage(exceptionDetails)
+        self.emit(Page.Events.PageError, PageError(message))
+
+    def _onConsoleAPI(self, event: dict) -> None:
+        context = self._frameManager.executionContextById(
+            event.get("executionContextId")
+        )
+        values = []
+        for arg in event.get("args", []):
+            values.append(createJSHandle(context, arg))
+        if not self.listeners(Page.Events.Console):
+            for arg in values:
+                asyncio.ensure_future(arg.dispose())
+            return
+        textTokens = []
+        for arg in values:
+            remoteObject = arg._remoteObject
+            if remoteObject.get("objectId"):
+                textTokens.append(arg.toString())
+            else:
+                textTokens.append(str(Helper.valueFromRemoteObject(remoteObject)))
+
+        message = ConsoleMessage(event["type"], " ".join(textTokens), values)
+        self.emit(Page.Events.Console, message)
+
+    def _onDialog(self, event: Any) -> None:
+        dialogType = ""
+        _type = event.get("type")
+        if _type == "alert":
+            dialogType = Dialog.Type.Alert
+        elif _type == "confirm":
+            dialogType = Dialog.Type.Confirm
+        elif _type == "prompt":
+            dialogType = Dialog.Type.Prompt
+        elif _type == "beforeunload":
+            dialogType = Dialog.Type.BeforeUnload
+        dialog = Dialog(
+            self._client, dialogType, event.get("message"), event.get("defaultPrompt")
+        )
+        self.emit(Page.Events.Dialog, dialog)
+
+    async def _release_log_args(self, args: List[Dict]) -> None:
+        for arg in args:
+            await Helper.releaseObject(self._client, arg)
 
     #: alias to :meth:`querySelector`
     J = querySelector

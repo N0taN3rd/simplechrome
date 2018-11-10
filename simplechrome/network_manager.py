@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import attr
 from pyee import EventEmitter
 
-from .connection import Client, TargetSession
+from .connection import ClientType
 from .errors import NetworkError
 from .frame_manager import FrameManager, Frame
 from .multimap import Multimap
@@ -37,12 +37,12 @@ class NetworkManager(EventEmitter):
 
     def __init__(
         self,
-        client: Union[Client, TargetSession],
+        client: ClientType,
         loop: Optional[AbstractEventLoop] = None,
     ) -> None:
         """Make new NetworkManager."""
         super().__init__(loop=ensure_loop(loop))
-        self._client = client
+        self._client: ClientType = client
         self._frameManager: Optional["FrameManager"] = None
         self._requestIdToRequest: Dict[str, Request] = dict()
         self._interceptionIdToRequest: Dict[str, Request] = dict()
@@ -281,7 +281,7 @@ class NetworkManager(EventEmitter):
 
 @attr.dataclass
 class Request(object):
-    _client: Union[Client, TargetSession] = attr.ib()
+    _client: ClientType = attr.ib()
     _frame: Optional[Frame] = attr.ib()
     _interceptionId: Optional[str] = attr.ib()
     _allowInterception: bool = attr.ib()
@@ -566,7 +566,7 @@ errorReasons = {
 
 @attr.dataclass(repr=False)
 class Response(object):
-    _client: Union[Client, TargetSession] = attr.ib()
+    _client: ClientType = attr.ib()
     _request: Request = attr.ib()
     _responseInfo: Dict = attr.ib()
     _contentPromise: Optional[Future] = attr.ib(init=False, default=None)

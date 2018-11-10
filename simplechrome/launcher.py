@@ -18,7 +18,7 @@ from aiohttp import ClientSession, ClientConnectorError
 
 from .browser_fetcher import BF
 from .chrome import Chrome
-from .connection import Client, createForWebSocket
+from .connection import ClientType, createForWebSocket
 from .errors import LauncherError
 from .util import merge_dict
 from .helper import Helper
@@ -89,7 +89,7 @@ class Launcher(object):
         self.exec: str = ""
         self._args_setup()
         self.chrome: Optional[Chrome] = None
-        self._connection: Optional[Client] = None
+        self._connection: Optional[ClientType] = None
         self.proc: Optional[subprocess.Popen] = None
         self.cmd: List[str] = [self.exec] + self.args
 
@@ -219,7 +219,7 @@ class Launcher(object):
 
         target = await self._find_target()
         logger.info(f"Browser listening on: {target['webSocketDebuggerUrl']}")
-        con: Client = await createForWebSocket(target["webSocketDebuggerUrl"])
+        con: ClientType = await createForWebSocket(target["webSocketDebuggerUrl"])
         targetInfo = await con.send("Target.getTargetInfo", dict(targetId=target["id"]))
         self._connection = con
         self.chrome = await Chrome.create(
