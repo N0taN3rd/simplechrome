@@ -9,7 +9,7 @@ from .connection import ClientType
 __all__ = ["Dialog"]
 
 
-@attr.dataclass(slots=True)
+@attr.dataclass(slots=True, frozen=True)
 class DialogType(object):
     Alert: str = attr.ib(default="alert")
     BeforeUnload: str = attr.ib(default="beforeunload")
@@ -17,7 +17,7 @@ class DialogType(object):
     Prompt: str = attr.ib(default="prompt")
 
 
-@attr.dataclass
+@attr.dataclass(slots=True)
 class Dialog(object):
     """Dialog class.
 

@@ -5,7 +5,7 @@ import time
 import pytest
 from grappa import should
 
-from simplechrome.errors import ElementHandleError, PageError, NavigationError, EvaluationError
+from simplechrome.errors import ElementHandleError, PageError, NavigationTimeoutError, EvaluationError
 from .base_test import BaseChromeTest
 from .frame_utils import attachFrame
 
@@ -475,6 +475,6 @@ class TestUrl(BaseChromeTest):
 class TestGoto(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_goto_time_out(self):
-        with pytest.raises(NavigationError, message="Navigation Timeout Exceeded: 5 seconds exceeded"):
+        with pytest.raises(NavigationTimeoutError, message="Navigation Timeout Exceeded: 5 seconds exceeded"):
             await self.goto_test('never-loads1.html', waitUntil="load", timeout=5)
 

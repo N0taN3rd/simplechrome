@@ -20,4 +20,3 @@ class Worker(EventEmitter):
         self._client = client
         self._url = url
         self._executionContextPromise = self._loop.create_future()
-

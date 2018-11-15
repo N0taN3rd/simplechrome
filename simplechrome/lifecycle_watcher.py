@@ -1,23 +1,19 @@
-# -*- coding: utf-8 -*-
-"""Navigator Watcher module."""
-
 import asyncio
 from asyncio import AbstractEventLoop, Future, Task
-from typing import Dict, Optional, Union, Any, List, TYPE_CHECKING
+from typing import Optional, Union, Any, List, Iterable, TYPE_CHECKING
 
-from async_timeout import timeout
+from async_timeout import timeout as aio_timeout
 
-from .connection import connection_from_session, ClientType, Connection
-from .errors import NavigationError
+from .errors import NavigationError, NavigationTimeoutError
 from .helper import Helper
-from .util import merge_dict, ensure_loop
+from .util import ensure_loop
 
 if TYPE_CHECKING:
     from .frame_manager import FrameManager, Frame  # noqa: F401
     from .network_manager import NetworkManager, Request, Response  # noqa: F401
 
-__all__ = ["NavigatorWatcher"]
 
+__all__ = ["LifecycleWatcher"]
 
 WaitToProtocolLifecycle = {
     "load": "load",
@@ -27,32 +23,31 @@ WaitToProtocolLifecycle = {
 }
 
 
-class NavigatorWatcher(object):
+class LifecycleWatcher(object):
     def __init__(
         self,
-        client: ClientType,
         frameManager: "FrameManager",
         frame: "Frame",
-        navTimeout: Optional[Union[int, float]] = None,
-        options: Optional[Dict] = None,
-        networkManager: Optional["NetworkManager"] = None,
+        waitUntil: Union[str, Iterable[str]],
+        timeout: Optional[Union[int, float]] = None,
+        all_frames: bool = True,
         loop: Optional[AbstractEventLoop] = None,
-        **kwargs: Any,
     ) -> None:
-        self._navTimeout: Optional[Union[int, float]] = navTimeout
         self._frameManager: "FrameManager" = frameManager
         self._frame: "Frame" = frame
-        self._hasSameDocumentNavigation: bool = False
-        self._expectedLifecycle: List[str] = []
+        self._networkManager: Optional["NetworkManager"] = frameManager._networkManager
         self._initialLoaderId: str = frame._loaderId
-        self.all_frames: bool = True
-        self.loop: AbstractEventLoop = ensure_loop(loop)
-        self._validate_options(merge_dict(options, kwargs))
         self._navigationRequest: Optional["Request"] = None
+        self._timeout: Optional[Union[int, float]] = timeout
+        self._expectedLifecycle: List[str] = []
+        self._hasSameDocumentNavigation: bool = False
+        self.all_frames: bool = all_frames
+        self.loop: AbstractEventLoop = ensure_loop(loop)
+        self._build_expected_lifecyle(waitUntil)
         self._eventListeners = [
             Helper.addEventListener(
-                connection_from_session(client),
-                Connection.Events.Disconnected,
+                self._frameManager._client,
+                self._frameManager._client.Events.Disconnected,
                 lambda: self._terminate(
                     NavigationError(
                         "Navigation failed because browser has disconnected!"
@@ -75,17 +70,20 @@ class NavigatorWatcher(object):
                 self._navigatedWithinDocument,
             ),
         ]
-        if networkManager is not None:
+        if self._networkManager is not None:
             self._eventListeners.append(
                 Helper.addEventListener(
-                    networkManager, networkManager.Events.Request, self._onRequest
+                    self._networkManager,
+                    self._networkManager.Events.Request,
+                    self._onRequest,
                 )
             )
 
         self._sameDocumentNavigationPromise: Future = self.loop.create_future()
+        self._lifecyclePromise: Future = self.loop.create_future()
         self._newDocumentNavigationPromise: Future = self.loop.create_future()
-        self._terminationPromise: Future = self.loop.create_future()
         self._timeoutPromise: Union[Future, Task] = self._createTimeoutPromise()
+        self._terminationPromise: Future = self.loop.create_future()
 
     @property
     def timeoutPromise(self) -> Union[Future, Task]:
@@ -104,40 +102,24 @@ class NavigatorWatcher(object):
         return self._sameDocumentNavigationPromise
 
     @property
+    def lifecyclePromise(self) -> Future:
+        return self._lifecyclePromise
+
+    @property
     def navigationResponse(self) -> Optional["Response"]:
         if self._navigationRequest:
             return self._navigationRequest.response
         return None
 
-    def _onRequest(self, request: "Request") -> None:
-        if request.frame is not self._frame or not request.isNavigationRequest:
-            return
-        self._navigationRequest = request
-
     def dispose(self) -> None:
         Helper.removeEventListeners(self._eventListeners)
-        if self._terminationPromise and not self._terminationPromise.done():
-            self._terminationPromise.cancel()
-        if self._timeoutPromise and not self._timeoutPromise.done():
-            self._timeoutPromise.cancel()
-        self._sameDocumentNavigationPromise.cancel()
-        self._newDocumentNavigationPromise.cancel()
-
-    def _createTimeoutPromise(self) -> Union[Future, Task]:
-        timeoutPromise = self.loop.create_future()
-        if self._navTimeout is not None:
-            return self.loop.create_task(self._timeout_func(timeoutPromise))
-        return timeoutPromise
-
-    async def _timeout_func(self, timeoutPromise: Future) -> Optional[NavigationError]:
-        try:
-            async with timeout(self._navTimeout, loop=self.loop):
-                await timeoutPromise
-        except asyncio.TimeoutError:
-            return NavigationError(
-                f"Navigation Timeout Exceeded: {self._navTimeout} seconds exceeded."
-            )
-        return None
+        Helper.cleanup_futures(
+            self._terminationPromise,
+            self._timeoutPromise,
+            self._lifecyclePromise,
+            self._sameDocumentNavigationPromise,
+            self._newDocumentNavigationPromise,
+        )
 
     def _terminate(self, error: BaseException) -> None:
         if not self._terminationPromise.done():
@@ -155,13 +137,38 @@ class NavigatorWatcher(object):
         self._hasSameDocumentNavigation = True
         self._checkLifecycleComplete()
 
+    def _onRequest(self, request: "Request") -> None:
+        if request.frame is not self._frame or not request.isNavigationRequest:
+            return
+        self._navigationRequest = request
+
+    def _createTimeoutPromise(self) -> Union[Future, Task]:
+        timeoutPromise = self.loop.create_future()
+        if self._timeout is not None:
+            return self.loop.create_task(self._timeout_func(timeoutPromise))
+        return timeoutPromise
+
+    async def _timeout_func(
+        self, timeoutPromise: Future
+    ) -> Optional[NavigationTimeoutError]:
+        try:
+            async with aio_timeout(self._timeout, loop=self.loop):
+                await timeoutPromise
+        except asyncio.TimeoutError:
+            return NavigationTimeoutError(
+                f"Navigation Timeout Exceeded: {self._timeout} seconds exceeded."
+            )
+        return None
+
     def _checkLifecycleComplete(self, *args: Any, **kwargs: Any) -> None:
+        if not self._checkLifecycle(self._frame, self._expectedLifecycle):
+            return
+        if not self._lifecyclePromise.done():
+            self._lifecyclePromise.set_result(None)
         if (
             self._frame._loaderId == self._initialLoaderId
             and not self._hasSameDocumentNavigation
         ):
-            return
-        if not self._checkLifecycle(self._frame, self._expectedLifecycle):
             return
         if (
             self._hasSameDocumentNavigation
@@ -184,21 +191,13 @@ class NavigatorWatcher(object):
                     return False
         return True
 
-    def _validate_options(self, options: Dict) -> None:  # noqa: C901
-        if "networkIdleTimeout" in options:
-            raise ValueError("`networkIdleTimeout` option is no longer supported.")
-        if "networkIdleInflight" in options:
-            raise ValueError("`networkIdleInflight` option is no longer supported.")
-        if options.get("waitUntil") == "networkidle":
-            raise ValueError(
-                "`networkidle` option is no logner supported."
-                "Use `networkidle2` instead."
-            )
-        _waitUntil = options.get("waitUntil", "load")
-        if isinstance(_waitUntil, list):
-            waitUntil = _waitUntil
-        elif isinstance(_waitUntil, str):
-            waitUntil = [_waitUntil]
+    def _build_expected_lifecyle(
+        self, waitUntil: Optional[Union[List[str], str]] = None
+    ) -> None:  # noqa: C901
+        if isinstance(waitUntil, list):
+            waitUntil = waitUntil
+        elif isinstance(waitUntil, str):
+            waitUntil = [waitUntil]
         else:
             waitUntil = ["load"]
         for value in waitUntil:
@@ -206,4 +205,3 @@ class NavigatorWatcher(object):
             if protocolEvent is None:
                 raise ValueError(f"Unknown value for options.waitUntil: {value}")
             self._expectedLifecycle.append(protocolEvent)
-        self.all_frames = options.get("all_frames", True)

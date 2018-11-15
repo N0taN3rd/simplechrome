@@ -1,19 +1,20 @@
-# -*- coding: utf-8 -*-
 """Emulation Managet module."""
-from .helper import Helper
+from typing import Optional
+
+import attr
+
 from .connection import ClientType
+from .helper import Helper
 
 __all__ = ["EmulationManager"]
 
 
+@attr.dataclass(slots=True)
 class EmulationManager(object):
     """EmulationManager class."""
-
-    def __init__(self, client: ClientType) -> None:
-        """Make new elmulation manager."""
-        self._client = client
-        self._emulatingMobile = False
-        self._injectedTouchScriptId = None
+    _client: ClientType = attr.ib()
+    _emulatingMobile: bool = attr.ib(init=False, default=False)
+    _injectedTouchScriptId: Optional[str] = attr.ib(init=False, default=None)
 
     async def emulateViewport(self, viewport: dict) -> bool:
         """Evaluate viewport."""

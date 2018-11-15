@@ -5,7 +5,6 @@ cchardet
 pyee
 websockets
 ujson
-yarl
 async-timeout
 aiofiles
 urllib3

@@ -8,6 +8,7 @@ from cripy import Connection, CDPSession, TargetSession, ConnectionType, Session
 __all__ = [
     "Connection",
     "CDPSession",
+    "SessionType",
     "createForWebSocket",
     "ClientType",
     "connection_from_session",

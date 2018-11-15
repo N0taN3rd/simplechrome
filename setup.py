@@ -2,33 +2,34 @@ from setuptools import setup, find_packages
 
 requirements = [
     "aiohttp",
-    "uvloop",
     "aiodns",
     "cchardet",
     "pyee",
-    "websockets",
     "ujson",
-    "yarl",
     "async-timeout",
     "aiofiles",
     "urllib3",
     "attrs",
+    "cripy"
 ]
 
-test_requirements = ["pytest", "pytest-asyncio", "psutil", "grappa", "vibora"]
+test_requirements = ["pytest", "pytest-asyncio", "psutil", "grappa", "vibora", "uvloop"]
 
 setup(
     name="simplechrome",
-    version="1.3.1",
+    version="1.3.3",
     description=(
         "Headless chrome/chromium automation library"
         "(unofficial fork of pypuppeteer that stays more up to date with puppeteer)"
     ),
     author="Webrecorder",
     author_email="Webrecorder.Webrecorder@Webrecorder.com",
-    packages=find_packages(),
+    packages=find_packages(exclude=['tests']),
     include_package_data=True,
     install_requires=requirements,
+    dependency_links=[
+        "git+https://github.com/webrecorder/chrome-remote-interface-py.git@master#egg=cripy"
+    ],
     zip_safe=False,
     classifiers=[
         "Development Status :: 3 - Alpha",

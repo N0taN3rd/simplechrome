@@ -13,7 +13,7 @@ from .helper import *
 from .input import *
 from .launcher import *
 from .multimap import *
-from .navigator_watcher import *
+from .lifecycle_watcher import *
 from .network_manager import *
 from .page import *
 from .us_keyboard_layout import *
@@ -31,7 +31,7 @@ __all__ = (
     + input.__all__
     + launcher.__all__
     + multimap.__all__
-    + navigator_watcher.__all__
+    + lifecycle_watcher.__all__
     + network_manager.__all__
     + page.__all__
     + us_keyboard_layout.__all__

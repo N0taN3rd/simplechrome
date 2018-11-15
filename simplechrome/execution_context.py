@@ -1,6 +1,6 @@
 """Execut Context Module."""
 import copy
-from typing import Any, Dict, Optional, TYPE_CHECKING, Union, List
+from typing import Any, Dict, Optional, TYPE_CHECKING, Union, List, Awaitable
 
 import math
 import os
@@ -32,10 +32,7 @@ def createJSHandle(
 
 class ExecutionContext(object):
     def __init__(
-        self,
-        client: ClientType,
-        contextPayload: Dict,
-        frame: Optional["Frame"] = None,
+        self, client: ClientType, contextPayload: Dict, frame: Optional["Frame"] = None
     ) -> None:
         self._client = client
         self._frame = frame
@@ -44,6 +41,10 @@ class ExecutionContext(object):
         self._isDefault: bool = contextPayload.get("auxData", {}).get(
             "isDefault", False
         )
+
+    @property
+    def default(self) -> bool:
+        return self._isDefault
 
     @property
     def id(self) -> str:
@@ -142,7 +143,7 @@ class ExecutionContext(object):
                     Helper.getExceptionMessage(exceptionDetails)
                 )
             )
-        return Helper.valueFromRemoteObject(results['result'])
+        return Helper.valueFromRemoteObject(results["result"])
 
     async def queryObjects(self, prototypeHandle: "JSHandle") -> "JSHandle":
         """Send query.
@@ -170,7 +171,7 @@ class ExecutionContext(object):
             return {"unserializableValue": "-Infinity"}
         objectHandle = arg if isinstance(arg, JSHandle) else None
         if objectHandle:
-            if objectHandle._context != self:
+            if objectHandle._context is not self:
                 raise ElementHandleError(
                     "JSHandles can be evaluated only in the context they were created!"
                 )  # noqa: E501
@@ -187,8 +188,11 @@ class ExecutionContext(object):
             return {"objectId": objectHandle._remoteObject.get("objectId")}
         return {"value": arg}
 
-    def __repr__(self):
+    def __str__(self) -> str:
         return f"ExecutionContext(contextId={self._contextId}, frameId={self._frameId}, isDefault={self._isDefault})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 class JSHandle(object):
@@ -199,10 +203,7 @@ class JSHandle(object):
     """
 
     def __init__(
-        self,
-        context: ExecutionContext,
-        client: ClientType,
-        remoteObject: Dict,
+        self, context: ExecutionContext, client: ClientType, remoteObject: Dict
     ) -> None:
         self._context = context
         self._client = client
@@ -355,7 +356,7 @@ class ElementHandle(JSHandle):
                 "DOM.getContentQuads", dict(objectId=self._remoteObject.get("objectId"))
             )
         except Exception:
-            raise Exception("Node is either not visible or not an HTMLElement")
+            raise ElementHandleError("Node is either not visible or not an HTMLElement")
 
         quads = []
         for pquad in result.get("quads"):
@@ -363,7 +364,7 @@ class ElementHandle(JSHandle):
             if computeQuadArea(quad) > 1:
                 quads.append(quad)
         if len(quads) == 0:
-            raise Exception("Node is either not visible or not an HTMLElement")
+            raise ElementHandleError("Node is either not visible or not an HTMLElement")
         quad = quads[0]
         x = 0.0
         y = 0.0
@@ -409,7 +410,7 @@ class ElementHandle(JSHandle):
         detached from DOM tree, the method raises an ``ElementHandleError``.
         """
         await self._scrollIntoViewIfNeeded()
-        obj = await self._visibleCenter()
+        obj = await self._clickablePoint()
         x = obj.get("x", 0)
         y = obj.get("y", 0)
         await self._page.mouse.move(x, y)
@@ -430,7 +431,7 @@ class ElementHandle(JSHandle):
         """
         options = merge_dict(options, kwargs)
         await self._scrollIntoViewIfNeeded()
-        obj = await self._visibleCenter()
+        obj = await self._clickablePoint()
         x = obj.get("x", 0)
         y = obj.get("y", 0)
         await self._page.mouse.click(x, y, options)
@@ -450,7 +451,7 @@ class ElementHandle(JSHandle):
         detached from DOM, the method raises ``ElementHandleError``.
         """
         await self._scrollIntoViewIfNeeded()
-        center = await self._visibleCenter()
+        center = await self._clickablePoint()
         x = center.get("x", 0)
         y = center.get("y", 0)
         await self._page.touchscreen.tap(x, y)
@@ -660,6 +661,21 @@ class ElementHandle(JSHandle):
 
     #: alias to :meth:`xpath`
     Jx = xpath
+
+    def isIntersectingViewport(self) -> Awaitable[bool]:
+        return self.executionContext.evaluate(
+            """async element => {
+      const visibleRatio = await new Promise(resolve => {
+        const observer = new IntersectionObserver(entries => {
+          resolve(entries[0].intersectionRatio);
+          observer.disconnect();
+        });
+        observer.observe(element);
+      });
+      return visibleRatio > 0;
+    }""",
+            self,
+        )
 
     def __repr__(self):
         return f"ElementHandle({self.toString()})"
