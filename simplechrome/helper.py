@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """Helper functions."""
 import asyncio
-import json
+import ujson
 from typing import Any, Callable, Dict, List, Union, Awaitable, Optional
 
 import math
 from async_timeout import timeout as aiotimeout
-from asyncio import AbstractEventLoop
+from asyncio import AbstractEventLoop, Future, Task
 from .util import ensure_loop
 
 from .connection import ClientType
-from .errors import ElementHandleError
+from .errors import ElementHandleError, WaitTimeoutError
 from pyee import EventEmitter
 
 
@@ -32,7 +32,7 @@ class Helper(object):
     def evaluationString(fun: str, *args: Any) -> str:
         """Convert function and arguments to str."""
         _args = ", ".join(
-            [json.dumps("undefined" if arg is None else arg) for arg in args]
+            [ujson.dumps("undefined" if arg is None else arg) for arg in args]
         )
         expr = f"({fun})({_args})"
         return expr
@@ -100,9 +100,7 @@ class Helper(object):
         return remoteObject.get("value")
 
     @staticmethod
-    async def releaseObject(
-        client: ClientType, remoteObject: dict
-    ) -> None:
+    async def releaseObject(client: ClientType, remoteObject: dict) -> None:
         """Release remote object."""
         objectId = remoteObject.get("objectId")
         if not objectId:
@@ -144,8 +142,44 @@ class Helper(object):
             async with aiotimeout(to, loop=ensure_loop(loop)):
                 await awaitable
         except asyncio.TimeoutError:
-            pass
+            raise WaitTimeoutError("Timeout exceeded while waiting for event")
 
     @staticmethod
-    def waitForEvent(emitter, eventName: str):
-        pass
+    def cleanup_futures(*args: Future) -> None:
+        for future in args:
+            if future and not future.done():
+                future.cancel()
+
+    @staticmethod
+    def waitForEvent(
+        emitter: EventEmitter,
+        eventName: str,
+        predicate: Callable[[Any], bool],
+        timeout: Optional[Union[int, float]] = None,
+    ) -> Union[Future, Task]:
+        loop = ensure_loop(emitter._loop)
+
+        promise = loop.create_future()
+
+        @emitter.on(eventName)
+        def listener(event: Any = None) -> None:
+            if predicate(event) and not promise.done():
+                promise.set_result(None)
+
+        def clean_up(*args, **kwargs) -> None:
+            emitter.remove_listener(eventName, listener)
+
+        if timeout is not None:
+
+            async def timed_promise() -> None:
+                try:
+                    async with aiotimeout(timeout):
+                        await promise
+                except asyncio.TimeoutError:
+                    raise WaitTimeoutError("Timeout exceeded while waiting for event")
+                finally:
+                    clean_up()
+
+            return loop.create_task(timed_promise())
+        promise.add_done_callback(clean_up)
+        return promise

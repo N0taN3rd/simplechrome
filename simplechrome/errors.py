@@ -12,7 +12,9 @@ __all__ = [
     "LauncherError",
     "InputError",
     "NavigationError",
-    "EvaluationError"
+    "EvaluationError",
+    "NavigationTimeoutError",
+    "WaitSetupError"
 ]
 
 
@@ -34,7 +36,7 @@ class PageError(Exception):  # noqa: D204
     pass
 
 
-class WaitTimeoutError(asyncio.TimeoutError):  # noqa: D204
+class WaitTimeoutError(Exception):  # noqa: D204
     """Timeout Error class."""
 
     pass
@@ -56,5 +58,13 @@ class NavigationError(Exception):
     """For navigation errors"""
 
 
+class NavigationTimeoutError(Exception):
+    """For navigation timeout errors"""
+
+
 class EvaluationError(Exception):
     """For evaluation errors"""
+
+
+class WaitSetupError(Exception):
+    """Indicates a precondition for Frame wait functions was not met"""

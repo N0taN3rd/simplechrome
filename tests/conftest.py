@@ -1,6 +1,6 @@
+import os
 from typing import Any, AsyncGenerator, Generator
 
-import os
 import psutil
 import pytest
 import uvloop
@@ -57,6 +57,7 @@ async def chrome_page(request, chrome: Chrome) -> AsyncGenerator[Page, Any]:
 @pytest.yield_fixture(scope="class")
 def event_loop() -> Generator[uvloop.Loop, Any, None]:
     loop = uvloop.new_event_loop()
+    loop.set_debug(True)
     yield loop
     loop.close()
 

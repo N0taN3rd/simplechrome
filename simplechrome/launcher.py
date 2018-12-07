@@ -18,7 +18,7 @@ from aiohttp import ClientSession, ClientConnectorError
 
 from .browser_fetcher import BF
 from .chrome import Chrome
-from .connection import ClientType, createForWebSocket
+from .connection import Connection, createForWebSocket, ClientType
 from .errors import LauncherError
 from .util import merge_dict
 from .helper import Helper
@@ -37,7 +37,7 @@ DEFAULT_ARGS = [
     "--disable-extensions",
     "--disable-backgrounding-occluded-windows",
     "--disable-ipc-flooding-protection",
-    '--disable-popup-blocking',
+    "--disable-popup-blocking",
     "--disable-hang-monitor",
     "--disable-prompt-on-repost",
     "--disable-sync",
@@ -201,11 +201,7 @@ class Launcher(object):
 
         def _close_process(*args: Any, **kwargs: Any) -> None:
             if not myself.chrome_dead:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(myself.kill_chrome())
-                else:
-                    loop.run_until_complete(myself.kill_chrome())
+                myself.kill_chrome()
 
         atexit.register(_close_process)
         if self.options.get("handleSIGINT", True):
@@ -219,7 +215,7 @@ class Launcher(object):
 
         target = await self._find_target()
         logger.info(f"Browser listening on: {target['webSocketDebuggerUrl']}")
-        con: ClientType = await createForWebSocket(target["webSocketDebuggerUrl"])
+        con: Connection = await createForWebSocket(target["webSocketDebuggerUrl"])
         targetInfo = await con.send("Target.getTargetInfo", dict(targetId=target["id"]))
         self._connection = con
         self.chrome = await Chrome.create(
@@ -235,7 +231,7 @@ class Launcher(object):
         await ensureInitialPage(self.chrome)
         return self.chrome
 
-    async def kill_chrome(self) -> None:
+    def kill_chrome(self) -> None:
         """Terminate chromium process."""
         if (
             self.chrome is not None
@@ -243,10 +239,12 @@ class Launcher(object):
             and self._connection.connected
         ):
             try:
-                await self.chrome._connection.send("Browser.close")
-            except Exception:
+                self.proc.kill()
+            except Exception as e:
+                print(e)
                 # ignore errors on browser termination process
                 pass
+            self.proc.wait()
         if self._tmp_user_data_dir and os.path.exists(self._tmp_user_data_dir.name):
             # Force kill chrome only when using temporary userDataDir
             self._cleanup_tmp_user_data_dir()

@@ -74,7 +74,7 @@ class TestClick(BaseChromeTest):
         await self.page.evaluate('btn => btn.style.display = "none"', button)
         with pytest.raises(ElementHandleError) as cm:
             await button.click()
-        str(cm.value) | should.be.equal.to("Node is not visible.")
+        str(cm.value) | should.be.equal.to("Node is either not visible or not an HTMLElement")
 
     @pytest.mark.asyncio
     async def test_recursively_hidden_node(self):
@@ -85,16 +85,15 @@ class TestClick(BaseChromeTest):
         )
         with pytest.raises(ElementHandleError) as cm:
             await button.click()
-        str(cm.value) | should.be.equal.to("Node is not visible.")
+        str(cm.value) | should.be.equal.to("Node is either not visible or not an HTMLElement")
 
     @pytest.mark.asyncio
     async def test_br_node(self):
-        await self.goto_empty()
         await self.page.setContent("hello<br>goodbye")
         br = await self.page.J("br")
         with pytest.raises(ElementHandleError) as cm:
             await br.click()
-        str(cm.value) | should.be.equal.to("Node is not visible.")
+        str(cm.value) | should.be.equal.to("Node is either not visible or not an HTMLElement")
 
 
 class TestHover(BaseChromeTest):

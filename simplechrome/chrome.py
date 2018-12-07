@@ -2,21 +2,23 @@
 import asyncio
 from asyncio import AbstractEventLoop, Future
 from subprocess import Popen
-from typing import Awaitable, Callable, Dict, List, Optional, Union, Any
-from async_timeout import timeout as aiotimeout
+from typing import Awaitable, Any, Callable, Dict, List, Optional, Union, ClassVar
+
 import attr
+from async_timeout import timeout as aiotimeout
 from pyee import EventEmitter
 
-from .connection import ClientType, SessionType
+from .connection import ClientType
 from .errors import BrowserError
-from .page import Page
 from .helper import Helper
+from .page import Page
+from .target import Target
 from .util import ensure_loop
 
-__all__ = ["Chrome", "BrowserContext", "Target"]
+__all__ = ["Chrome", "BrowserContext"]
 
 
-@attr.dataclass(slots=True)
+@attr.dataclass(slots=True, frozen=True)
 class ChromeEvents(object):
     TargetCreated: str = attr.ib(default="targetcreated")
     TargetDestroyed: str = attr.ib(default="targetdestroyed")
@@ -25,7 +27,7 @@ class ChromeEvents(object):
 
 
 class Chrome(EventEmitter):
-    Events: ChromeEvents = ChromeEvents()
+    Events: ClassVar[ChromeEvents] = ChromeEvents()
 
     def __init__(
         self,
@@ -34,7 +36,7 @@ class Chrome(EventEmitter):
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
-        closeCallback: Optional[Callable[[], Awaitable[None]]] = None,
+        closeCallback: Optional[Callable[[], Any]] = None,
         targetInfo: Optional[Dict] = None,
         loop: Optional[AbstractEventLoop] = None,
     ) -> None:
@@ -54,18 +56,16 @@ class Chrome(EventEmitter):
         self._contexts: Dict[str, BrowserContext] = dict()
         self._page: Optional[Page] = None
         for contextId in contextIds:
-            self._contexts[contextId] = BrowserContext(connection, self, contextId, self._loop)
+            self._contexts[contextId] = BrowserContext(
+                connection, self, contextId, self._loop
+            )
 
-        def _dummy_callback() -> Awaitable[None]:
-            fut = self._loop.create_future()
-            fut.set_result(None)
+        def _dummy_callback() -> None:
             self.emit(Chrome.Events.Disconnected, None)
-            return fut
 
-        if closeCallback:
-            self._closeCallback = closeCallback
-        else:
-            self._closeCallback = _dummy_callback
+        self._closeCallback: Callable[
+            [], Any
+        ] = closeCallback if closeCallback is not None else _dummy_callback
 
         self._targets: Dict[str, Target] = dict()
         self._connection.on(self._connection.Events.Disconnected, self._on_close)
@@ -80,7 +80,7 @@ class Chrome(EventEmitter):
         ignoreHTTPSErrors: bool,
         defaultViewport: Optional[Dict[str, int]] = None,
         process: Optional[Popen] = None,
-        closeCallback: Callable[[], Awaitable[None]] = None,
+        closeCallback: Optional[Callable[[], Any]] = None,
         targetInfo: Optional[Dict] = None,
         loop: Optional[AbstractEventLoop] = None,
     ) -> "Chrome":
@@ -92,7 +92,7 @@ class Chrome(EventEmitter):
             process,
             closeCallback,
             targetInfo,
-            loop
+            loop,
         )
         await connection.send("Target.setDiscoverTargets", {"discover": True})
         return browser
@@ -113,7 +113,7 @@ class Chrome(EventEmitter):
                 self._defaultViewport,
                 self.ignoreHTTPSErrors,
                 self._screenshotTaskQueue,
-                self._loop
+                self._loop,
             )
             target._page = page
             self._page = page
@@ -182,8 +182,10 @@ class Chrome(EventEmitter):
         return version.get("userAgent", "")
 
     async def close(self) -> None:
-        await self._closeCallback()  # Launcher.killChrome()
         await self.disconnect()
+        results = self._closeCallback()
+        if results and asyncio.iscoroutine(results):
+            await results
 
     async def disconnect(self) -> None:
         await self._connection.dispose()
@@ -204,7 +206,7 @@ class Chrome(EventEmitter):
     @property
     def wsEndpoint(self) -> str:
         """Retrun websocket end point url."""
-        return self._connection.url
+        return self._connection.ws_url
 
     def _on_close(self) -> None:
         self.emit(Chrome.Events.Disconnected, None)
@@ -276,7 +278,7 @@ class BrowserContextEvents(object):
 
 
 class BrowserContext(EventEmitter):
-    Events: BrowserContextEvents = BrowserContextEvents()
+    Events: ClassVar[BrowserContextEvents] = BrowserContextEvents()
 
     def __init__(
         self,
@@ -372,103 +374,3 @@ class BrowserContext(EventEmitter):
             return
         await self._browser._disposeContext(cntx)
 
-
-class Target(object):
-    """Browser's target class."""
-
-    def __init__(
-        self,
-        targetInfo: Dict[str, str],
-        browserContext: BrowserContext,
-        browser: Chrome,
-        loop: Optional[AbstractEventLoop] = None,
-    ) -> None:
-        self._browser: Chrome = browser
-        self._browserContext: BrowserContext = browserContext
-        self._targetInfo: Dict[str, str] = targetInfo
-        self._targetId = targetInfo["targetId"]
-        self._page: Optional[Page] = None
-        self._loop = ensure_loop(loop)
-
-        self._isClosedPromise: Future = self._loop.create_future()
-        self._initializedPromise: Future = self._loop.create_future()
-        self._isInitialized = (
-            self._targetInfo["type"] != "page" or self._targetInfo["url"] != ""
-        )
-        if self._isInitialized:
-            self._initializedCallback(True)
-
-    def _initializedCallback(self, bl: bool) -> None:
-        if not self._initializedPromise.done():
-            self._initializedPromise.set_result(bl)
-
-    def _closedCallback(self) -> None:
-        self._isClosedPromise.set_result(None)
-
-    async def createTargetSession(self) -> SessionType:
-        """Create a Chrome Devtools Protocol session attached to the target."""
-        return await self._browser._connection.createTargetSession(self._targetId)
-
-    async def page(self) -> Optional[Page]:
-        """Get page of this target."""
-        is_page = (
-            self._targetInfo["type"] == "page"
-            or self._targetInfo["type"] == "background_page"
-        )
-        if is_page and self._page is None:
-            client = await self._browser._connection.createTargetSession(self._targetId)
-            new_page = await Page.create(
-                client,
-                self,
-                self._browser._defaultViewport,
-                self._browser.ignoreHTTPSErrors,
-                self._browser._screenshotTaskQueue,
-                self._loop
-            )
-            self._page = new_page
-            return new_page
-        return self._page
-
-    @property
-    def opener(self) -> Optional["Target"]:
-        openerId = self._targetInfo.get("openerId")
-        if openerId is not None:
-            return self.browser._targets.get(openerId)
-        return openerId
-
-    @property
-    def browser(self) -> "Chrome":
-        return self._browserContext.browser()
-
-    @property
-    def browserContext(self) -> "BrowserContext":
-        return self._browserContext
-
-    @property
-    def url(self) -> str:
-        """Get url of this target."""
-        return self._targetInfo["url"]
-
-    @property
-    def type(self) -> str:
-        """Get type of this target."""
-        _type: str = self._targetInfo["type"]
-        if (
-            _type == "page"
-            or _type == "service_worker"
-            or _type == "page"
-            or _type == "background_page"
-            or _type == "browser"
-        ):
-            return _type
-        return "other"
-
-    def targetInfoChanged(self, targetInfo: dict) -> None:
-        self._targetInfo = targetInfo
-
-        if not self._isInitialized and (
-            self._targetInfo["type"] != "page" or self._targetInfo["url"] != ""
-        ):
-            self._isInitialized = True
-            self._initializedCallback(True)
-            return

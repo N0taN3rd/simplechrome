@@ -20,11 +20,12 @@ from .execution_context import JSHandle, ElementHandle, createJSHandle  # noqa: 
 from .frame_manager import FrameManager, Frame
 from .input import Keyboard, Mouse, Touchscreen
 from .network_manager import NetworkManager, Response, Request
+from .tracing import Tracing
 from .util import merge_dict, ensure_loop
 
 if TYPE_CHECKING:
-    from .chrome import Target  # noqa: F401
-    from .frame_manager import WaitTask  # noqa: F401
+    from .target import Target  # noqa: F401
+    from .waitTask import WaitTask  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ class Page(EventEmitter):
         )
         self._networkManager.setFrameManager(self._frameManager)
         self._emulationManager = EmulationManager(client)
+        self._tracing = Tracing(client)
         self._ignoreHTTPSErrors = ignoreHTTPSErrors
         self._javascriptEnabled = True
         self._lifecycle_emitting = False
@@ -177,19 +179,13 @@ class Page(EventEmitter):
             lambda event: self.emit(Page.Events.RequestFinished, event),
         )
 
-        client.on(
-            "Page.domContentEventFired",
-            lambda event: self.emit(Page.Events.DOMContentLoaded),
-        )
-        client.on("Page.loadEventFired", lambda event: self.emit(Page.Events.Load))
-        client.on("Runtime.consoleAPICalled", self._onConsoleAPI)
+        client.on("Page.domContentEventFired", self._onDomContentEventFired)
+        client.on("Page.loadEventFired", self._onLoadEventFired)
         client.on("Page.javascriptDialogOpening", self._onDialog)
-        client.on(
-            "Runtime.exceptionThrown",
-            lambda exception: self._handleException(exception.get("exceptionDetails")),
-        )
-        client.on("Inspector.targetCrashed", lambda event: self._onTargetCrashed())
-        client.on("Log.entryAdded", lambda event: self._onLogEntryAdded(event))
+        client.on("Runtime.consoleAPICalled", self._onConsoleAPI)
+        client.on("Runtime.exceptionThrown", self._onExceptionThrown)
+        client.on("Inspector.targetCrashed", self._onTargetCrashed)
+        client.on("Log.entryAdded", self._onLogEntryAdded)
 
         def closed(fut: asyncio.futures.Future) -> None:
             self.emit(Page.Events.Close)
@@ -246,6 +242,10 @@ class Page(EventEmitter):
     def mouse(self) -> Mouse:
         """Get :class:`~simplechrome.input.Mouse` object."""
         return self._mouse
+
+    @property
+    def tracing(self) -> Tracing:
+        return self._tracing
 
     def setDefaultNavigationTimeout(self, timeout: Union[int, float]) -> None:
         """Change the default maximum navigation timeout.
@@ -629,6 +629,46 @@ class Page(EventEmitter):
         """
         return await self._frameManager.mainFrame.waitForNavigation(options, **kwargs)
 
+    async def waitForRequest(
+        self,
+        urlOrPredicate: Union[str, Callable[[Request], bool]],
+        options: Optional[Dict] = None,
+        **kwargs: Any,
+    ):
+        timeout = merge_dict(options, kwargs).get("timeout", 30)
+
+        def wrapped_predicate(req: Request) -> bool:
+            if isinstance(urlOrPredicate, str):
+                return req.url == urlOrPredicate
+            return urlOrPredicate(req)
+
+        return Helper.waitForEvent(
+            self._networkManager,
+            NetworkManager.Events.Request,
+            wrapped_predicate,
+            timeout,
+        )
+
+    async def waitForResponse(
+        self,
+        urlOrPredicate: Union[str, Callable[[Response], bool]],
+        options: Optional[Dict] = None,
+        **kwargs: Any,
+    ):
+        timeout = merge_dict(options, kwargs).get("timeout", 30)
+
+        def wrapped_predicate(res: Response) -> bool:
+            if isinstance(urlOrPredicate, str):
+                return res.url == urlOrPredicate
+            return urlOrPredicate(res)
+
+        return Helper.waitForEvent(
+            self._networkManager,
+            NetworkManager.Events.Response,
+            wrapped_predicate,
+            timeout,
+        )
+
     async def goBack(self, options: dict = None, **kwargs: Any) -> Optional[Response]:
         """Navigate to the previous page in history.
 
@@ -671,8 +711,6 @@ class Page(EventEmitter):
     async def emulate(self, options: dict = None, **kwargs: Any) -> None:
         """Emulate viewport and user agent."""
         options = merge_dict(options, kwargs)
-        # TODO: if options does not have viewport or userAgent,
-        # skip its setting.
         await self.setViewport(options.get("viewport", {}))
         await self.setUserAgent(options.get("userAgent", ""))
 
@@ -1286,7 +1324,7 @@ class Page(EventEmitter):
     def _onCertificateError(self, event: Any) -> None:
         if not self._ignoreHTTPSErrors:
             return
-        asyncio.ensure_future(
+        self._loop.create_task(
             self._client.send(
                 "Security.handleCertificateError",
                 {"eventId": event.get("eventId"), "action": "continue"},
@@ -1301,7 +1339,7 @@ class Page(EventEmitter):
         if tinfo is not None:
             type_ = tinfo["type"]
             if type_ != "worker":
-                asyncio.ensure_future(
+                self._loop.create_task(
                     self._client.send(
                         "Target.detachFromTarget", {"sessionId": event.get("sessionId")}
                     ),
@@ -1348,7 +1386,7 @@ class Page(EventEmitter):
             values.append(createJSHandle(context, arg))
         if not self.listeners(Page.Events.Console):
             for arg in values:
-                asyncio.ensure_future(arg.dispose())
+                self._loop.create_task(arg.dispose())
             return
         textTokens = []
         for arg in values:
@@ -1376,6 +1414,15 @@ class Page(EventEmitter):
             self._client, dialogType, event.get("message"), event.get("defaultPrompt")
         )
         self.emit(Page.Events.Dialog, dialog)
+
+    def _onDomContentEventFired(self, event: Dict) -> None:
+        self.emit(Page.Events.DOMContentLoaded)
+
+    def _onLoadEventFired(self, event: Dict) -> None:
+        self.emit(Page.Events.Load)
+
+    def _onExceptionThrown(self, event: Dict) -> None:
+        self._handleException(event.get("exceptionDetails"))
 
     async def _release_log_args(self, args: List[Dict]) -> None:
         for arg in args:

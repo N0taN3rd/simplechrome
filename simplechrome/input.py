@@ -13,7 +13,7 @@ from .util import merge_dict
 __all__ = ["Keyboard", "Mouse", "Touchscreen"]
 
 
-@attr.dataclass
+@attr.dataclass(slots=True)
 class Keyboard(object):
     """Keyboard class."""
 
@@ -21,7 +21,9 @@ class Keyboard(object):
     modifiers: int = attr.ib(init=False, default=0)
     pressedKeys: Set[str] = attr.ib(init=False, factory=set)
 
-    async def down(self, key: str, options: Optional[Dict] = None, **kwargs: Any) -> None:
+    async def down(
+        self, key: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> None:
         """Dispatches a ``keydown`` event with ``key``.
 
         If ``key`` is a single character and no modifier keys besides ``shift``
@@ -176,7 +178,9 @@ class Keyboard(object):
             if delay:
                 await asyncio.sleep(delay / 1000)
 
-    async def press(self, key: str, options: Optional[Dict] = None, **kwargs: Any) -> None:
+    async def press(
+        self, key: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> None:
         """Press ``key``.
 
         If ``key`` is a single character and no modifier keys besides
@@ -201,9 +205,10 @@ class Keyboard(object):
         await self.up(key)
 
 
-@attr.dataclass
+@attr.dataclass(slots=True)
 class Mouse(object):
     """Mouse class."""
+
     client: ClientType = attr.ib()
     keyboard: Keyboard = attr.ib()
     _x: float = attr.ib(init=False, default=0.0)
@@ -307,9 +312,10 @@ class Mouse(object):
         )
 
 
-@attr.dataclass
+@attr.dataclass(slots=True)
 class Touchscreen(object):
     """Touchscreen class."""
+
     client: ClientType = attr.ib()
     keyboard: Keyboard = attr.ib()
 

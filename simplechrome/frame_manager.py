@@ -13,24 +13,25 @@ import aiofiles
 from pyee import EventEmitter
 
 from .connection import ClientType
-from .errors import ElementHandleError, PageError, WaitTimeoutError
+from .errors import ElementHandleError, PageError, WaitSetupError
 from .errors import NavigationError
 from .execution_context import ElementHandle
 from .execution_context import ExecutionContext, JSHandle
 from .helper import Helper
-from .navigator_watcher import NavigatorWatcher
+from .waitTask import WaitTask
+from .lifecycle_watcher import LifecycleWatcher
 from .util import merge_dict, ensure_loop
 
 if TYPE_CHECKING:
     from .page import Page  # noqa: F401
     from .network_manager import NetworkManager, Response  # noqa: F401
 
-__all__ = ["FrameManager", "Frame", "WaitTask", "WaitSetupError"]
+__all__ = ["FrameManager", "Frame"]
 
 logger = logging.getLogger(__name__)
 
 
-@attr.dataclass(slots=True)
+@attr.dataclass(slots=True, frozen=True)
 class FrameManagerEvents(object):
     FrameAttached: str = attr.ib(default="frameattached", init=False)
     FrameNavigated: str = attr.ib(default="framenavigated", init=False)
@@ -102,7 +103,9 @@ class FrameManager(EventEmitter):
         self, frame: "Frame", url: str, options: Optional[Dict] = None, **kwargs: Any
     ) -> Optional["Response"]:
         opts = merge_dict(options, kwargs)
-        to = opts.get("timeout", self._defaultNavigationTimeout)
+        timeout = opts.get("timeout", self._defaultNavigationTimeout)
+        waitUnitl = opts.get("waitUntil", ["load"])
+        all_frames = opts.get("all_frames", True)
         nav_args = dict(url=url, frameId=frame.id)
 
         if "transition" in opts:
@@ -110,15 +113,15 @@ class FrameManager(EventEmitter):
 
         supplied_referrer: bool = "referrer" in opts
         if supplied_referrer:
-            nav_args["referrer"] = opts.get('referrer')
+            nav_args["referrer"] = opts.get("referrer")
 
         if not supplied_referrer and self._networkManager is not None:
-            referer = self._networkManager.extraHTTPHeaders().get('referrer')
+            referer = self._networkManager.extraHTTPHeaders().get("referrer")
             if referer:
                 nav_args["referrer"] = referer
 
-        watcher = NavigatorWatcher(
-            self._client, self, frame, to, opts, self._networkManager, self._loop
+        watcher = LifecycleWatcher(
+            self, frame, waitUnitl, timeout, all_frames, self._loop
         )
 
         ensureNewDocumentNavigation = False
@@ -170,9 +173,11 @@ class FrameManager(EventEmitter):
         self, frame: "Frame", options: Optional[Dict] = None, **kwargs: Any
     ) -> Optional["Response"]:
         opts = merge_dict(options, kwargs)
-        to = opts.get("timeout", self._defaultNavigationTimeout)
-        watcher = NavigatorWatcher(
-            self._client, self, frame, to, opts, self._networkManager, self._loop
+        timeout = opts.get("timeout", self._defaultNavigationTimeout)
+        waitUnitl = opts.get("waitUntil", ["load"])
+        all_frames = opts.get("all_frames", True)
+        watcher = LifecycleWatcher(
+            self, frame, waitUnitl, timeout, all_frames, self._loop
         )
         done, pending = await asyncio.wait(
             {
@@ -335,11 +340,11 @@ class FrameManager(EventEmitter):
         for child in list(frame.childFrames):
             self._removeFramesRecursively(child)
         frame._detach()
-        self._frames.pop(frame._id)
+        self._frames.pop(frame.id)
         self.emit(FrameManager.Events.FrameDetached, frame)
 
 
-@attr.dataclass(slots=True)
+@attr.dataclass(slots=True, frozen=True)
 class FrameEvents(object):
     LifeCycleEvent: str = attr.ib(default="lifecycleevent", init=False)
     Detached: str = attr.ib(default="detached", init=False)
@@ -352,7 +357,7 @@ class Frame(EventEmitter):
     Frame objects can be obtained via :attr:`simplechrome.page.Page.mainFrame`.
     """
 
-    Events: FrameEvents = FrameEvents()
+    Events: ClassVar[FrameEvents] = FrameEvents()
 
     def __init__(
         self,
@@ -470,7 +475,9 @@ class Frame(EventEmitter):
         """
         return await self._contextPromise
 
-    async def evaluateHandle(self, pageFunction: str, *args: Any, withCliAPI: bool = False) -> JSHandle:
+    async def evaluateHandle(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> JSHandle:
         """Evaluates the js-function or js-expression in the current frame retrieving the results
         as a JSHandle.
 
@@ -484,7 +491,9 @@ class Frame(EventEmitter):
             raise PageError("this frame has no context.")
         return await context.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
 
-    async def evaluate(self, pageFunction: str, *args: Any, withCliAPI: bool = False) -> Any:
+    async def evaluate(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> Any:
         """Evaluates the js-function or js-expression in the current frame retrieving the results
         of the evaluation.
 
@@ -498,7 +507,9 @@ class Frame(EventEmitter):
             raise ElementHandleError("ExecutionContext is None.")
         return await context.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
 
-    async def evaluate_expression(self, expression: str, withCliAPI: bool = False) -> Any:
+    async def evaluate_expression(
+        self, expression: str, withCliAPI: bool = False
+    ) -> Any:
         """Evaluates the js expression in the frame returning the results by value.
 
         :param str expression: The js expression to be evaluated in the main frame.
@@ -597,15 +608,37 @@ class Frame(EventEmitter):
         """.strip()
         )
 
-    async def setContent(self, html: str) -> None:
+    async def setContent(
+        self, html: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> None:
         """Set content to this page."""
         func = """function(html) {
-  document.open();
-  document.write(html);
-  document.close();
-}
-"""
+          document.open();
+          document.write(html);
+          document.close();
+        }
+        """
+        opts = merge_dict(options, kwargs)
+        timeout = opts.get("timeout", 30000)
+        waitUnitl = opts.get("waitUntil", ["load"])
+        all_frames = opts.get("all_frames", True)
         await self.evaluate(func, html)
+        watcher = LifecycleWatcher(
+            self._frameManager, self, waitUnitl, timeout, all_frames, self._loop
+        )
+        done, pending = await asyncio.wait(
+            {
+                watcher.timeoutPromise,
+                watcher.terminationPromise,
+                watcher.lifecyclePromise,
+            },
+            return_when=asyncio.FIRST_COMPLETED,
+            loop=self._loop,
+        )
+        watcher.dispose()
+        error = done.pop().result()
+        if error is not None:
+            raise error
 
     async def injectFile(self, filePath: str) -> str:
         """[Deprecated] Inject file to the frame."""
@@ -626,22 +659,31 @@ class Frame(EventEmitter):
         if context is None:
             raise ElementHandleError("ExecutionContext is None.")
 
-        addScriptUrl = """async function addScriptUrl(url) {
+        addScriptUrl = """async function addScriptUrl(url, type) {
             const script = document.createElement('script');
             script.src = url;
-            document.head.appendChild(script);
-            await new Promise((res, rej) => {
+            if (type) {
+              script.type = type;
+            }
+            const promise = new Promise((res, rej) => {
                 script.onload = res;
                 script.onerror = rej;
             });
+            document.head.appendChild(script);
+            await promise;
             return script;
         }"""
 
-        addScriptContent = """function addScriptContent(content) {
+        addScriptContent = """function addScriptContent(content, type = 'text/javascript') {
             const script = document.createElement('script');
-            script.type = 'text/javascript';
+            script.type = type;
             script.text = content;
+            let error = null;
+            script.onerror = e => error = e;
             document.head.appendChild(script);
+            if (error) {
+              throw error;
+            }
             return script;
         }"""
 
@@ -653,19 +695,29 @@ class Frame(EventEmitter):
                 raise PageError(f"Loading script from {url} failed") from e
 
         if isinstance(options.get("path"), str):
-            with open(options["path"]) as f:
-                contents = f.read()
+            async with aiofiles.open(options["path"], "r") as f:
+                contents = await f.read()
             contents = contents + "//# sourceURL={}".format(
                 options["path"].replace("\n", "")
             )
-            return (
-                await context.evaluateHandle(addScriptContent, contents)
-            ).asElement()
+            if options.get("type") is not None:
+                result = await context.evaluateHandle(
+                    addScriptContent, contents, options.get("type")
+                )
+            else:
+                result = await context.evaluateHandle(addScriptContent, contents)
+            return result.asElement()
 
         if isinstance(options.get("content"), str):
-            return (
-                await context.evaluateHandle(addScriptContent, options["content"])
-            ).asElement()
+            if options.get("type") is not None:
+                result = await context.evaluateHandle(
+                    addScriptContent, options["content"], options.get("type")
+                )
+            else:
+                result = await context.evaluateHandle(
+                    addScriptContent, options["content"]
+                )
+            return result.asElement()
 
         raise ValueError("Provide an object with a `url`, `path` or `content` property")
 
@@ -824,7 +876,7 @@ class Frame(EventEmitter):
         """
         options = merge_dict(options, kwargs)
         if isinstance(selectorOrFunctionOrTimeout, (int, float)):
-            fut: Future = asyncio.ensure_future(
+            fut = self._loop.create_task(
                 asyncio.sleep(selectorOrFunctionOrTimeout / 1000)
             )
             return fut
@@ -1027,7 +1079,7 @@ class Frame(EventEmitter):
         self._parentFrame = None
         self.remove_all_listeners(Frame.Events.LifeCycleEvent)
 
-    def _setDefaultContext(self, context: Optional[ExecutionContext]) -> None:
+    def _setDefaultContext(self, context: Optional[ExecutionContext] = None) -> None:
         if context:
             self._contextResolveCallback(context)
             for waitTask in self._waitTasks:
@@ -1044,230 +1096,15 @@ class Frame(EventEmitter):
         self._executionContext = context
 
     def _addExecutionContext(self, context: ExecutionContext) -> None:
-        if context._isDefault:
+        if context.default:
             self._setDefaultContext(context)
 
     def _removeExecutionContext(self, context: ExecutionContext) -> None:
-        if context._isDefault:
+        if context.default:
             self._setDefaultContext(None)
 
-    def __repr__(self) -> str:
+    def __str__(self) -> str:
         return f"Frame(url={self._url}, name={self._name}, detached={self._detached}, id={self._id})"
 
-
-class WaitSetupError(Exception):
-    pass
-
-
-class WaitTask(object):
-    """WaitTask class.
-
-    Instance of this class is awaitable.
-    """
-
-    def __init__(
-        self,
-        frame: Frame,
-        predicateBody: str,
-        polling: Union[str, int, float],
-        timeout: Union[float, int],
-        *args: Any,
-    ) -> None:
-        if isinstance(polling, str):
-            if polling not in ["raf", "mutation"]:
-                raise ValueError(f"Unknown polling: {polling}")
-        elif isinstance(polling, (int, float)):
-            if polling <= 0:
-                raise ValueError(f"Cannot poll with non-positive interval: {polling}")
-        else:
-            raise ValueError(f"Unknown polling option: {polling}")
-
-        self._frame: Frame = frame
-        self._polling: Union[str, int, float] = polling
-        self._timeout: Union[float, int] = timeout
-        if args or Helper.is_jsfunc(predicateBody):
-            self._predicateBody = f"return ({predicateBody})(...args)"
-        else:
-            self._predicateBody = f"return {predicateBody}"
-        self._args = args
-        self._runCount = 0
-        self._terminated = False
-        self._timeoutError = False
-        frame._waitTasks.add(self)
-
-        loop = asyncio.get_event_loop()
-        self.promise = loop.create_future()
-        if timeout:
-            self._timeoutTimer = loop.create_task(self.timeout_timer(self._timeout))
-        loop.create_task(self.rerun())
-
-    async def timeout_timer(self, to: Union[int, float]) -> None:
-        await asyncio.sleep(to / 1000)
-        self._timeoutError = True
-        self.terminate(
-            WaitTimeoutError(f"Waiting failed: timeout {to}ms exceeds.")
-        )
-
-    def __await__(self) -> Any:
-        """Make this class **awaitable**."""
-        yield from self.promise
-        return self.promise.result()
-
-    def terminate(self, error: Exception) -> None:
-        """Terminate this task."""
-        self._terminated = True
-        if self.promise and not self.promise.done():
-            self.promise.set_exception(error)
-        self._cleanup()
-
-    async def rerun(self) -> None:  # noqa: C901
-        """Start polling."""
-        runCount = self._runCount = self._runCount + 1
-        success: Optional[JSHandle] = None
-        error = None
-
-        try:
-            context = await self._frame.executionContext()
-            if context is None:
-                raise PageError("No execution context.")
-            success = await context.evaluateHandle(
-                waitForPredicatePageFunction,
-                self._predicateBody,
-                self._polling,
-                self._timeout,
-                *self._args,
-            )
-        except Exception as e:
-            error = e
-
-        if self.promise.done():
-            return
-
-        if self._terminated or runCount != self._runCount:
-            if success:
-                await success.dispose()
-            return
-
-        if (
-            error is None
-            and success
-            and (await self._frame.evaluate("s => !s", success))
-        ):
-            await success.dispose()
-            return
-
-        # page is navigated and context is destroyed.
-        # Try again in the new execution context.
-        if (
-            isinstance(error, Exception)
-            and "Execution context was destroyed" in error.args[0]
-        ):
-            return
-
-        # Try again in the new execution context.
-        if (
-            isinstance(error, Exception)
-            and "Cannot find context with specified id" in error.args[0]
-        ):
-            return
-
-        if error:
-            self.promise.set_exception(error)
-        else:
-            self.promise.set_result(success)
-
-        self._cleanup()
-
-    def _cleanup(self) -> None:
-        if self._timeout and self._timeoutTimer and not self._timeoutTimer.done():
-            self._timeoutTimer.cancel()
-        self._frame._waitTasks.remove(self)
-
-
-waitForPredicatePageFunction = """
-async function waitForPredicatePageFunction(predicateBody, polling, timeout, ...args) {
-  const predicate = new Function('...args', predicateBody);
-  let timedOut = false;
-  setTimeout(() => timedOut = true, timeout);
-  if (polling === 'raf')
-    return await pollRaf();
-  if (polling === 'mutation')
-    return await pollMutation();
-  if (typeof polling === 'number')
-    return await pollInterval(polling);
-
-  /**
-   * @return {!Promise<*>}
-   */
-  function pollMutation() {
-    const success = predicate.apply(null, args);
-    if (success)
-      return Promise.resolve(success);
-
-    let fulfill;
-    const result = new Promise(x => fulfill = x);
-    const observer = new MutationObserver(mutations => {
-      if (timedOut) {
-        observer.disconnect();
-        fulfill();
-      }
-      const success = predicate.apply(null, args);
-      if (success) {
-        observer.disconnect();
-        fulfill(success);
-      }
-    });
-    observer.observe(document, {
-      childList: true,
-      subtree: true,
-      attributes: true
-    });
-    return result;
-  }
-
-  /**
-   * @return {!Promise<*>}
-   */
-  function pollRaf() {
-    let fulfill;
-    const result = new Promise(x => fulfill = x);
-    onRaf();
-    return result;
-
-    function onRaf() {
-      if (timedOut) {
-        fulfill();
-        return;
-      }
-      const success = predicate.apply(null, args);
-      if (success)
-        fulfill(success);
-      else
-        requestAnimationFrame(onRaf);
-    }
-  }
-
-  /**
-   * @param {number} pollInterval
-   * @return {!Promise<*>}
-   */
-  function pollInterval(pollInterval) {
-    let fulfill;
-    const result = new Promise(x => fulfill = x);
-    onTimeout();
-    return result;
-
-    function onTimeout() {
-      if (timedOut) {
-        fulfill();
-        return;
-      }
-      const success = predicate.apply(null, args);
-      if (success)
-        fulfill(success);
-      else
-        setTimeout(onTimeout, pollInterval);
-    }
-  }
-}
-"""  # noqa: E501
+    def __repr__(self) -> str:
+        return self.__str__()

@@ -22,7 +22,7 @@ from .util import ensure_loop
 __all__ = ["NetworkManager", "Request", "Response", "SecurityDetails"]
 
 
-@attr.dataclass(slots=True)
+@attr.dataclass(slots=True, frozen=True)
 class NetworkEvents(object):
     Request: str = attr.ib(default="request")
     Response: str = attr.ib(default="response")
@@ -36,9 +36,7 @@ class NetworkManager(EventEmitter):
     Events: ClassVar[NetworkEvents] = NetworkEvents()
 
     def __init__(
-        self,
-        client: ClientType,
-        loop: Optional[AbstractEventLoop] = None,
+        self, client: ClientType, loop: Optional[AbstractEventLoop] = None
     ) -> None:
         """Make new NetworkManager."""
         super().__init__(loop=ensure_loop(loop))
@@ -155,7 +153,7 @@ class NetworkManager(EventEmitter):
             if self._credentials is not None:
                 username = self._credentials.get("username")
                 password = self._credentials.get("password")
-            asyncio.ensure_future(
+            self._loop.create_task(
                 self._client.send(
                     "Network.continueInterceptedRequest",
                     {
@@ -174,7 +172,7 @@ class NetworkManager(EventEmitter):
             not self._userRequestInterceptionEnabled
             and self._protocolRequestInterceptionEnabled
         ):
-            asyncio.ensure_future(
+            self._loop.create_task(
                 self._client.send(
                     "Network.continueInterceptedRequest",
                     {"interceptionId": event["interceptionId"]},
@@ -193,9 +191,7 @@ class NetworkManager(EventEmitter):
         else:
             self._requestHashToInterceptionIds.set(requestHash, event["interceptionId"])
 
-    def _onRequest(
-        self, event: Dict, interceptionId: Optional[str] = None
-    ) -> None:
+    def _onRequest(self, event: Dict, interceptionId: Optional[str] = None) -> None:
         redirectChain: List[Request] = []
         requestId = event.get("requestId")
         if event.get("redirectResponse") is not None:
@@ -768,7 +764,7 @@ def generateRequestHash(request: Dict) -> str:
             ):  # noqa: E501
                 continue
             _new_headers[header] = headerValue
-        _hash['headers'] = _new_headers
+        _hash["headers"] = _new_headers
     return json.dumps(_hash)
 
 
