@@ -1,11 +1,9 @@
-# -*- coding: utf-8 -*-
 """Network Manager module."""
 
 import asyncio
 import base64
-from asyncio import Future, AbstractEventLoop
-
 import ujson as json
+from asyncio import Future, AbstractEventLoop
 from collections import OrderedDict
 from typing import Awaitable, Dict, Optional, Union, Set, List, ClassVar
 from urllib.parse import unquote
@@ -722,7 +720,7 @@ class Response(object):
     def to_dict(self) -> Dict:
         return dict(requestId=self.requestId, **self._pres)
 
-    def __repr__(self) -> str:
+    def __str__(self) -> str:
         repr_args = []
         if self.url is not None:
             repr_args.append("url={!r}".format(self.url))
@@ -768,7 +766,7 @@ def generateRequestHash(request: Dict) -> str:
     return json.dumps(_hash)
 
 
-@attr.dataclass
+@attr.dataclass(slots=True)
 class SecurityDetails(object):
     """Class represents responses which are received by page."""
 

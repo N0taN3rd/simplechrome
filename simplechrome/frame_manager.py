@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Frame Manager module."""
 
 import asyncio
@@ -65,7 +64,7 @@ class FrameManager(EventEmitter):
         super().__init__(loop=ensure_loop(loop))
         self._client: ClientType = client
         self._frames: OrderedDict[str, Frame] = OrderedDict()
-        self._mainFrame: Optional[Frame] = None
+        self._mainFrame: Frame = None
         self._contextIdToContext: Dict[Union[str, int], ExecutionContext] = dict()
         self._emits_life: bool = False
         self._defaultNavigationTimeout: Union[int, float] = 30
@@ -89,7 +88,7 @@ class FrameManager(EventEmitter):
         )
         self._client.on("Page.lifecycleEvent", self._onLifecycleEvent)
 
-        self._handleFrameTree(frameTree)
+        self._handleFrameTree(frameTree, is_first=True)
 
     @property
     def mainFrame(self) -> "Frame":
@@ -224,11 +223,19 @@ class FrameManager(EventEmitter):
         frame._onLifecycleEvent(event["loaderId"], event["name"])
         self.emit(FrameManager.Events.LifecycleEvent, frame)
 
-    def _handleFrameTree(self, frameTree: Dict) -> None:
-        frame = frameTree["frame"]
-        if "parentId" in frame:
-            self._onFrameAttached(frame)
-        self._onFrameNavigated(frame)
+    def _handleFrameTree(self, frameTree: Dict, is_first: bool = False) -> None:
+        ft_frame = frameTree["frame"]
+        frameId: str = ft_frame.get("id", "")
+        parent_id = ft_frame.get("parentId", None)
+        self._frames[frameId] = Frame.from_cdp_frame(
+            self,
+            self._client,
+            self._frames.get(parent_id, None),
+            ft_frame,
+            loop=self._loop,
+        )
+        if is_first and parent_id is None:
+            self._mainFrame = self._frames[frameId]
         if "childFrames" not in frameTree:
             return
         for child in frameTree["childFrames"]:
@@ -240,13 +247,13 @@ class FrameManager(EventEmitter):
         if frameId in self._frames:
             return
         parentFrame = self._frames.get(parentFrameId)
-        frame = Frame(self, self._client, parentFrame, frameId)
+        frame = Frame(self, self._client, parentFrame, frameId, loop=self._loop)
         self._frames[frameId] = frame
         self.emit(self.Events.FrameAttached, frame)
 
     def _onFrameNavigated(self, eventOrFrame: Dict) -> None:
         framePayload: Dict = eventOrFrame.get("frame", eventOrFrame)
-        isMainFrame = framePayload.get("parentId") is None
+        isMainFrame = framePayload.get("parentId", None) is None
 
         if isMainFrame:
             frame = self._mainFrame
@@ -273,7 +280,7 @@ class FrameManager(EventEmitter):
                 frame._id = _id
             else:
                 # Initial main frame navigation.
-                frame = Frame(self, self._client, None, _id)
+                frame = Frame(self, self._client, None, _id, loop=self._loop)
             self._frames[_id] = frame
             self._mainFrame = frame
 
@@ -320,7 +327,7 @@ class FrameManager(EventEmitter):
             frame._addExecutionContext(context)
 
     def _onExecutionContextDestroyed(self, event: Dict) -> None:
-        executionContextId = event.get("executionContextId")
+        executionContextId: str = event.get("executionContextId")
         context = self._contextIdToContext.get(executionContextId)
         if not context:
             return
@@ -373,8 +380,8 @@ class Frame(EventEmitter):
         self._parentFrame = parentFrame
         self._url: str = ""
         self._name: str = ""
-        self._detached: bool = False
         self._id: str = frameId
+        self._detached: bool = False
         self._emits_life: bool = False
 
         self._documentPromise: Optional[ElementHandle] = None
@@ -386,7 +393,6 @@ class Frame(EventEmitter):
         self._loaderId: str = ""
         self._lifecycleEvents: Set[str] = set()
         self._childFrames: Set[Frame] = set()  # maybe list
-        self.navigations: List[str] = list()
         if self._parentFrame:
             self._parentFrame._childFrames.add(self)
 
@@ -433,6 +439,20 @@ class Frame(EventEmitter):
         """Get child frames."""
         return list(self._childFrames)
 
+    @classmethod
+    def from_cdp_frame(
+        cls,
+        frameManager: FrameManager,
+        client: ClientType,
+        parentFrame: Optional["Frame"],
+        cdp_frame: Dict[str, str],
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> "Frame":
+        frame = cls(frameManager, client, parentFrame, cdp_frame["id"], loop=loop)
+        frame._loaderId = cdp_frame.get("loaderId", "")
+        frame._url = cdp_frame.get("url", "")
+        return frame
+
     async def goto(
         self, url: str, options: Optional[Dict] = None, **kwargs: Any
     ) -> Optional["Response"]:
@@ -452,12 +472,10 @@ class Frame(EventEmitter):
 
     def navigatedWithinDocument(self, url: str) -> None:
         self._url = url
-        self.navigations.append(url)
 
     def navigated(self, framePayload: dict) -> None:
         self._name = framePayload.get("name", "")
         self._url = framePayload.get("url", "")
-        self.navigations.append(self._url)
         if self._emits_life:
             self.emit(Frame.Events.Navigated)
 
@@ -1060,7 +1078,6 @@ class Frame(EventEmitter):
         if name == "init":
             self._loaderId = loaderId
             self._lifecycleEvents.clear()
-            self.navigations.clear()
             self._at_lifecycle = "init"
         else:
             self._lifecycleEvents.add(name)
@@ -1069,7 +1086,8 @@ class Frame(EventEmitter):
             self.emit(Frame.Events.LifeCycleEvent, name)
 
     def _detach(self) -> None:
-        self.emit(Frame.Events.Detached)
+        if self._emits_life:
+            self.emit(Frame.Events.Detached)
         self.remove_all_listeners(Frame.Events.Detached)
         for waitTask in list(self._waitTasks):
             waitTask.terminate(PageError("waitForFunction failed: frame got detached."))

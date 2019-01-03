@@ -2,22 +2,23 @@
 """Page module."""
 import asyncio
 import base64
-import aiofiles
 import logging
-import mimetypes
-from typing import Any, ClassVar, Callable, Dict, List, Optional, Union, TYPE_CHECKING
-from asyncio import AbstractEventLoop, Future
-import attr
 import math
+import mimetypes
+from asyncio import AbstractEventLoop, Future, Task
+from typing import Any, ClassVar, Callable, Dict, List, Optional, Union, TYPE_CHECKING
+
+import aiofiles
+import attr
 from pyee import EventEmitter
 
-from .helper import Helper
 from .connection import ClientType, connection_from_session
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import PageError
-from .execution_context import JSHandle, ElementHandle, createJSHandle  # noqa: F401
+from .execution_context import JSHandle, ElementHandle, createJSHandle
 from .frame_manager import FrameManager, Frame
+from .helper import Helper
 from .input import Keyboard, Mouse, Touchscreen
 from .network_manager import NetworkManager, Response, Request
 from .tracing import Tracing
@@ -203,7 +204,7 @@ class Page(EventEmitter):
         return self._target
 
     @property
-    def mainFrame(self) -> Optional["Frame"]:
+    def mainFrame(self) -> Optional[Frame]:
         """Get main :class:`~simplechrome.frame_manager.Frame` of this page."""
         return self._frameManager.mainFrame
 
@@ -226,7 +227,7 @@ class Page(EventEmitter):
         return frame.url
 
     @property
-    def frames(self) -> List["Frame"]:
+    def frames(self) -> List[Frame]:
         """Get all frames of this page."""
         return list(self._frameManager.frames())
 
@@ -300,7 +301,7 @@ class Page(EventEmitter):
         if needsReload:
             await self.reload()
 
-    async def setWindowBounds(self, bounds: dict) -> None:
+    async def setWindowBounds(self, bounds: Dict) -> None:
         windowDescriptor = await self.getWindowDescriptor()
         await self._client.send(
             "Browser.setWindowBounds",
@@ -463,14 +464,16 @@ class Page(EventEmitter):
             raise PageError("no main frame.")
         return await frame.xpath(expression)
 
-    async def cookies(self, *urls: str) -> dict:
+    async def cookies(self, *urls: str) -> Dict:
         """Get cookies."""
         if not urls:
-            urls = [self.url]
-        resp = await self._client.send("Network.getCookies", {"urls": urls})
+            cookies_for_urls = [self.url]
+        else:
+            cookies_for_urls = list(urls)
+        resp = await self._client.send("Network.getCookies", {"urls": cookies_for_urls})
         return resp.get("cookies", {})
 
-    async def deleteCookie(self, *cookies: dict) -> None:
+    async def deleteCookie(self, *cookies: Dict) -> None:
         """Delete cookie."""
         pageURL = self.url
         for cookie in cookies:
@@ -479,7 +482,7 @@ class Page(EventEmitter):
                 item["url"] = pageURL
             await self._client.send("Network.deleteCookies", item)
 
-    async def setCookie(self, *cookies: dict) -> None:
+    async def setCookie(self, *cookies: Dict) -> None:
         """Set cookies."""
         pageURL = self.url
         startsWithHTTP = pageURL.startswith("http")
@@ -634,7 +637,7 @@ class Page(EventEmitter):
         urlOrPredicate: Union[str, Callable[[Request], bool]],
         options: Optional[Dict] = None,
         **kwargs: Any,
-    ):
+    ) -> Union[Future, Task]:
         timeout = merge_dict(options, kwargs).get("timeout", 30)
 
         def wrapped_predicate(req: Request) -> bool:
@@ -654,7 +657,7 @@ class Page(EventEmitter):
         urlOrPredicate: Union[str, Callable[[Response], bool]],
         options: Optional[Dict] = None,
         **kwargs: Any,
-    ):
+    ) -> Union[Future, Task]:
         timeout = merge_dict(options, kwargs).get("timeout", 30)
 
         def wrapped_predicate(res: Response) -> bool:
@@ -669,7 +672,7 @@ class Page(EventEmitter):
             timeout,
         )
 
-    async def goBack(self, options: dict = None, **kwargs: Any) -> Optional[Response]:
+    async def goBack(self, options: Dict = None, **kwargs: Any) -> Optional[Response]:
         """Navigate to the previous page in history.
 
         Available options are same as :meth:`goto` method.
@@ -678,7 +681,7 @@ class Page(EventEmitter):
         return await self._go(-1, options)
 
     async def goForward(
-        self, options: dict = None, **kwargs: Any
+        self, options: Dict = None, **kwargs: Any
     ) -> Optional[Response]:
         """Navigate to the next page in history.
 
@@ -687,7 +690,7 @@ class Page(EventEmitter):
         options = merge_dict(options, kwargs)
         return await self._go(+1, options)
 
-    async def _go(self, delta: int, options: dict) -> Optional[Response]:
+    async def _go(self, delta: int, options: Dict) -> Optional[Response]:
         history = await self._client.send("Page.getNavigationHistory")
         _count = history.get("currentIndex", 0) + delta
         entries = history.get("entries", [])
@@ -708,7 +711,7 @@ class Page(EventEmitter):
         """Bring page to front (activate tab)."""
         await self._client.send("Page.bringToFront")
 
-    async def emulate(self, options: dict = None, **kwargs: Any) -> None:
+    async def emulate(self, options: Dict = None, **kwargs: Any) -> None:
         """Emulate viewport and user agent."""
         options = merge_dict(options, kwargs)
         await self.setViewport(options.get("viewport", {}))
@@ -778,7 +781,7 @@ class Page(EventEmitter):
             identifier = dict(identifier=identifier)
         await self._client.send("Page.removeScriptToEvaluateOnNewDocument", identifier)
 
-    async def raw_screenshot(self, options: dict = None, **kwargs: Any) -> bytes:
+    async def raw_screenshot(self, options: Dict = None, **kwargs: Any) -> bytes:
         options = merge_dict(options, kwargs)
         screenshotType = None
         if "type" in options:
@@ -797,7 +800,7 @@ class Page(EventEmitter):
             screenshotType = "png"
         return await self._rawScreenshotTask(screenshotType, options)
 
-    async def screenshot(self, options: dict = None, **kwargs: Any) -> bytes:
+    async def screenshot(self, options: Dict = None, **kwargs: Any) -> bytes:
         """Take a screen shot.
 
         The following options are available:
@@ -873,7 +876,7 @@ class Page(EventEmitter):
                 )
         return await self._screenshotTask(screenshotType, options)
 
-    async def pdf(self, options: dict = None, **kwargs: Any) -> bytes:
+    async def pdf(self, options: Dict = None, **kwargs: Any) -> bytes:
         """Generate a pdf of the page.
 
         Options:
@@ -1000,7 +1003,7 @@ class Page(EventEmitter):
             )
         await conn.send("Target.closeTarget", {"targetId": self._target._targetId})
 
-    async def click(self, selector: str, options: dict = None, **kwargs: Any) -> None:
+    async def click(self, selector: str, options: Dict = None, **kwargs: Any) -> None:
         """Click element which matches ``selector``.
 
         This method fetches an element with ``selector``, scrolls it into view
@@ -1062,7 +1065,7 @@ class Page(EventEmitter):
         return await frame.select(selector, *values)
 
     async def type(
-        self, selector: str, text: str, options: dict = None, **kwargs: Any
+        self, selector: str, text: str, options: Dict = None, **kwargs: Any
     ) -> None:
         """Type ``text`` on the element which matches ``selector``.
 
@@ -1115,7 +1118,7 @@ class Page(EventEmitter):
         return frame.waitFor(selectorOrFunctionOrTimeout, options, *args, **kwargs)
 
     def waitForSelector(
-        self, selector: str, options: dict = None, **kwargs: Any
+        self, selector: str, options: Dict = None, **kwargs: Any
     ) -> Union[Future, "WaitTask"]:
         """Wait until element which matches ``selector`` appears on page.
 
@@ -1145,7 +1148,7 @@ class Page(EventEmitter):
         return frame.waitForSelector(selector, options, **kwargs)
 
     def waitForXPath(
-        self, xpath: str, options: dict = None, **kwargs: Any
+        self, xpath: str, options: Dict = None, **kwargs: Any
     ) -> Union[Future, "WaitTask"]:
         """Wait until eleemnt which matches ``xpath`` appears on page.
 
@@ -1176,7 +1179,7 @@ class Page(EventEmitter):
         return frame.waitForXPath(xpath, options, **kwargs)
 
     def waitForFunction(
-        self, pageFunction: str, options: dict = None, *args: str, **kwargs: Any
+        self, pageFunction: str, options: Dict = None, *args: str, **kwargs: Any
     ) -> Union[Future, "WaitTask"]:
         """Wait until the function completes and returns a truethy value.
 
@@ -1207,7 +1210,7 @@ class Page(EventEmitter):
         return frame.waitForFunction(pageFunction, options, *args, **kwargs)
 
     async def _screenshotTask(
-        self, format: str, options: dict
+        self, format: str, options: Dict
     ) -> bytes:  # noqa: C901,E501
         await self._client.send(
             "Target.activateTarget", {"targetId": self._target._targetId}
@@ -1268,7 +1271,7 @@ class Page(EventEmitter):
         return buffer
 
     async def _rawScreenshotTask(
-        self, format: str, options: dict
+        self, format: str, options: Dict
     ) -> bytes:  # noqa: C901,E501
         await self._client.send(
             "Target.activateTarget", {"targetId": self._target._targetId}
@@ -1377,7 +1380,7 @@ class Page(EventEmitter):
         message = Helper.getExceptionMessage(exceptionDetails)
         self.emit(Page.Events.PageError, PageError(message))
 
-    def _onConsoleAPI(self, event: dict) -> None:
+    def _onConsoleAPI(self, event: Dict) -> None:
         context = self._frameManager.executionContextById(
             event.get("executionContextId")
         )

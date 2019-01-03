@@ -4,6 +4,7 @@ from grappa import should
 from .base_test import BaseChromeTest
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestDialog(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_prompt(self):

@@ -1,6 +1,6 @@
 import asyncio
 from asyncio import AbstractEventLoop, Future, Task
-from typing import Optional, Union, Any, List, Iterable, TYPE_CHECKING
+from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
 
 from async_timeout import timeout as aio_timeout
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 __all__ = ["LifecycleWatcher"]
 
-WaitToProtocolLifecycle = {
+WaitToProtocolLifecycle: Dict[str, str] = {
     "load": "load",
     "documentloaded": "DOMContentLoaded",
     "networkidle0": "networkIdle",
@@ -84,6 +84,7 @@ class LifecycleWatcher(object):
         self._newDocumentNavigationPromise: Future = self.loop.create_future()
         self._timeoutPromise: Union[Future, Task] = self._createTimeoutPromise()
         self._terminationPromise: Future = self.loop.create_future()
+        self._checkLifecycleComplete()
 
     @property
     def timeoutPromise(self) -> Union[Future, Task]:
@@ -121,7 +122,7 @@ class LifecycleWatcher(object):
             self._newDocumentNavigationPromise,
         )
 
-    def _terminate(self, error: BaseException) -> None:
+    def _terminate(self, error: Exception) -> None:
         if not self._terminationPromise.done():
             self._terminationPromise.set_result(error)
 
@@ -192,8 +193,8 @@ class LifecycleWatcher(object):
         return True
 
     def _build_expected_lifecyle(
-        self, waitUntil: Optional[Union[List[str], str]] = None
-    ) -> None:  # noqa: C901
+        self, waitUntil: Optional[Union[Iterable[str], str]] = None
+    ) -> None:
         if isinstance(waitUntil, list):
             waitUntil = waitUntil
         elif isinstance(waitUntil, str):

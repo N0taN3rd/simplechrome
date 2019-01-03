@@ -49,10 +49,13 @@ class Tracing(object):
 
         @self.client.once("Tracing.tracingComplete")
         async def done(event: Dict) -> None:
+            stream: str = event.get("stream")
             if self._path:
-                content: bytes = await self._serialize_stream_to_file(event.get("stream"), self._path)
+                content: bytes = await self._serialize_stream_to_file(
+                    stream, self._path
+                )
             else:
-                content: bytes = await self._readStream(event.get("stream"))
+                content = await self._readStream(stream)
             contentPromise.set_result(content)
 
         return contentPromise
@@ -69,7 +72,7 @@ class Tracing(object):
                 content.append(response.get("data").encode("utf-8"))
 
         await self.client.send("IO.close", dict(handle=handle))
-        return b''.join(content)
+        return b"".join(content)
 
     async def _serialize_stream_to_file(self, handle: str, path: str) -> bytes:
         eof = False
@@ -84,4 +87,4 @@ class Tracing(object):
                     data = response.get("data").encode("utf-8")
                 content.append(data)
                 await out.write(data)
-        return b''.join(content)
+        return b"".join(content)

@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """Utitlity functions."""
-
-from asyncio import AbstractEventLoop, get_event_loop
+import asyncio
+from asyncio import AbstractEventLoop
 import gc
 import socket
 from typing import Dict, Optional, Any
 
-__all__ = ["get_free_port", "merge_dict", "ensure_loop"]
+from aiohttp import AsyncResolver, ClientSession, TCPConnector
+
+__all__ = ["get_free_port", "merge_dict", "ensure_loop", "make_aiohttp_session"]
 
 
 def get_free_port() -> int:
@@ -30,7 +32,7 @@ def merge_dict(dict1: Optional[Dict], dict2: Optional[Dict]) -> Dict[str, Any]:
 
 
 def loop_factory() -> AbstractEventLoop:
-    return get_event_loop()
+    return asyncio.get_event_loop()
 
 
 def ensure_loop(loop: Optional[AbstractEventLoop] = None) -> AbstractEventLoop:
@@ -39,4 +41,17 @@ def ensure_loop(loop: Optional[AbstractEventLoop] = None) -> AbstractEventLoop:
     """
     if loop is not None:
         return loop
-    return get_event_loop()
+    return asyncio.get_event_loop()
+
+
+def make_aiohttp_session(loop: Optional[AbstractEventLoop] = None) -> ClientSession:
+    """Creates and returns a new aiohttp.ClientSession that uses AsyncResolver
+
+    :param loop: Optional asyncio event loop to use. Defaults to asyncio.get_event_loop()
+    :return: An instance of aiohttp.ClientSession
+    """
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    return ClientSession(
+        connector=TCPConnector(resolver=AsyncResolver(loop=loop), loop=loop), loop=loop
+    )

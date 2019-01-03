@@ -1,10 +1,8 @@
-# -*- coding: utf-8 -*-
-import asyncio
-
 from cripy.errors import NetworkError
 
 __all__ = [
     "BrowserError",
+    "BrowserFetcherError",
     "ElementHandleError",
     "NetworkError",
     "PageError",
@@ -14,7 +12,7 @@ __all__ = [
     "NavigationError",
     "EvaluationError",
     "NavigationTimeoutError",
-    "WaitSetupError"
+    "WaitSetupError",
 ]
 
 
@@ -22,6 +20,10 @@ class BrowserError(Exception):  # noqa: D204
     """Exception raised from browser."""
 
     pass
+
+
+class BrowserFetcherError(Exception):
+    """Exception raised if there is a issue with downloading / querying about chromium revisions"""
 
 
 class ElementHandleError(Exception):  # noqa: D204

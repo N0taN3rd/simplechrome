@@ -17,6 +17,7 @@ from .frame_utils import attachFrame, detachFrame, dumpFrames, navigateFrame
 addElement = "tag=>document.body.appendChild(document.createElement(tag))"
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestContext(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_frame_context(self):
@@ -41,6 +42,7 @@ class TestContext(BaseChromeTest):
         a2 | should.be.equal.to(2)
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestFrameGoto(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_navigate_subframes(self):
@@ -62,6 +64,7 @@ class TestFrameGoto(BaseChromeTest):
             await navigationPromise
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestEvaluateHandle(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_evaluate_handle(self):
@@ -71,6 +74,7 @@ class TestEvaluateHandle(BaseChromeTest):
         windowHandle | should.not_be.none
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestEvaluate(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_frame_evaluate(self):
@@ -153,6 +157,7 @@ class TestEvaluate(BaseChromeTest):
         assert dict(a=1) == results
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestWaitForFunction(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_wait_for_expression(self):
@@ -277,6 +282,7 @@ class TestWaitForFunction(BaseChromeTest):
         result | should.have.index.at(0).equal.to(True)
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestWaitForSelector(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_wait_for_selector_immediate(self):
@@ -508,6 +514,7 @@ class TestWaitForSelector(BaseChromeTest):
         ) | should.be.equal.to("anything")
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestWaitForXPath(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_fancy_xpath(self):
@@ -601,6 +608,7 @@ class TestWaitForXPath(BaseChromeTest):
         ) | should.be.equal.to("some text")
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestFrames(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_frame_nested(self):

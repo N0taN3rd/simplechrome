@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Multimap module."""
 
 from collections import OrderedDict

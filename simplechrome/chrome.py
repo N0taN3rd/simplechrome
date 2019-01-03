@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import asyncio
 from asyncio import AbstractEventLoop, Future
 from subprocess import Popen
@@ -49,7 +48,7 @@ class Chrome(EventEmitter):
         self._targetInfo: Optional[Dict] = targetInfo
         browserContextId = None
         if self._targetInfo is not None:
-            browserContextId = targetInfo.get("browserContextId", None)
+            browserContextId = self._targetInfo.get("browserContextId", None)
         self._defaultContext: BrowserContext = BrowserContext(
             connection, self, browserContextId
         )
@@ -231,8 +230,8 @@ class Chrome(EventEmitter):
             raise BrowserError("target should not exist before create.")
         self._targets[targetId] = target
         if await target._initializedPromise:
-            self.emit(self.Events.TargetCreated, target)
-            context.emit(self.Events.TargetCreated, target)
+            self.emit(Chrome.Events.TargetCreated, target)
+            context.emit(Chrome.Events.TargetCreated, target)
 
     async def _targetDestroyed(self, event: dict) -> None:
         target = self._targets[event["targetId"]]
@@ -240,7 +239,7 @@ class Chrome(EventEmitter):
         del self._targets[event["targetId"]]
         target._closedCallback()
         if await target._initializedPromise:
-            self.emit(self.Events.TargetDestroyed, target)
+            self.emit(Chrome.Events.TargetDestroyed, target)
             target.browserContext.emit(Chrome.Events.TargetDestroyed, target)
 
     async def targetInfoChanged(self, event: dict) -> None:
@@ -270,7 +269,7 @@ class Chrome(EventEmitter):
         return self._connection.send("Browser.getVersion")
 
 
-@attr.dataclass(slots=True)
+@attr.dataclass(slots=True, frozen=True)
 class BrowserContextEvents(object):
     TargetCreated: str = attr.ib(default="targetcreated")
     TargetDestroyed: str = attr.ib(default="targetdestroyed")
@@ -373,4 +372,3 @@ class BrowserContext(EventEmitter):
         if cntx is not None:
             return
         await self._browser._disposeContext(cntx)
-

@@ -5,7 +5,12 @@ import time
 import pytest
 from grappa import should
 
-from simplechrome.errors import ElementHandleError, PageError, NavigationTimeoutError, EvaluationError
+from simplechrome.errors import (
+    ElementHandleError,
+    PageError,
+    NavigationTimeoutError,
+    EvaluationError,
+)
 from .base_test import BaseChromeTest
 from .frame_utils import attachFrame
 
@@ -23,6 +28,7 @@ iPhone = {
 }
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestEvaluate(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_evaluate(self):
@@ -175,6 +181,7 @@ class TestEvaluate(BaseChromeTest):
         isFive | should.be.true
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestOfflineMode(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_offline_mode(self):
@@ -198,6 +205,7 @@ class TestOfflineMode(BaseChromeTest):
         await self.page.evaluate("window.navigator.onLine") | should.be.true
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestEvaluateHandle(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_evaluate_handle(self):
@@ -205,6 +213,7 @@ class TestEvaluateHandle(BaseChromeTest):
         windowHandle | should.not_be.none
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestWaitFor(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_wait_for_selector(self):
@@ -256,6 +265,7 @@ class TestWaitFor(BaseChromeTest):
         await self.page.waitFor("(arg1, arg2) => arg1 !== arg2", {}, 1, 2)
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestConsole(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_console_event(self, ee_helper):
@@ -314,6 +324,7 @@ console.log(Promise.resolve('should not wait until resolved!'));
         msg.text | should.be.equal.to("JSHandle@object")
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestDOMContentLoaded(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_fired(self):
@@ -322,13 +333,17 @@ class TestDOMContentLoaded(BaseChromeTest):
         result | should.have.length.of(1)
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestRequest(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_request(self, ee_helper):
         requests = []
-        ee_helper.addEventListener(
-            self.page, "request", lambda req: requests.append(req)
-        )
+
+        def no_favico(req):
+            if ".ico" not in req.url:
+                requests.append(req)
+
+        ee_helper.addEventListener(self.page, "request", no_favico)
         await self.goto_test("empty.html")
         await attachFrame(self.page, "frame1", self.url + "empty.html")
         requests[0].url | should.be.equal.to(self.url + "empty.html")
@@ -339,6 +354,7 @@ class TestRequest(BaseChromeTest):
         requests[1].frame.url | should.be.equal.to(self.url + "empty.html")
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestQuerySelector(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_jeval(self):
@@ -436,6 +452,7 @@ class TestQuerySelector(BaseChromeTest):
         len(element) | should.be.equal.to(2)
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestSetContent(BaseChromeTest):
     expectedOutput = "<html><head></head><body><div>hello</div></body></html>"
 
@@ -463,6 +480,7 @@ class TestSetContent(BaseChromeTest):
         result | should.be.equal.to(doctype + self.expectedOutput)
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestUrl(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_url(self):
@@ -472,9 +490,12 @@ class TestUrl(BaseChromeTest):
         self.page.url | should.be.equal.to(self.url + "empty.html")
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestGoto(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_goto_time_out(self):
-        with pytest.raises(NavigationTimeoutError, message="Navigation Timeout Exceeded: 5 seconds exceeded"):
-            await self.goto_test('never-loads1.html', waitUntil="load", timeout=5)
-
+        with pytest.raises(
+            NavigationTimeoutError,
+            message="Navigation Timeout Exceeded: 5 seconds exceeded",
+        ):
+            await self.goto_test("never-loads1.html", waitUntil="load", timeout=5)
