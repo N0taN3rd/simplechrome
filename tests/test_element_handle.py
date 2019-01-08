@@ -5,6 +5,7 @@ from simplechrome.errors import ElementHandleError
 from .base_test import BaseChromeTest
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestBoundingBox(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_bounding_box(self):
@@ -12,7 +13,10 @@ class TestBoundingBox(BaseChromeTest):
         await self.goto_test("grid.html")
         elementHandle = await self.page.J(".box:nth-of-type(13)")
         box = await elementHandle.boundingBox()
-        box | should.be.equal.to({"x": 100, "y": 50, "width": 50, "height": 50})
+        box["x"] | should.be.above_or_equal(100)
+        box["y"] | should.be.equal.to(50)
+        box["width"] | should.be.equal.to(50)
+        box["height"] | should.be.equal.to(50)
 
     @pytest.mark.asyncio
     async def test_nested_frame(self):
@@ -23,7 +27,7 @@ class TestBoundingBox(BaseChromeTest):
         box = await elementHandle.boundingBox()
         box["x"] | should.be.equal.to(28)
         box["y"] | should.pass_function(lambda x: x == 182 or x == 28)
-        box["width"] | should.be.equal.to(264)
+        box["width"] | should.be.above_or_equal(249)
 
     @pytest.mark.asyncio
     async def test_invisible_element(self):
@@ -33,6 +37,7 @@ class TestBoundingBox(BaseChromeTest):
         await element.boundingBox() | should.be.none
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestClick(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_clik(self):
@@ -74,7 +79,9 @@ class TestClick(BaseChromeTest):
         await self.page.evaluate('btn => btn.style.display = "none"', button)
         with pytest.raises(ElementHandleError) as cm:
             await button.click()
-        str(cm.value) | should.be.equal.to("Node is either not visible or not an HTMLElement")
+        str(cm.value) | should.be.equal.to(
+            "Node is either not visible or not an HTMLElement"
+        )
 
     @pytest.mark.asyncio
     async def test_recursively_hidden_node(self):
@@ -85,7 +92,9 @@ class TestClick(BaseChromeTest):
         )
         with pytest.raises(ElementHandleError) as cm:
             await button.click()
-        str(cm.value) | should.be.equal.to("Node is either not visible or not an HTMLElement")
+        str(cm.value) | should.be.equal.to(
+            "Node is either not visible or not an HTMLElement"
+        )
 
     @pytest.mark.asyncio
     async def test_br_node(self):
@@ -93,9 +102,12 @@ class TestClick(BaseChromeTest):
         br = await self.page.J("br")
         with pytest.raises(ElementHandleError) as cm:
             await br.click()
-        str(cm.value) | should.be.equal.to("Node is either not visible or not an HTMLElement")
+        str(cm.value) | should.be.equal.to(
+            "Node is either not visible or not an HTMLElement"
+        )
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestHover(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_hover(self):
@@ -107,6 +119,7 @@ class TestHover(BaseChromeTest):
         ) | should.be.equal.to("button-6")
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestQuerySelector(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_element_handle_J(self):

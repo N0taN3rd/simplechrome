@@ -12,6 +12,7 @@ __all__ = ["EmulationManager"]
 @attr.dataclass(slots=True)
 class EmulationManager(object):
     """EmulationManager class."""
+
     _client: ClientType = attr.ib()
     _emulatingMobile: bool = attr.ib(init=False, default=False)
     _injectedTouchScriptId: Optional[str] = attr.ib(init=False, default=None)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """US Keyboard Definition."""
 from typing import Dict, Union
 

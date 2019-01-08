@@ -1,13 +1,9 @@
-dist: trusty
+dist: xenial
 language: python
-sudo: required
-addons:
-  apt:
-    packages:
-      # This is required to run new chrome on old trusty
-      - libnss3
 python:
   - "3.6"
+addons:
+  chrome: beta
 before_install:
   - "sysctl kernel.unprivileged_userns_clone=1"
   - "export DISPLAY=:99.0"

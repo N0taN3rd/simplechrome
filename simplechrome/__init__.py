@@ -1,39 +1,75 @@
-# -*- coding: utf-8 -*-
 """The simple chrome package"""
-
-from .browser_fetcher import *
-from .chrome import *
-from .connection import *
-from .dialog import *
-from .emulation_manager import *
-from .errors import *
-from .execution_context import *
-from .frame_manager import *
-from .helper import *
-from .input import *
-from .launcher import *
-from .multimap import *
-from .lifecycle_watcher import *
-from .network_manager import *
-from .page import *
-from .us_keyboard_layout import *
-from .util import *
-
-__all__ = (
-    browser_fetcher.__all__
-    + chrome.__all__
-    + dialog.__all__
-    + emulation_manager.__all__
-    + errors.__all__
-    + execution_context.__all__
-    + frame_manager.__all__
-    + helper.__all__
-    + input.__all__
-    + launcher.__all__
-    + multimap.__all__
-    + lifecycle_watcher.__all__
-    + network_manager.__all__
-    + page.__all__
-    + us_keyboard_layout.__all__
-    + util.__all__
+from .browser_fetcher import BrowserFetcher, RevisionInfo
+from .chrome import Chrome, BrowserContext
+from .connection import Connection, CDPSession, ClientType
+from .dialog import Dialog
+from .emulation_manager import EmulationManager
+from .errors import (
+    LauncherError,
+    NavigationTimeoutError,
+    BrowserError,
+    BrowserFetcherError,
+    ElementHandleError,
+    EvaluationError,
+    InputError,
+    NavigationError,
+    PageError,
+    WaitSetupError,
+    WaitTimeoutError,
+    NetworkError,
 )
+from .execution_context import ElementHandle, ExecutionContext, JSHandle
+from .frame_manager import FrameManager, Frame
+from .input import Keyboard, Mouse, Touchscreen
+from .launcher import Launcher, launch, connect
+from .lifecycle_watcher import LifecycleWatcher
+from .network_manager import NetworkManager, Request, Response, SecurityDetails
+from .page import Page, ConsoleMessage
+from .target import Target
+from .us_keyboard_layout import keyDefinitions
+
+__version__ = "1.3.4"
+
+__all__ = [
+    "BrowserContext",
+    "BrowserError",
+    "BrowserFetcher",
+    "BrowserFetcherError",
+    "CDPSession",
+    "Chrome",
+    "ClientType",
+    "connect",
+    "Connection",
+    "ConsoleMessage",
+    "Dialog",
+    "ElementHandle",
+    "ElementHandleError",
+    "EmulationManager",
+    "EvaluationError",
+    "ExecutionContext",
+    "Frame",
+    "FrameManager",
+    "InputError",
+    "JSHandle",
+    "Keyboard",
+    "keyDefinitions",
+    "launch",
+    "Launcher",
+    "LauncherError",
+    "LifecycleWatcher",
+    "Mouse",
+    "NavigationError",
+    "NavigationTimeoutError",
+    "NetworkError",
+    "NetworkManager",
+    "Page",
+    "PageError",
+    "Request",
+    "Response",
+    "RevisionInfo",
+    "SecurityDetails",
+    "Target",
+    "Touchscreen",
+    "WaitSetupError",
+    "WaitTimeoutError",
+]

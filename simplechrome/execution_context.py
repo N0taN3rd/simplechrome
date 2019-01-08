@@ -275,11 +275,14 @@ class JSHandle(object):
         """Get string representation."""
         if self._remoteObject.get("objectId"):
             _type = self._remoteObject.get("subtype") or self._remoteObject.get("type")
-            return f"JSHandle@{_type}"
-        return "JSHandle:{}".format(Helper.valueFromRemoteObject(self._remoteObject))
+            return f"{self.__class__.__name__}@{_type}"
+        return f"{self.__class__.__name__}:{Helper.valueFromRemoteObject(self._remoteObject)}"
 
-    def __repr__(self):
+    def __str__(self) -> str:
         return self.toString()
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 def computeQuadArea(quad: List[Dict[str, float]]) -> float:
@@ -676,6 +679,3 @@ class ElementHandle(JSHandle):
     }""",
             self,
         )
-
-    def __repr__(self):
-        return f"ElementHandle({self.toString()})"

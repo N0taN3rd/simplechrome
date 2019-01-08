@@ -9,6 +9,7 @@ from .base_test import BaseChromeTest
 from .frame_utils import attachFrame
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestClick(BaseChromeTest):
     get_dimensions = """
         function () {
@@ -308,6 +309,7 @@ class TestClick(BaseChromeTest):
         await frame.evaluate("result") | should.be.equal.to("Clicked")
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestFileUpload(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_file_upload(self):
@@ -329,6 +331,7 @@ class TestFileUpload(BaseChromeTest):
         results | should.be.equal.to("contents of the file\n")
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestType(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_key_type(self):

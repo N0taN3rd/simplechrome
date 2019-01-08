@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Helper functions."""
 import asyncio
 import ujson
@@ -42,9 +41,7 @@ class Helper(object):
         """Get exception message from `exceptionDetails` object."""
         exception = exceptionDetails.get("exception")
         if exception is not None:
-            return exception.get(
-                "description", exception.get("value", "")
-            )  # type: ignore
+            return exception.get("description", exception.get("value", ""))
         message = exceptionDetails.get("text", "")
         stackTrace = exceptionDetails.get("stackTrace")
         if stackTrace is not None:
@@ -72,9 +69,9 @@ class Helper(object):
     def removeEventListeners(listeners: List[EEListener]) -> None:
         """Remove listeners from emitter."""
         for listener in listeners:
-            emitter = listener["emitter"]
-            eventName = listener["eventName"]
-            handler = listener["handler"]
+            emitter: EventEmitter = listener["emitter"]
+            eventName: str = listener["eventName"]
+            handler: Callable = listener["handler"]
             emitter.remove_listener(eventName, handler)
         listeners.clear()
 
@@ -166,7 +163,7 @@ class Helper(object):
             if predicate(event) and not promise.done():
                 promise.set_result(None)
 
-        def clean_up(*args, **kwargs) -> None:
+        def clean_up(*args: Any, **kwargs: Any) -> None:
             emitter.remove_listener(eventName, listener)
 
         if timeout is not None:

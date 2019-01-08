@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Keyboard and Mouse module."""
 
 import asyncio
@@ -39,14 +38,14 @@ class Keyboard(object):
         :arg dict options: Option can have ``text`` field, and if this option
             spedified, generate an input event with this text.
         """
-        options = merge_dict(options, kwargs)
+        opts = merge_dict(options, kwargs)
 
-        description = self._keyDescriptionForString(key)
+        description: Dict[str, Union[str, int]] = self._keyDescriptionForString(key)
         autoRepeat = description["code"] in self.pressedKeys
         self.pressedKeys.add(description["code"])
         self.modifiers |= self._modifierBit(description["key"])
 
-        text = options.get("text")
+        text = opts.get("text")
         if text is None:
             text = description["text"]
 
@@ -81,7 +80,13 @@ class Keyboard(object):
         self, keyString: str
     ) -> Dict[str, Union[str, int]]:  # noqa: C901
         shift = self.modifiers & 8
-        description = {"key": "", "keyCode": 0, "code": "", "text": "", "location": 0}
+        description: Dict[str, Union[str, int]] = {
+            "key": "",
+            "keyCode": 0,
+            "code": "",
+            "text": "",
+            "location": 0,
+        }
 
         definition = keyDefinitions.get(keyString)
         if not definition:
@@ -168,8 +173,8 @@ class Keyboard(object):
           specifies time to wait between key presses in milliseconds. Defaults
           to 0.
         """
-        options = merge_dict(options, kwargs)
-        delay = options.get("delay", 0)
+        opts = merge_dict(options, kwargs)
+        delay = opts.get("delay", 0)
         for char in text:
             if char in keyDefinitions:
                 await self.press(char, {"delay": delay})
@@ -199,9 +204,9 @@ class Keyboard(object):
         """
         opts = merge_dict(options, kwargs)
 
-        await self.down(key, options)
+        await self.down(key, opts)
         if "delay" in opts:
-            await asyncio.sleep(options["delay"])
+            await asyncio.sleep(opts["delay"])
         await self.up(key)
 
 
@@ -223,12 +228,12 @@ class Mouse(object):
         Options can accepts ``steps`` (int) field. If this ``steps`` option
         specified, Sends intermediate ``mousemove`` events. Defaults to 1.
         """
-        options = merge_dict(options, kwargs)
+        opts = merge_dict(options, kwargs)
         fromX = self._x
         fromY = self._y
         self._x = x
         self._y = y
-        steps = options.get("steps", 1)
+        steps = opts.get("steps", 1)
         for i in range(1, steps + 1):
             x = round(fromX + (self._x - fromX) * (i / steps))
             y = round(fromY + (self._y - fromY) * (i / steps))
@@ -258,11 +263,11 @@ class Mouse(object):
         * ``delay`` (int|float): Time to wait between ``mousedown`` and
           ``mouseup`` in milliseconds. Defaults to 0.
         """
-        options = merge_dict(options, kwargs)
+        opts = merge_dict(options, kwargs)
         await self.move(x, y)
-        await self.down(options)
-        if options and options.get("delay"):
-            await asyncio.sleep(options.get("delay", 0))
+        await self.down(opts)
+        if opts.get("delay"):
+            await asyncio.sleep(opts.get("delay", 0))
         await self.up(options)
 
     async def down(self, options: dict = None, **kwargs: Any) -> None:
@@ -274,8 +279,8 @@ class Mouse(object):
           ``left``.
         * ``clickCount`` (int): defaults to 1.
         """
-        options = merge_dict(options, kwargs)
-        self._button = options.get("button", "left")
+        opts = merge_dict(options, kwargs)
+        self._button = opts.get("button", "left")
         await self.client.send(
             "Input.dispatchMouseEvent",
             {
@@ -284,7 +289,7 @@ class Mouse(object):
                 "x": self._x,
                 "y": self._y,
                 "modifiers": self.keyboard.modifiers,
-                "clickCount": options.get("clickCount") or 1,
+                "clickCount": opts.get("clickCount") or 1,
             },
         )
 
@@ -297,17 +302,17 @@ class Mouse(object):
           ``left``.
         * ``clickCount`` (int): defaults to 1.
         """
-        options = merge_dict(options, kwargs)
+        opts = merge_dict(options, kwargs)
         self._button = "none"
         await self.client.send(
             "Input.dispatchMouseEvent",
             {
                 "type": "mouseReleased",
-                "button": options.get("button", "left"),
+                "button": opts.get("button", "left"),
                 "x": self._x,
                 "y": self._y,
                 "modifiers": self.keyboard.modifiers,
-                "clickCount": options.get("clickCount") or 1,
+                "clickCount": opts.get("clickCount") or 1,
             },
         )
 

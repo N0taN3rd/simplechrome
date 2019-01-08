@@ -5,6 +5,7 @@ from simplechrome.errors import ElementHandleError, NetworkError
 from .base_test import BaseChromeTest
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestQueryObject(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_query_objects(self):
@@ -37,6 +38,7 @@ class TestQueryObject(BaseChromeTest):
             await self.page.queryObjects(prototypeHandle)
 
 
+@pytest.mark.usefixtures("test_server_url", "chrome_page")
 class TestJSHandle(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_get_property(self):

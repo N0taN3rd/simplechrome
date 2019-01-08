@@ -1,6 +1,5 @@
-# -*- coding: utf-8 -*-
 """Dialog module."""
-from typing import ClassVar, Union
+from typing import ClassVar
 
 import attr
 

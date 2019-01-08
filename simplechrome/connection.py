@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from asyncio import AbstractEventLoop
 from typing import Optional, Union
 
@@ -20,7 +19,9 @@ ClientType = Union[ConnectionType, SessionType]
 async def createForWebSocket(
     url: str, loop: Optional[AbstractEventLoop] = None
 ) -> Connection:
-    return await Connection(url, loop=loop)
+    conn = Connection(url, loop=loop)
+    await conn.connect()
+    return conn
 
 
 def connection_from_session(connection: ClientType) -> ConnectionType:
