@@ -27,7 +27,7 @@ def get_requirements():
     return reqs
 
 
-test_requirements = ["pytest", "pytest-asyncio", "psutil", "grappa", "vibora", "uvloop"]
+test_requirements = ["pytest", "pytest-asyncio", "psutil", "grappa", "sanic", "uvloop"]
 
 setup(
     name="simplechrome",

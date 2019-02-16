@@ -1,18 +1,15 @@
 """Multimap module."""
-
 from collections import OrderedDict
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Dict
+import attr
 
 __all__ = ["Multimap"]
 
 
-class Multimap(object):
+@attr.dataclass(slots=True, cmp=False, hash=False)
+class Multimap:
     """Multimap class."""
-
-    def __init__(self) -> None:
-        """Make new multimap."""
-        # maybe defaultdict(set) is better
-        self._map: OrderedDict[Optional[str], List[Any]] = OrderedDict()
+    _map: Dict[Optional[str], List[Any]] = attr.ib(init=False, factory=OrderedDict)
 
     def set(self, key: Optional[str], value: Any) -> None:
         """Set value."""

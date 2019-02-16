@@ -1,64 +1,45 @@
-import os
-
 import pytest
-from cripy.errors import NetworkError
+from cripy.errors import NetworkError, ProtocolError
 from grappa import should
 
-from simplechrome.launcher import connect, launch
+from simplechrome.chrome import Chrome
+from simplechrome.launcher import connect
 from .base_test import BaseChromeTest
 
 
 class TestConnection(object):
     @pytest.mark.asyncio
-    async def test_connect(self):
-        if os.environ.get("INTRAVIS", None) is not None:
-            browser = await launch(
-                executablePath="google-chrome-beta",
-                headless=False
-            )
-        else:
-            browser = await launch()
-        browser2 = await connect(browserWSEndpoint=browser.wsEndpoint)
-        page = await browser2.newPage()
-        result = await page.evaluate("() => 7 * 8")
-        result | should.be.a(int).that.should.be.equal.to(56)
-        await browser2.disconnect()
-        page2 = await browser.newPage()
-        result = await page2.evaluate("() => 7 * 6")
-        result | should.be.a(int).that.should.be.equal.to(42)
-        await browser.close()
+    async def test_connect(self, one_off_chrome: Chrome):
+        browser2 = None
+        try:
+            browser2 = await connect(browserWSEndpoint=one_off_chrome.wsEndpoint)
+            page = await browser2.newPage()
+            result = await page.evaluate("() => 7 * 8")
+            result | should.be.a(int).that.should.be.equal.to(56)
+            await browser2.disconnect()
+            page2 = await one_off_chrome.newPage()
+            result = await page2.evaluate("() => 7 * 6")
+            result | should.be.a(int).that.should.be.equal.to(42)
+        finally:
+            if browser2 is not None:
+                await browser2.close()
 
     @pytest.mark.asyncio
-    async def test_reconnect(self, travis_project_root):
-        if os.environ.get("INTRAVIS", None) is not None:
-            browser = await launch(
-                executablePath="google-chrome-beta",
-                headless=False
-            )
-        else:
-            browser = await launch()
-        browserWSEndpoint = browser.wsEndpoint
-        await browser.disconnect()
+    async def test_reconnect(self, one_off_chrome: Chrome):
+        browserWSEndpoint = one_off_chrome.wsEndpoint
+        await one_off_chrome.disconnect()
         browser2 = await connect(browserWSEndpoint=browserWSEndpoint)
         page = await browser2.newPage()
         with should(await page.evaluate("() => 7 * 8")):
             should.be.a(int).that.should.be.equal.to(56)
         await browser2.disconnect()
-        await browser.close()
 
     @pytest.mark.asyncio
     async def test_connection_raises_error_on_invalid_command(
-        self, travis_project_root
+        self, one_off_chrome: Chrome
     ):
-        if os.environ.get("INTRAVIS", None) is not None:
-            chrome = await launch(
-                executablePath="google-chrome-beta",
-                headless=False
-            )
-        else:
-            chrome = await launch()
-        page = await chrome.newPage()
-        with pytest.raises(NetworkError) as ne:
+        page = await one_off_chrome.newPage()
+        with pytest.raises(ProtocolError) as ne:
             await page._client.send("Bogus.command")
         str(ne.value) | should.start_with(
             "Protocol Error (Bogus.command): 'Bogus.command' wasn't found"
@@ -69,7 +50,7 @@ class TestConnection(object):
 class TestCDPSession(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_create_session(self):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createSession()
         await client.send("Runtime.enable")
         await client.send("Runtime.evaluate", {"expression": 'window.foo = "bar"'})
         try:
@@ -79,7 +60,7 @@ class TestCDPSession(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_send_event(self, ee_helper):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createSession()
         await client.send("Network.enable")
         events = []
         ee_helper.addEventListener(
@@ -93,7 +74,7 @@ class TestCDPSession(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_enable_disable_domain(self):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createSession()
         await client.send("Runtime.enable")
         await client.send("Runtime.disable")
         res = await client.send(
@@ -105,7 +86,7 @@ class TestCDPSession(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_detach(self):
-        client = await self.page.target.createCDPSession()
+        client = await self.page.target.createSession()
         await client.send("Runtime.enable")
         evalResponse = await client.send(
             "Runtime.evaluate", {"expression": "1 + 2", "returnByValue": True}

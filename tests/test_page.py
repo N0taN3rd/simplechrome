@@ -5,14 +5,10 @@ import time
 import pytest
 from grappa import should
 
-from simplechrome.errors import (
-    ElementHandleError,
-    PageError,
-    NavigationTimeoutError,
-    EvaluationError,
-)
+from simplechrome.errors import NavigationTimeoutError, EvaluationError
+from simplechrome.events import Events
 from .base_test import BaseChromeTest
-from .frame_utils import attachFrame
+from .utils import TestUtil
 
 iPhone = {
     "name": "iPhone 6",
@@ -29,7 +25,9 @@ iPhone = {
 
 
 @pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestEvaluate(BaseChromeTest):
+class TestPage(BaseChromeTest):
+    expectedOutput = "<html><head></head><body><div>hello</div></body></html>"
+
     @pytest.mark.asyncio
     async def test_evaluate(self):
         await self.goto_empty(waitUntil="load")
@@ -47,12 +45,11 @@ class TestEvaluate(BaseChromeTest):
         frameEvaluation = asyncio.get_event_loop().create_future()
 
         async def evaluate_frame(frame):
-            frameEvaluation.set_result(await frame.evaluate("() => 6 * 7"))
+            result = await frame.evaluate("() => 6 * 7")
+            frameEvaluation.set_result(result)
 
         ee_helper.addEventListener(
-            self.page,
-            "framenavigated",
-            lambda frame: asyncio.ensure_future(evaluate_frame(frame)),
+            self.page, Events.Page.FrameNavigated, evaluate_frame
         )
 
         await self.goto_test("empty.html")
@@ -115,7 +112,7 @@ class TestEvaluate(BaseChromeTest):
     async def test_fail_window_object(self):
         await self.goto_empty(waitUntil="load")
         result = await self.page.evaluate("() => window")
-        result | should.be.none
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_accept_string(self):
@@ -145,21 +142,23 @@ class TestEvaluate(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_element_handle_disposed(self):
-        await self.goto_empty(waitUntil="load")
+        await self.reset_and_goto_empty(waitUntil="load")
         await self.page.setContent("<section>39</section>")
         element = await self.page.J("section")
         element | should.not_be.none
         await element.dispose()
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(Exception) as cm:
             await self.page.evaluate("(e) => e.textContent", element)
         str(cm.value) | should.be.equal.to("JSHandle is disposed!")
 
     @pytest.mark.asyncio
     async def test_element_handle_from_other_frame(self):
         await self.goto_empty(waitUntil="load")
-        await attachFrame(self.page, "frame1", self.url + "empty.html")
+        await TestUtil.attachFrame(
+            self.page, "frame1", self.full_test_url("empty.html")
+        )
         body = await self.page.frames[1].J("body")
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(Exception) as cm:
             await self.page.evaluate("body => body.innerHTML", body)
         str(cm.value) | should.be.equal.to(
             "JSHandles can be evaluated only in the context they were created!"
@@ -180,9 +179,6 @@ class TestEvaluate(BaseChromeTest):
         isFive = await self.page.evaluate("(e) => Object.is(e, 5)", aHandle)
         isFive | should.be.true
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestOfflineMode(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_offline_mode(self):
         await self.page.setOfflineMode(True)
@@ -204,39 +200,15 @@ class TestOfflineMode(BaseChromeTest):
         await self.page.setOfflineMode(False)
         await self.page.evaluate("window.navigator.onLine") | should.be.true
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestEvaluateHandle(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_evaluate_handle(self):
         windowHandle = await self.page.evaluateHandle("() => window")
         windowHandle | should.not_be.none
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestWaitFor(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_wait_for_selector(self):
-        result = []
-        fut = asyncio.ensure_future(self.page.waitFor("div"))
-        fut.add_done_callback(lambda f: result.append(True))
-        await self.goto_test("empty.html")
-        result | should.have.length.of(0)
         await self.goto_test("grid.html")
-        await fut
-        result | should.have.length.of(1)
-        await self.goto_test("empty.html")
-
-    @pytest.mark.asyncio
-    async def test_wait_for_xpath(self):
-        result = []
-        waitFor = asyncio.ensure_future(self.page.waitFor("//div"))
-        waitFor.add_done_callback(lambda fut: result.append(True))
-        await self.goto_test("empty.html")
-        result | should.have.length.of(0)
-        await self.goto_test("grid.html")
-        await waitFor
-        result | should.have.length.of(1)
+        assert await self.page.waitFor("div") is not None
 
     @pytest.mark.asyncio
     async def test_single_slash_fail(self):
@@ -248,7 +220,7 @@ class TestWaitFor(BaseChromeTest):
     async def test_wait_for_timeout(self):
         result = []
         start_time = time.perf_counter()
-        fut = asyncio.ensure_future(self.page.waitFor(100))
+        fut = asyncio.ensure_future(self.page.waitFor(1.5))
         fut.add_done_callback(lambda f: result.append(True))
         await fut
         time.perf_counter() - start_time | should.be.above(0.01)
@@ -264,13 +236,12 @@ class TestWaitFor(BaseChromeTest):
     async def test_wait_for_func_with_args(self):
         await self.page.waitFor("(arg1, arg2) => arg1 !== arg2", {}, 1, 2)
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestConsole(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_console_event(self, ee_helper):
         messages = []
-        ee_helper.addEventListener(self.page, "console", lambda m: messages.append(m))
+        ee_helper.addEventListener(
+            self.page, Events.Page.Console, lambda m: messages.append(m)
+        )
         await self.page.evaluate('() => console.log("hello", 5, {foo: "bar"})')
         await asyncio.sleep(0.01)
         len(messages) | should.be.equal.to(1)
@@ -285,7 +256,9 @@ class TestConsole(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_console_event_many(self, ee_helper):
         messages = []
-        ee_helper.addEventListener(self.page, "console", lambda m: messages.append(m))
+        ee_helper.addEventListener(
+            self.page, Events.Page.Console, lambda m: messages.append(m)
+        )
         await self.page.evaluate(
             """
 // A pair of time/timeEnd generates only one Console API call.
@@ -316,25 +289,20 @@ console.log(Promise.resolve('should not wait until resolved!'));
     @pytest.mark.asyncio
     async def test_console_window(self):
         messages = []
-        self.page.once("console", lambda m: messages.append(m))
+        self.page.once(Events.Page.Console, lambda m: messages.append(m))
         await self.page.evaluate("console.error(window);")
         await asyncio.sleep(0.1)
         len(messages) | should.be.equal.to(1)
         msg = messages[0]
         msg.text | should.be.equal.to("JSHandle@object")
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestDOMContentLoaded(BaseChromeTest):
     @pytest.mark.asyncio
-    async def test_fired(self):
+    async def test_DOMContentLoaded_fired(self):
         result = []
-        self.page.once("domcontentloaded", result.append(True))
+        self.page.once(Events.Page.DOMContentLoaded, lambda: result.append(True))
+        await self.goto_test("button.html", waitUntil="load")
         result | should.have.length.of(1)
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestRequest(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_request(self, ee_helper):
         requests = []
@@ -343,61 +311,59 @@ class TestRequest(BaseChromeTest):
             if ".ico" not in req.url:
                 requests.append(req)
 
-        ee_helper.addEventListener(self.page, "request", no_favico)
+        ee_helper.addEventListener(self.page, Events.Page.Request, no_favico)
+        empty_url = self.full_test_url("empty.html")
         await self.goto_test("empty.html")
-        await attachFrame(self.page, "frame1", self.url + "empty.html")
-        requests[0].url | should.be.equal.to(self.url + "empty.html")
+        await TestUtil.attachFrame(self.page, "frame1", empty_url)
+        requests[0].url | should.be.equal.to(empty_url)
         requests[0].frame | should.be.equal.to(self.page.mainFrame)
-        requests[0].frame.url | should.be.equal.to(self.url + "empty.html")
-        requests[1].url | should.be.equal.to(self.url + "empty.html")
+        requests[0].frame.url | should.be.equal.to(empty_url)
+        requests[1].url | should.be.equal.to(empty_url)
         requests[1].frame | should.be.equal.to(self.page.frames[1])
-        requests[1].frame.url | should.be.equal.to(self.url + "empty.html")
+        requests[1].frame.url | should.be.equal.to(empty_url)
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestQuerySelector(BaseChromeTest):
     @pytest.mark.asyncio
-    async def test_jeval(self):
+    async def test_querySelectorEval(self):
         await self.goto_test("empty.html")
         await self.page.setContent('<section id="testAttribute">43543</section>')
-        idAttribute = await self.page.Jeval("section", "e => e.id")
+        idAttribute = await self.page.querySelectorEval("section", "e => e.id")
         idAttribute | should.be.equal.to("testAttribute")
 
     @pytest.mark.asyncio
-    async def test_jeval_argument(self):
+    async def test_querySelectorEval_argument(self):
         await self.goto_test("empty.html")
         await self.page.setContent("<section>hello</section>")
-        text = await self.page.Jeval(
+        text = await self.page.querySelectorEval(
             "section", "(e, suffix) => e.textContent + suffix", " world!"
         )
         text | should.be.equal.to("hello world!")
 
     @pytest.mark.asyncio
-    async def test_jeval_argument_element(self):
+    async def test_querySelectorEval_argument_element(self):
         await self.goto_test("empty.html")
         await self.page.setContent("<section>hello</section><div> world</div>")
-        divHandle = await self.page.J("div")
-        text = await self.page.Jeval(
+        divHandle = await self.page.querySelector("div")
+        text = await self.page.querySelectorEval(
             "section", "(e, div) => e.textContent + div.textContent", divHandle
         )
         text | should.be.equal.to("hello world")
 
     @pytest.mark.asyncio
-    async def test_jeval_not_found(self):
+    async def test_querySelectorEval_not_found(self):
         await self.goto_test("empty.html")
-        with pytest.raises(PageError) as cm:
+        with pytest.raises(Exception) as cm:
             await self.page.Jeval("section", "e => e.id")
         str(cm.value) | should.be.equal.to(
             'Error: failed to find element matching selector "section"'
         )
 
     @pytest.mark.asyncio
-    async def test_JJeval(self):
+    async def test_querySelectorAllEval(self):
         await self.goto_empty(waitUntil="load")
         await self.page.setContent(
             "<div>hello</div><div>beautiful</div><div>world</div>"
         )
-        divsCount = await self.page.JJeval("div", "divs => divs.length")
+        divsCount = await self.page.querySelectorAllEval("div", "divs => divs.length")
         divsCount | should.be.equal.to(3)
 
     @pytest.mark.asyncio
@@ -451,26 +417,21 @@ class TestQuerySelector(BaseChromeTest):
         element = await self.page.xpath("/html/body/div")
         len(element) | should.be.equal.to(2)
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestSetContent(BaseChromeTest):
-    expectedOutput = "<html><head></head><body><div>hello</div></body></html>"
-
     @pytest.mark.asyncio
-    async def test_set_content(self):
+    async def test_setContent(self):
         await self.page.setContent("<div>hello</div>")
         result = await self.page.content()
         result | should.be.equal.to(self.expectedOutput)
 
     @pytest.mark.asyncio
-    async def test_with_doctype(self):
+    async def test_setContent_with_doctype(self):
         doctype = "<!DOCTYPE html>"
         await self.page.setContent(doctype + "<div>hello</div>")
         result = await self.page.content()
         result | should.be.equal.to(doctype + self.expectedOutput)
 
     @pytest.mark.asyncio
-    async def test_with_html4_doctype(self):
+    async def test_setContent_with_html4_doctype(self):
         doctype = (
             '<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" '
             '"http://www.w3.org/TR/html4/strict.dtd">'
@@ -479,23 +440,17 @@ class TestSetContent(BaseChromeTest):
         result = await self.page.content()
         result | should.be.equal.to(doctype + self.expectedOutput)
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestUrl(BaseChromeTest):
     @pytest.mark.asyncio
-    async def test_url(self):
+    async def test_page_url(self):
         await self.page.goto("about:blank")
         self.page.url | should.be.equal.to("about:blank")
         await self.goto_test("empty.html")
-        self.page.url | should.be.equal.to(self.url + "empty.html")
+        self.page.url | should.be.equal.to(self.full_test_url("empty.html"))
 
-
-@pytest.mark.usefixtures("test_server_url", "chrome_page")
-class TestGoto(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_goto_time_out(self):
         with pytest.raises(
             NavigationTimeoutError,
-            message="Navigation Timeout Exceeded: 5 seconds exceeded",
+            match="Navigation Timeout Exceeded: 3 seconds exceeded",
         ):
-            await self.goto_test("never-loads1.html", waitUntil="load", timeout=5)
+            await self.goto_never_loads(waitUntil="load", timeout=3)

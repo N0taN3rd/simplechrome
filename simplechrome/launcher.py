@@ -9,7 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
-from asyncio import AbstractEventLoop
+from asyncio import AbstractEventLoop, sleep as aio_sleep
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Any, Dict, List, Optional, Union
@@ -24,11 +24,10 @@ from .chrome import Chrome
 from .connection import Connection, createForWebSocket
 from .errors import LauncherError
 from .helper import Helper
-from .util import merge_dict, make_aiohttp_session
 
 __all__ = ["Launcher", "launch", "connect", "DEFAULT_ARGS"]
 
-DEFAULT_CHROMIUM_REVISION: str = "615489"
+DEFAULT_CHROMIUM_REVISION: str = "630727"
 CHROMIUM_REVISION: str = os.getenv(
     "SIMPLECHROME_CHROMIUM_REVISION", DEFAULT_CHROMIUM_REVISION
 )
@@ -43,27 +42,28 @@ logger = logging.getLogger(__name__)
 DEFAULT_ARGS = [
     "--disable-background-networking",
     "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-ipc-flooding-protection",
+    "--enable-features=NetworkService,NetworkServiceInProcess",
     "--disable-client-side-phishing-detection",
     "--disable-default-apps",
     "--disable-extensions",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-ipc-flooding-protection",
     "--disable-popup-blocking",
     "--disable-hang-monitor",
     "--disable-prompt-on-repost",
     "--disable-sync",
-    "--disable-translate",
     "--disable-domain-reliability",
-    "--disable-renderer-backgrounding",
     "--disable-infobars",
-    "--disable-translate",
-    "--disable-features=site-per-process",
+    "--disable-features=site-per-process,TranslateUI,LazyFrameLoading",
     "--disable-breakpad",
+    "--disable-backing-store-limit",
     "--metrics-recording-only",
     "--no-first-run",
     "--safebrowsing-disable-auto-update",
     "--mute-audio",
     "--autoplay-policy=no-user-gesture-required",
+    "--enable-automation",
 ]
 
 Options = Dict[str, Union[int, str, bool, List[str]]]
@@ -85,17 +85,17 @@ async def ensureInitialPage(browser: Chrome) -> None:
 
 
 async def get_ws_endpoint(url: str, loop: Optional[AbstractEventLoop] = None) -> str:
-    if loop is None:
-        loop = asyncio.get_event_loop()
+    loop_ = Helper.ensure_loop(loop)
     data: Optional[List[Dict[str, str]]] = None
-    async with make_aiohttp_session(loop=loop) as session:
+    async with Helper.make_aiohttp_session(loop=loop_) as session:
+        session_get = session.get
         for _ in range(100):
             try:
-                res = await session.get(urljoin(url, "json"))
-                data = await res.json()
+                async with session_get(urljoin(url, "json")) as res:
+                    data = await res.json()
                 break
             except ClientConnectorError:
-                await asyncio.sleep(0.1, loop=loop)
+                await aio_sleep(0.1, loop=loop_)
                 continue
         else:
             # cannot connet to browser for 10 seconds
@@ -108,17 +108,17 @@ async def get_ws_endpoint(url: str, loop: Optional[AbstractEventLoop] = None) ->
 
 
 async def find_target(url: str, loop: Optional[AbstractEventLoop] = None) -> Dict:
-    if loop is None:
-        loop = asyncio.get_event_loop()
+    loop_ = Helper.ensure_loop(loop)
     data: Optional[List[Dict[str, str]]] = None
-    async with make_aiohttp_session(loop=loop) as session:
+    async with Helper.make_aiohttp_session(loop=loop_) as session:
+        session_get = session.get
         for _ in range(150):
             try:
-                res = await session.get(urljoin(url, "json"))
-                data = await res.json()
+                async with session_get(urljoin(url, "json")) as res:
+                    data = await res.json()
                 break
             except ClientConnectorError:
-                await asyncio.sleep(0.1, loop=loop)
+                await aio_sleep(0.1, loop=loop_)
                 continue
         else:
             # cannot connet to browser for 10 seconds
@@ -134,6 +134,25 @@ async def find_target(url: str, loop: Optional[AbstractEventLoop] = None) -> Dic
 class Launcher(object):
     projectRoot: str = attr.ib(default=SIMPLECHROME_HOME)
     preferredRevision: str = attr.ib(default=CHROMIUM_REVISION)
+    chrome_dead: bool = attr.ib(default=False, init=False)
+
+    def default_args(self, opts: Dict) -> List[str]:
+        chromeArgs: List[str] = list(DEFAULT_ARGS)
+        udata = opts.get("userDataDir", None)
+        devtools = opts.get("devtools", False)
+        headless = opts.get("headless", not devtools)
+        if udata:
+            chromeArgs.append(f"--user-data-dir={udata}")
+        if devtools:
+            chromeArgs.append("--auto-open-devtools-for-tabs")
+        if headless:
+            chromeArgs.append("--headless")
+            chromeArgs.append("--hide-scrollbars")
+            if sys.platform.startswith("win"):
+                chromeArgs.append("--disable-gpu")
+        supplied_chrome_args = opts.get("args", [])
+        chromeArgs.extend(supplied_chrome_args)
+        return chromeArgs
 
     async def launch(
         self,
@@ -141,24 +160,22 @@ class Launcher(object):
         loop: Optional[AbstractEventLoop] = None,
         **kwargs: Any,
     ) -> Chrome:
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        opts: Dict = merge_dict(options, kwargs)
+        loop_ = Helper.ensure_loop(loop)
+        opts = Helper.merge_dict(options, kwargs)
         ignoreDefaultArgs = opts.get("ignoreDefaultArgs", False)
         chromeArguments = []
         if not ignoreDefaultArgs:
-            chromeArguments.extend(self.defaultArgs(opts))
+            chromeArguments.extend(self.default_args(opts))
         elif isinstance(ignoreDefaultArgs, list):
             chromeArguments.extend(
-                [arg for arg in self.defaultArgs(opts) if arg not in ignoreDefaultArgs]
+                [arg for arg in self.default_args(opts) if arg not in ignoreDefaultArgs]
             )
         else:
             chromeArguments.extend(opts.get("args", []))
 
-        if "executablePath" in opts:
-            executable = opts["executablePath"]
-        else:
-            executable = await self.resolveExecutablePath(opts, loop=loop)
+        executable = opts.get("executablePath", None)
+        if executable is None:
+            executable = await self.resolveExecutablePath(opts, loop=loop_)
 
         port = opts.get("port", "9222")
         if not self._args_include(chromeArguments, "--remote-debugging-"):
@@ -176,8 +193,6 @@ class Launcher(object):
         if not self._includes_starting_page(chromeArguments):
             chromeArguments.append("about:blank")
 
-        chrome_dead = False
-
         chrome_process: subprocess.Popen = subprocess.Popen(
             [executable] + chromeArguments,
             stdout=subprocess.DEVNULL,
@@ -185,34 +200,38 @@ class Launcher(object):
         )
 
         def kill_chrome(*args: Any, **kwargs: Any) -> None:
-            nonlocal chrome_dead
-            if chrome_dead:
-                return
-            try:
-                chrome_process.kill()
-                chrome_process.wait()
-            except Exception:
-                pass
-            chrome_dead = True
             try:
                 if temp_udata is not None and os.path.exists(temp_udata):
                     shutil.rmtree(temp_udata)
             except Exception:
                 pass
+            if self.chrome_dead:
+                return
+            try:
+                chrome_process.kill()
+            except Exception:
+                pass
+            try:
+                chrome_process.wait()
+            except Exception:
+                pass
+            self.chrome_dead = True
 
         atexit.register(kill_chrome)
 
         if opts.get("handleSIGINT", True):
-            loop.add_signal_handler(signal.SIGINT, kill_chrome)
+            loop_.add_signal_handler(signal.SIGINT, kill_chrome)
         if opts.get("handleSIGTERM", True):
-            loop.add_signal_handler(signal.SIGTERM, kill_chrome)
+            loop_.add_signal_handler(signal.SIGTERM, kill_chrome)
         if opts.get("handleSIGHUP", True):
-            loop.add_signal_handler(signal.SIGHUP, kill_chrome)
+            loop_.add_signal_handler(signal.SIGHUP, kill_chrome)
 
-        target = await find_target(f"http://localhost:{port}", loop=loop)
-        logger.info(f"Browser listening on: {target['webSocketDebuggerUrl']}")
+        await aio_sleep(1, loop=loop_)
+
+        target = await find_target(f"http://localhost:{port}", loop=loop_)
         connection: Connection = await createForWebSocket(
-            target["webSocketDebuggerUrl"]
+            target["webSocketDebuggerUrl"],
+            loop=loop_
         )
         targetInfo = await connection.send(
             "Target.getTargetInfo", dict(targetId=target["id"])
@@ -225,28 +244,10 @@ class Launcher(object):
             chrome_process,
             kill_chrome,
             targetInfo=targetInfo["targetInfo"],
-            loop=loop,
+            loop=loop_,
         )
         await ensureInitialPage(chrome)
         return chrome
-
-    def defaultArgs(self, opts: Dict) -> List[str]:
-        chromeArgs: List[str] = list(DEFAULT_ARGS)
-        udata = opts.get("userDataDir", None)
-        devtools = opts.get("devtools", False)
-        headless = opts.get("headless", not devtools)
-        if udata:
-            chromeArgs.append(f"--user-data-dir={udata}")
-        if devtools:
-            chromeArgs.append("--auto-open-devtools-for-tabs")
-        if headless:
-            chromeArgs.append("--headless")
-            chromeArgs.append("--hide-scrollbars")
-            if sys.platform.startswith("win"):
-                chromeArgs.append("--disable-gpu")
-        supplied_chrome_args = opts.get("args", [])
-        chromeArgs.extend(supplied_chrome_args)
-        return chromeArgs
 
     async def resolveExecutablePath(
         self, opts: Optional[Dict] = None, loop: Optional[AbstractEventLoop] = None
@@ -301,11 +302,11 @@ async def connect(
 ) -> Chrome:
     if loop is None:
         loop = asyncio.get_event_loop()
-    options = merge_dict(options, kwargs)
+    options = Helper.merge_dict(options, kwargs)
     browserWSEndpoint = options.get("browserWSEndpoint")
     if not browserWSEndpoint:
         raise LauncherError("Need `browserWSEndpoint` option.")
-    con = await createForWebSocket(browserWSEndpoint)
+    con = await createForWebSocket(browserWSEndpoint, loop=loop)
     targetInfo = await con.send("Target.getTargetInfo")
     return await Chrome.create(
         con,

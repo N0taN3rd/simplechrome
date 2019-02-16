@@ -5,14 +5,14 @@ import shutil
 import sys
 from asyncio import AbstractEventLoop
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Any, Dict, List, Optional
 from zipfile import ZipFile
 
 import attr
 from tqdm import tqdm
 
 from .errors import BrowserFetcherError
-from .util import make_aiohttp_session, merge_dict
+from .helper import Helper
 
 __all__ = ["BrowserFetcher", "RevisionInfo"]
 
@@ -68,7 +68,7 @@ def download_url(platform: str, host: str, revision: str) -> str:
 
 
 @attr.dataclass(slots=True)
-class RevisionInfo(object):
+class RevisionInfo:
     revision: str = attr.ib()
     url: str = attr.ib()
     executablePath: Path = attr.ib()
@@ -76,13 +76,13 @@ class RevisionInfo(object):
     local: bool = attr.ib()
 
 
-class BrowserFetcher(object):
+class BrowserFetcher:
     __slots__ = ("_downloads_folder", "_download_host", "_platform")
 
     def __init__(
         self, rootDir: str, options: Optional[Dict] = None, **kwargs: Any
     ) -> None:
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
         dlfp = opts.get("path", Path(rootDir) / "local-chromium")
         self._downloads_folder: Path = dlfp if isinstance(dlfp, Path) else Path(dlfp)
         self._download_host: str = opts.get("host", DEFAULT_DOWNLOAD_HOST)
@@ -105,7 +105,7 @@ class BrowserFetcher(object):
     ) -> bool:
         url: str = download_url(self._platform, self._download_host, revision)
         try:
-            async with make_aiohttp_session(loop=loop) as sesh:
+            async with Helper.make_aiohttp_session(loop=loop) as sesh:
                 async with sesh.head(url=url, allow_redirects=True) as res:
                     return res.status == 200
         except Exception:
@@ -225,7 +225,7 @@ async def download_revision(
     if loop is None:
         loop = asyncio.get_event_loop()
     chunk_size: int = 10240
-    async with make_aiohttp_session(loop=loop) as sesh:
+    async with Helper.make_aiohttp_session(loop=loop) as sesh:
         async with sesh.get(url=url) as res:
             try:
                 total_length = int(res.headers["content-length"])

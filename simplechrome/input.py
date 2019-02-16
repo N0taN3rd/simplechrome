@@ -6,19 +6,19 @@ from typing import Any, Dict, Set, Union, Optional
 
 from .connection import ClientType
 from .errors import InputError
+from .helper import Helper
 from .us_keyboard_layout import keyDefinitions
-from .util import merge_dict
 
 __all__ = ["Keyboard", "Mouse", "Touchscreen"]
 
 
 @attr.dataclass(slots=True)
-class Keyboard(object):
+class Keyboard:
     """Keyboard class."""
 
     client: ClientType = attr.ib()
     modifiers: int = attr.ib(init=False, default=0)
-    pressedKeys: Set[str] = attr.ib(init=False, factory=set)
+    pressedKeys: Set[int] = attr.ib(init=False, factory=set)
 
     async def down(
         self, key: str, options: Optional[Dict] = None, **kwargs: Any
@@ -38,9 +38,9 @@ class Keyboard(object):
         :arg dict options: Option can have ``text`` field, and if this option
             spedified, generate an input event with this text.
         """
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
 
-        description: Dict[str, Union[str, int]] = self._keyDescriptionForString(key)
+        description = self._keyDescriptionForString(key)
         autoRepeat = description["code"] in self.pressedKeys
         self.pressedKeys.add(description["code"])
         self.modifiers |= self._modifierBit(description["key"])
@@ -173,7 +173,7 @@ class Keyboard(object):
           specifies time to wait between key presses in milliseconds. Defaults
           to 0.
         """
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
         delay = opts.get("delay", 0)
         for char in text:
             if char in keyDefinitions:
@@ -202,7 +202,7 @@ class Keyboard(object):
         * ``delay`` (int|float): Time to wait between ``keydown`` and
           ``keyup``. Defaults to 0.
         """
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
 
         await self.down(key, opts)
         if "delay" in opts:
@@ -211,7 +211,7 @@ class Keyboard(object):
 
 
 @attr.dataclass(slots=True)
-class Mouse(object):
+class Mouse:
     """Mouse class."""
 
     client: ClientType = attr.ib()
@@ -228,7 +228,7 @@ class Mouse(object):
         Options can accepts ``steps`` (int) field. If this ``steps`` option
         specified, Sends intermediate ``mousemove`` events. Defaults to 1.
         """
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
         fromX = self._x
         fromY = self._y
         self._x = x
@@ -263,7 +263,7 @@ class Mouse(object):
         * ``delay`` (int|float): Time to wait between ``mousedown`` and
           ``mouseup`` in milliseconds. Defaults to 0.
         """
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
         await self.move(x, y)
         await self.down(opts)
         if opts.get("delay"):
@@ -279,7 +279,7 @@ class Mouse(object):
           ``left``.
         * ``clickCount`` (int): defaults to 1.
         """
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
         self._button = opts.get("button", "left")
         await self.client.send(
             "Input.dispatchMouseEvent",
@@ -302,7 +302,7 @@ class Mouse(object):
           ``left``.
         * ``clickCount`` (int): defaults to 1.
         """
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
         self._button = "none"
         await self.client.send(
             "Input.dispatchMouseEvent",
@@ -318,7 +318,7 @@ class Mouse(object):
 
 
 @attr.dataclass(slots=True)
-class Touchscreen(object):
+class Touchscreen:
     """Touchscreen class."""
 
     client: ClientType = attr.ib()

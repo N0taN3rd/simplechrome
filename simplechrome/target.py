@@ -1,10 +1,12 @@
-from asyncio import AbstractEventLoop, Future
-from typing import Dict, Optional, TYPE_CHECKING
+from asyncio import AbstractEventLoop, Event, Future, Task
+from typing import Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
+
+import attr
 
 from .connection import SessionType
+from .events import Events
 from .page import Page
-from .util import ensure_loop
-
+from .helper import Helper
 
 if TYPE_CHECKING:
     from .chrome import BrowserContext, Chrome  # noqa: F401
@@ -12,45 +14,30 @@ if TYPE_CHECKING:
 __all__ = ["Target"]
 
 
-class Target(object):
-    """Browser's target class."""
-
-    def __init__(
-        self,
-        targetInfo: Dict[str, str],
-        browserContext: "BrowserContext",
-        browser: "Chrome",
-        loop: Optional[AbstractEventLoop] = None,
-    ) -> None:
-        self._browser: Chrome = browser
-        self._browserContext: BrowserContext = browserContext
-        self._targetInfo: Dict[str, str] = targetInfo
-        self._targetId = targetInfo["targetId"]
-        self._page: Optional[Page] = None
-        self._loop = ensure_loop(loop)
-
-        self._isClosedPromise: Future = self._loop.create_future()
-        self._initializedPromise: Future = self._loop.create_future()
-        self._isInitialized = (
-            self._targetInfo["type"] != "page" or self._targetInfo["url"] != ""
-        )
-        if self._isInitialized:
-            self._initializedCallback(True)
+@attr.dataclass(slots=True, cmp=False, hash=False)
+class Target:
+    _targetInfo: Dict[str, str] = attr.ib(repr=False)
+    _browserContext: "BrowserContext" = attr.ib()
+    _sessionFactory: Callable[[], Awaitable[SessionType]] = attr.ib(repr=False)
+    _ignoreHTTPSErrors: bool = attr.ib(repr=False)
+    _defaultViewport: Optional[Dict[str, int]] = attr.ib(repr=False)
+    _screenshotTaskQueue: List = attr.ib(repr=False)
+    _loop: Optional[AbstractEventLoop] = attr.ib(converter=Helper.ensure_loop, repr=False)
+    _isolateWorlds: bool = attr.ib(default=True, repr=False)
+    _targetId: str = attr.ib(init=False, default=None)
+    _isInitialized: bool = attr.ib(init=False, default=False)
+    _initializedEvent: Event = attr.ib(init=False, default=None, repr=False)
+    _initializedPromise: Task = attr.ib(init=False, default=None, repr=False)
+    _isClosedPromise: Future = attr.ib(init=False, default=None, repr=False)
+    _pagePromise: Task = attr.ib(init=False, default=None, repr=False)
 
     @property
-    def opener(self) -> Optional["Target"]:
-        openerId = self._targetInfo.get("openerId")
-        if openerId is not None:
-            return self.browser._targets.get(openerId)
-        return openerId
+    def target_id(self) -> str:
+        return self._targetInfo["targetId"]
 
     @property
-    def browser(self) -> "Chrome":
-        return self._browserContext.browser()
-
-    @property
-    def browserContext(self) -> "BrowserContext":
-        return self._browserContext
+    def initialized(self) -> bool:
+        return self._isInitialized
 
     @property
     def url(self) -> str:
@@ -64,51 +51,95 @@ class Target(object):
         if (
             _type == "page"
             or _type == "service_worker"
-            or _type == "page"
             or _type == "background_page"
             or _type == "browser"
         ):
             return _type
         return "other"
 
-    async def createCDPSession(self) -> SessionType:
+    @property
+    def is_page_type(self) -> bool:
+        _type: str = self._targetInfo["type"]
+        return _type == "page" or _type == "browser"
+
+    @property
+    def opener(self) -> Optional["Target"]:
+        openerId = self._targetInfo.get("openerId")
+        if openerId is not None:
+            return self.browser.target(openerId)
+        return openerId
+
+    @property
+    def browser(self) -> "Chrome":
+        return self._browserContext.browser()
+
+    @property
+    def browserContext(self) -> "BrowserContext":
+        return self._browserContext
+
+    def page(self) -> Awaitable[Page]:
+        if self.is_page_type or self._pagePromise is None:
+            self._pagePromise = self._loop.create_task(self._create_page_for_target())
+        return self._pagePromise
+
+    def createSession(self) -> Awaitable[SessionType]:
         """Create a Chrome Devtools Protocol session attached to the target."""
-        return await self._browser._connection.createCDPSession(self._targetId)
+        return self._sessionFactory()
 
-    async def page(self) -> Optional[Page]:
-        """Get page of this target."""
-        is_page = (
-            self._targetInfo["type"] == "page"
-            or self._targetInfo["type"] == "background_page"
-        )
-        if is_page and self._page is None:
-            client = await self._browser._connection.createCDPSession(self._targetId)
-            new_page = await Page.create(
-                client,
-                self,
-                self._browser._defaultViewport,
-                self._browser.ignoreHTTPSErrors,
-                self._browser._screenshotTaskQueue,
-                self._loop,
-            )
-            self._page = new_page
-            return new_page
-        return self._page
-
-    def targetInfoChanged(self, targetInfo: dict) -> None:
+    def _targetInfoChanged(self, targetInfo: Dict) -> None:
         self._targetInfo = targetInfo
 
         if not self._isInitialized and (
             self._targetInfo["type"] != "page" or self._targetInfo["url"] != ""
         ):
             self._isInitialized = True
-            self._initializedCallback(True)
+            self._initializedEvent.set()
             return
 
     def _initializedCallback(self, bl: bool) -> None:
-        if self._initializedPromise and not self._initializedPromise.done():
-            self._initializedPromise.set_result(bl)
+        self._isInitialized = bl
+        if bl:
+            self._initializedEvent.set()
 
     def _closedCallback(self) -> None:
         if self._isClosedPromise and not self._isClosedPromise.done():
+            self._initializedEvent.set()
+            self._isInitialized = False
             self._isClosedPromise.set_result(None)
+
+    async def _create_page_for_target(self) -> Page:
+        client = await self._sessionFactory()
+        page = await Page.create(
+            client,
+            self,
+            self._defaultViewport,
+            self._ignoreHTTPSErrors,
+            self._isolateWorlds,
+            self._screenshotTaskQueue,
+            self._loop,
+        )
+        return page
+
+    async def _on_initialized(self) -> bool:
+        await self._initializedEvent.wait()
+        success = self._isInitialized
+        if not success:
+            return False
+        opener = self.opener
+        if opener is None or opener._pagePromise is None or self.type != "page":
+            return True
+        opener_page: Page = await opener._pagePromise
+        if opener_page.listener_count(Events.Page.Dialog) == 0:
+            return True
+        popupPage = await self.page()
+        opener_page.emit(Events.Page.Popup, popupPage)
+        return True
+
+    def __attrs_post_init__(self) -> None:
+        self._initializedEvent = Event(loop=self._loop)
+        self._initializedPromise = self._loop.create_task(self._on_initialized())
+        self._isClosedPromise = self._loop.create_future()
+        self._targetId = self._targetInfo["targetId"]
+        if self._targetInfo["type"] != "page" or self._targetInfo["url"] != "":
+            self._isInitialized = True
+            self._initializedEvent.set()

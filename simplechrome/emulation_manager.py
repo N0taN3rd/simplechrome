@@ -10,7 +10,7 @@ __all__ = ["EmulationManager"]
 
 
 @attr.dataclass(slots=True)
-class EmulationManager(object):
+class EmulationManager:
     """EmulationManager class."""
 
     _client: ClientType = attr.ib()

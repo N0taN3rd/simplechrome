@@ -6,3 +6,4 @@ flake8-mypy
 flake8-bugbear
 mypy
 grappa
+sanic

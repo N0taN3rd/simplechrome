@@ -1,4 +1,4 @@
-from cripy.errors import NetworkError
+from cripy.errors import NetworkError, ProtocolError
 
 __all__ = [
     "BrowserError",
@@ -6,6 +6,7 @@ __all__ = [
     "ElementHandleError",
     "NetworkError",
     "PageError",
+    "ProtocolError",
     "WaitTimeoutError",
     "LauncherError",
     "InputError",
@@ -16,44 +17,32 @@ __all__ = [
 ]
 
 
-class BrowserError(Exception):  # noqa: D204
+class BrowserError(Exception):
     """Exception raised from browser."""
-
-    pass
 
 
 class BrowserFetcherError(Exception):
     """Exception raised if there is a issue with downloading / querying about chromium revisions"""
 
 
-class ElementHandleError(Exception):  # noqa: D204
+class ElementHandleError(Exception):
     """ElementHandle related exception."""
 
-    pass
 
-
-class PageError(Exception):  # noqa: D204
+class PageError(Exception):
     """Page/Frame related exception."""
 
-    pass
 
-
-class WaitTimeoutError(Exception):  # noqa: D204
+class WaitTimeoutError(Exception):
     """Timeout Error class."""
-
-    pass
 
 
 class LauncherError(Exception):
     """Launching Chrome related exception"""
 
-    pass
-
 
 class InputError(Exception):
     """Input related exception"""
-
-    pass
 
 
 class NavigationError(Exception):

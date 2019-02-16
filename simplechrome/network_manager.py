@@ -2,42 +2,34 @@
 
 import asyncio
 import base64
-import ujson as json
-from asyncio import Future, AbstractEventLoop
+from ujson import dumps as ujson_dumps, loads as ujson_loads
+from asyncio import AbstractEventLoop, Event, Future
 from collections import OrderedDict
-from typing import Awaitable, Dict, Optional, Union, Set, List, ClassVar
+from typing import Awaitable, Dict, List, Optional, Set, Union
 from urllib.parse import unquote
 
 import attr
-from pyee import EventEmitter
+from pyee2 import EventEmitter
 
 from .connection import ClientType
 from .errors import NetworkError
-from .frame_manager import FrameManager, Frame
+from .events import Events
+from .frame_manager import Frame, FrameManager
+from .helper import Helper
 from .multimap import Multimap
-from .util import ensure_loop
+from .network_idle_monitor import NetworkIdleMonitor
 
 __all__ = ["NetworkManager", "Request", "Response", "SecurityDetails"]
-
-
-@attr.dataclass(slots=True, frozen=True)
-class NetworkEvents(object):
-    Request: str = attr.ib(default="request")
-    Response: str = attr.ib(default="response")
-    RequestFailed: str = attr.ib(default="requestfailed")
-    RequestFinished: str = attr.ib(default="requestfinished")
 
 
 class NetworkManager(EventEmitter):
     """NetworkManager class."""
 
-    Events: ClassVar[NetworkEvents] = NetworkEvents()
-
     def __init__(
         self, client: ClientType, loop: Optional[AbstractEventLoop] = None
     ) -> None:
         """Make new NetworkManager."""
-        super().__init__(loop=ensure_loop(loop))
+        super().__init__(loop=Helper.ensure_loop(loop))
         self._client: ClientType = client
         self._frameManager: Optional["FrameManager"] = None
         self._requestIdToRequest: Dict[str, Request] = dict()
@@ -61,8 +53,29 @@ class NetworkManager(EventEmitter):
         self._client.on("Network.loadingFailed", self._onLoadingFailed)
         self._client.on("Network.requestIntercepted", self._onRequestIntercepted)
 
+    def network_idle_promise(
+        self, num_inflight: int = 2, idle_time: int = 2, global_wait: int = 60
+    ) -> Awaitable[None]:
+        return NetworkIdleMonitor.monitor(
+            self._client,
+            num_inflight=num_inflight,
+            idle_time=idle_time,
+            global_wait=global_wait,
+            loop=self._loop,
+        )
+
     def setFrameManager(self, frameManager: "FrameManager") -> None:
         self._frameManager = frameManager
+
+    def extraHTTPHeaders(self) -> Dict[str, str]:
+        """Get extra http headers."""
+        return dict(**self._extraHTTPHeaders)
+
+    async def enableNetworkCache(self) -> None:
+        await self._client.send("Network.setCacheDisabled", {"cacheDisabled": False})
+
+    async def disableNetworkCache(self) -> None:
+        await self._client.send("Network.setCacheDisabled", {"cacheDisabled": True})
 
     async def authenticate(self, credentials: Dict[str, str]) -> None:
         """Provide credentials for http auth."""
@@ -83,10 +96,6 @@ class NetworkManager(EventEmitter):
         await self._client.send(
             "Network.setExtraHTTPHeaders", {"headers": self._extraHTTPHeaders}
         )
-
-    def extraHTTPHeaders(self) -> Dict[str, str]:
-        """Get extra http headers."""
-        return dict(**self._extraHTTPHeaders)
 
     async def setOfflineMode(self, value: bool) -> None:
         """Change offline mode enable/disable."""
@@ -126,7 +135,7 @@ class NetworkManager(EventEmitter):
         )
 
     def _onRequestWillBeSent(self, event: Dict) -> None:
-        if self._protocolRequestInterceptionEnabled:
+        if self._protocolRequestInterceptionEnabled and not event.get('url', '').startswith('data:'):
             requestHash = generateRequestHash(event["request"])
             interceptionId = self._requestHashToInterceptionIds.firstValue(requestHash)
             if interceptionId:
@@ -185,7 +194,7 @@ class NetworkManager(EventEmitter):
             )
             self._onRequest(requestWillBeSentEvent, event.get("interceptionId"))
             self._requestHashToRequestIds.delete(requestHash, requestId)
-            del self._requestIdToRequestWillBeSentEvent[requestId]
+            self._requestIdToRequestWillBeSentEvent.pop(requestId, None)
         else:
             self._requestHashToInterceptionIds.set(requestHash, event["interceptionId"])
 
@@ -210,7 +219,7 @@ class NetworkManager(EventEmitter):
             redirectChain,
         )
         self._requestIdToRequest[requestId] = request
-        self.emit(NetworkManager.Events.Request, request)
+        self.emit(Events.NetworkManager.Request, request)
 
     def _onRequestSeveredFromCache(self, event: Dict) -> None:
         request = self._requestIdToRequest.get(event.get("requestId"))
@@ -220,24 +229,24 @@ class NetworkManager(EventEmitter):
     def _handleRequestRedirect(self, request: "Request", event: Dict) -> None:
         newEvent: Dict = dict(**event)
         newEvent["response"] = event.get("redirectResponse")
-        del newEvent["redirectResponse"]
-        response = Response(self._client, request, newEvent)
+        newEvent.pop("redirectResponse", None)
+        response = Response(self._client, request, newEvent, loop=self._loop)
         request._redirectChain.append(request)
         request._response = response
+        response._bodyLoadedPromise.set()
         self._requestIdToRequest.pop(request.requestId, None)
-        self._interceptionIdToRequest.pop(request._interceptionId, None)
         self._attemptedAuthentications.discard(request._interceptionId)
-        self.emit(NetworkManager.Events.Response, response)
-        self.emit(NetworkManager.Events.RequestFinished, request)
+        self.emit(Events.NetworkManager.Response, response)
+        self.emit(Events.NetworkManager.RequestFinished, request)
 
     def _onResponseReceived(self, event: Dict) -> None:
         request = self._requestIdToRequest.get(event["requestId"])
         # FileUpload sends a response without a matching request.
-        if not request:
+        if request is None:
             return
-        response = Response(self._client, request, event)
+        response = Response(self._client, request, event, loop=self._loop)
         request._response = response
-        self.emit(NetworkManager.Events.Response, response)
+        self.emit(Events.NetworkManager.Response, response)
 
     def _onLoadingFinished(self, event: Dict) -> None:
         request = self._requestIdToRequest.get(event.get("requestId", ""))
@@ -248,33 +257,32 @@ class NetworkManager(EventEmitter):
         # Under certain conditions we never get the Network.responseReceived
         # event from protocol. @see https://crbug.com/883475
         response = request._response
-        if response is not None and not response._bodyLoadedPromiseFulfill.done():
-            response._bodyLoadedPromiseFulfill.set_result(None)
+        if response is not None:
+            response._bodyLoadedPromise.set()
         self._requestIdToRequest.pop(request.requestId, None)
-        self._interceptionIdToRequest.pop(request._interceptionId, None)
         self._attemptedAuthentications.discard(request._interceptionId)
-        self.emit(NetworkManager.Events.RequestFinished, request)
+        self.emit(Events.NetworkManager.RequestFinished, request)
 
     def _onLoadingFailed(self, event: Dict) -> None:
         request = self._requestIdToRequest.get(event["requestId"])
         # For certain requestIds we never receive requestWillBeSent event.
         # @see https://crbug.com/750469
-        if not request:
+        if request is None:
             return
         request._failureText = event.get("errorText")
         request._wasCanceled = event.get("canceled")
         request._blockedReason = event.get("blockedReason")
         request._type = event.get("type", request._type)
         response = request._response
-        if response is not None and not response._bodyLoadedPromiseFulfill.done():
-            response._bodyLoadedPromiseFulfill.set_result(None)
+        if response is not None:
+            response._bodyLoadedPromise.set()
         self._requestIdToRequest.pop(request.requestId, None)
         self._attemptedAuthentications.discard(request._interceptionId)
-        self.emit(NetworkManager.Events.RequestFailed, request)
+        self.emit(Events.NetworkManager.RequestFailed, request)
 
 
-@attr.dataclass
-class Request(object):
+@attr.dataclass(slots=True, str=False, cmp=False, hash=False)
+class Request:
     _client: ClientType = attr.ib()
     _frame: Optional[Frame] = attr.ib()
     _interceptionId: Optional[str] = attr.ib()
@@ -289,10 +297,6 @@ class Request(object):
     _wasCanceled: bool = attr.ib(init=False, default=False)
     _interceptionHandled: bool = attr.ib(init=False, default=False)
     _blockedReason: Optional[str] = attr.ib(init=False, default=None)
-
-    def __attrs_post_init__(self) -> None:
-        self._preq = self._requestInfo.get("request")
-        self._type = self._requestInfo.get("type")
 
     @property
     def wasCanceled(self) -> bool:
@@ -536,8 +540,15 @@ class Request(object):
             dict(interceptionId=self._interceptionId, errorReason=errorReason),
         )
 
-    def to_dict(self) -> dict:
-        return dict(requestId=self.requestId, **self._preq)
+    def to_dict(self) -> Dict:
+        return self._requestInfo
+
+    def __attrs_post_init__(self) -> None:
+        self._preq = self._requestInfo.get("request")
+        self._type = self._requestInfo.get("type")
+
+    def __str__(self) -> str:
+        return f"Request(url={self.url}, method={self.method}, headers={self.headers})"
 
 
 errorReasons = {
@@ -558,26 +569,18 @@ errorReasons = {
 }
 
 
-@attr.dataclass(repr=False)
-class Response(object):
+@attr.dataclass(slots=True, str=False, cmp=False, hash=False)
+class Response:
     _client: ClientType = attr.ib()
     _request: Request = attr.ib()
     _responseInfo: Dict = attr.ib()
+    _loop: Optional[AbstractEventLoop] = attr.ib(default=None, converter=Helper.ensure_loop)
     _contentPromise: Optional[Future] = attr.ib(init=False, default=None)
-    _bodyLoadedPromiseFulfill: Future = attr.ib(init=False, default=None)
+    _bodyLoadedPromise: Event = attr.ib(init=False, default=None)
     _pres: Dict = attr.ib(init=False, default=None)
     _protocol: str = attr.ib(init=False, default="")
     _encodedDataLength: float = attr.ib(init=False, default=0.0)
-
-    def __attrs_post_init__(self) -> None:
-        self._bodyLoadedPromiseFulfill = asyncio.get_event_loop().create_future()
-        self._pres = self._responseInfo.get("response")
-        sdetails = None
-        if self._pres.get("securityDetails") is not None:
-            sdetails = SecurityDetails(self._pres.get("securityDetails"))
-        self._securityDetails: Optional[SecurityDetails] = sdetails
-        self._protocol = self._pres.get("protocol")
-        self._encodedDataLength = self._pres.get("encodedDataLength")
+    _securityDetails: Optional["SecurityDetails"] = attr.ib(init=False, default=None)
 
     @property
     def frame(self) -> Optional[Frame]:
@@ -688,8 +691,7 @@ class Response(object):
         return self._pres.get("securityState")
 
     async def _bufread(self) -> Union[bytes, str]:
-        if not self._bodyLoadedPromiseFulfill.done():
-            await self._bodyLoadedPromiseFulfill
+        await self._bodyLoadedPromise.wait()
         response = await self._client.send(
             "Network.getResponseBody", {"requestId": self._request.requestId}
         )
@@ -699,9 +701,9 @@ class Response(object):
         return body
 
     def buffer(self) -> Awaitable[bytes]:
-        """Retrun awaitable which resolves to bytes with response body."""
+        """Return awaitable which resolves to bytes with response body."""
         if self._contentPromise is None:
-            self._contentPromise = asyncio.ensure_future(self._bufread())
+            self._contentPromise = self._loop.create_task(self._bufread())
         return self._contentPromise
 
     async def text(self) -> str:
@@ -712,13 +714,23 @@ class Response(object):
         else:
             return content.decode("utf-8")
 
-    async def json(self) -> dict:
+    async def json(self) -> Dict:
         """Get JSON representation of response body."""
         content = await self.text()
-        return json.loads(content)
+        return ujson_loads(content)
 
     def to_dict(self) -> Dict:
-        return dict(requestId=self.requestId, **self._pres)
+        return self._responseInfo
+
+    def __attrs_post_init__(self) -> None:
+        self._bodyLoadedPromise = Event(loop=self._loop)
+        self._pres = self._responseInfo.get("response")
+        sdetails = None
+        if self._pres.get("securityDetails") is not None:
+            sdetails = SecurityDetails(self._pres.get("securityDetails"))
+        self._securityDetails: Optional[SecurityDetails] = sdetails
+        self._protocol = self._pres.get("protocol")
+        self._encodedDataLength = self._pres.get("encodedDataLength")
 
     def __str__(self) -> str:
         repr_args = []
@@ -730,7 +742,7 @@ class Response(object):
             repr_args.append("mimeType={!r}".format(self.mimeType))
         if self.status is not None:
             repr_args.append("status={!r}".format(self.status))
-        return "Response(" + ", ".join(repr_args) + ")"
+        return f"Response({', '.join(repr_args)})"
 
 
 def generateRequestHash(request: Dict) -> str:
@@ -763,11 +775,11 @@ def generateRequestHash(request: Dict) -> str:
                 continue
             _new_headers[header] = headerValue
         _hash["headers"] = _new_headers
-    return json.dumps(_hash)
+    return ujson_dumps(_hash, ensure_ascii=False)
 
 
-@attr.dataclass(slots=True)
-class SecurityDetails(object):
+@attr.dataclass(slots=True, cmp=False, hash=False)
+class SecurityDetails:
     """Class represents responses which are received by page."""
 
     _details: Dict[str, Union[str, int, List[int], List[str]]] = attr.ib()

@@ -8,14 +8,14 @@ __all__ = ["attachFrame", "detachFrame", "dumpFrames", "navigateFrame"]
 
 
 async def attachFrame(page: Page, frameId: str, url: str) -> None:
-    func = """(frameId, url) => {
-            const frame = document.createElement('iframe');
-            frame.src = url;
-            frame.id = frameId;
-            document.body.appendChild(frame);
-            return new Promise(x => frame.onload = x);
-        }
-    """
+    func = """async function attachFrame(frameId, url) {
+  const frame = document.createElement('iframe');
+  frame.src = url;
+  frame.id = frameId;
+  document.body.appendChild(frame);
+  await new Promise(resolve => frame.onload = resolve);
+  return frame;
+}"""
     await page.evaluate(func, frameId, url)
 
 

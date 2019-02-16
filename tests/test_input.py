@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 from grappa import should
 
-from simplechrome.errors import PageError, InputError
+from simplechrome.errors import InputError
+from simplechrome.events import Events
 from .base_test import BaseChromeTest
 from .frame_utils import attachFrame
 
@@ -64,7 +65,7 @@ class TestClick(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_click_fail(self):
         await self.goto_test("button.html")
-        with pytest.raises(PageError) as cm:
+        with pytest.raises(Exception) as cm:
             await self.page.click("button.does-not-exist")
         str(cm.value) | should.be.equal.to(
             "No node found for selector: button.does-not-exist"
@@ -203,7 +204,7 @@ class TestClick(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_right_click(self):
-        await self.page.goto(f"{self.url}scrollable.html", waitUntil="load")
+        await self.page.goto(self.full_test_url("scrollable.html"), waitUntil="load")
         await self.page.click("#button-8", button="right")
         await self.page.evaluate(
             'document.querySelector("#button-8").textContent'
@@ -211,7 +212,7 @@ class TestClick(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_click_with_modifier_key(self):
-        await self.page.goto(f"{self.url}scrollable.html", waitUntil="load")
+        await self.page.goto(self.full_test_url("scrollable.html"), waitUntil="load")
         await self.page.evaluate(
             '() => document.querySelector("#button-3").addEventListener("mousedown", e => window.lastEvent = e, true)'
         )
@@ -238,7 +239,7 @@ class TestClick(BaseChromeTest):
     async def test_click_link(self, ee_helper):
         results = []
         ee_helper.addEventListener(
-            self.page, self.page.Events.FrameNavigated, lambda x: results.append(True)
+            self.page, Events.Page.FrameNavigated, lambda x: results.append(True)
         )
         await self.page.setContent(
             '<a href="{}">empty.html</a>'.format("f{self.url}empty.html")
@@ -267,13 +268,13 @@ class TestClick(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_tap_button(self):
-        await self.page.goto(f"{self.url}button.html", waitUntil="load")
+        await self.page.goto(self.full_test_url("button.html"), waitUntil="load")
         await self.page.tap("button")
         await self.page.evaluate("result") | should.be.equal.to("Clicked")
 
     @pytest.mark.asyncio
     async def test_touches_report(self):
-        await self.page.goto(f"{self.url}touches.html", waitUntil="load")
+        await self.page.goto(self.full_test_url("touches.html"), waitUntil="load")
         button = await self.page.J("button")
         await button.tap()
         await self.page.evaluate("getResult()") | should.be.equal.to(
@@ -282,11 +283,11 @@ class TestClick(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_click_inside_frame(self):
-        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
+        await self.page.goto(self.full_test_url("empty.html"), waitUntil="load")
         await self.page.setContent(
             '<div style="width:100px;height:100px;>spacer</div>"'
         )
-        await attachFrame(self.page, "button-test", f"{self.url}button.html")
+        await attachFrame(self.page, "button-test", self.full_test_url("button.html"))
         frame = self.page.frames[1]
         button = await frame.J("button")
         await button.click()
@@ -294,7 +295,7 @@ class TestClick(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_click_with_device_scale_factor(self):
-        await self.page.goto(f"{self.url}empty.html", waitUntil="load")
+        await self.page.goto(self.full_test_url("empty.html"), waitUntil="load")
         await self.page.setViewport(
             {"width": 400, "height": 400, "deviceScaleFactor": 5}
         )
@@ -302,7 +303,7 @@ class TestClick(BaseChromeTest):
         await self.page.setContent(
             '<div style="width:100px;height:100px;>spacer</div>"'
         )
-        await attachFrame(self.page, "button-test", f"{self.url}button.html")
+        await attachFrame(self.page, "button-test", self.full_test_url("button.html"))
         frame = self.page.frames[1]
         button = await frame.J("button")
         await button.click()

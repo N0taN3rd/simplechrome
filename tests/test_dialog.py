@@ -1,6 +1,7 @@
 import pytest
 from grappa import should
 
+from simplechrome.events import Events
 from .base_test import BaseChromeTest
 
 
@@ -8,14 +9,14 @@ from .base_test import BaseChromeTest
 class TestDialog(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_prompt(self):
-        await self.goto_test("dialogs.html", dict(waitUntil="networkidle0"))
+        await self.goto_test("dialogs.html", dict(waitUntil="load"))
         values = []
 
         async def dialog_test(dialog):
             values.append((dialog.type, dialog.defaultValue, dialog.message))
             await dialog.accept("answer!")
 
-        self.page.once(self.page.Events.Dialog, dialog_test)
+        self.page.once(Events.Page.Dialog, dialog_test)
         answer = await self.page.evaluate("showPrompt()")
         type_, dv, m = values[0]
         type_ | should.be.a(str).equal.to("prompt")
@@ -25,14 +26,14 @@ class TestDialog(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_alert(self):
-        await self.goto_test("dialogs.html", dict(waitUntil="networkidle0"))
+        await self.goto_test("dialogs.html", dict(waitUntil="load"))
         values = []
 
         async def dialog_test(dialog):
             values.append((dialog.type, dialog.defaultValue, dialog.message))
             await dialog.accept()
 
-        self.page.once(self.page.Events.Dialog, dialog_test)
+        self.page.once(Events.Page.Dialog, dialog_test)
         await self.page.evaluate("showAlert()")
         type_, dv, m = values[0]
         type_ | should.be.a(str).equal.to("alert")
@@ -41,11 +42,11 @@ class TestDialog(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_prompt_dismiss(self):
-        await self.goto_test("dialogs.html", dict(waitUntil="networkidle0"))
+        await self.goto_test("dialogs.html", dict(waitUntil="load"))
 
         async def dismiss_test(dialog):
             await dialog.dismiss()
 
-        self.page.once(self.page.Events.Dialog, dismiss_test)
+        self.page.once(Events.Page.Dialog, dismiss_test)
         result = await self.page.evaluate("dismissPromt()")
         result | should.be.equal.to(None)

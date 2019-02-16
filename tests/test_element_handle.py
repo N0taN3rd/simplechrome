@@ -49,16 +49,18 @@ class TestClick(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_shadow_dom(self):
         await self.goto_test("shadow.html")
-        button = await self.page.evaluateHandle("() => button")
+        handle = await self.page.evaluateHandle("() => button")
+        button = handle.asElement()
         await button.click()
         await self.page.evaluate("clicked") | should.be.true
 
     @pytest.mark.asyncio
     async def test_text_node(self):
         await self.goto_test("button.html")
-        buttonTextNode = await self.page.evaluateHandle(
+        handle = await self.page.evaluateHandle(
             '() => document.querySelector("button").firstChild'
         )
+        buttonTextNode = handle.asElement()
         with pytest.raises(ElementHandleError) as cm:
             await buttonTextNode.click()
         str(cm.value) | should.be.equal.to("Node is not of type HTMLElement")

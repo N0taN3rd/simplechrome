@@ -1,73 +1,68 @@
-import asyncio
-from typing import Any, Optional, Union, TYPE_CHECKING
+from asyncio import AbstractEventLoop, Future, Task, sleep as aio_sleep
+from typing import Any, Awaitable, Generator, List, Optional, Union, TYPE_CHECKING
 
-from .errors import PageError, WaitTimeoutError
-from .execution_context import JSHandle
+from .errors import WaitTimeoutError
 from .helper import Helper
+from .jsHandle import JSHandle
 
 if TYPE_CHECKING:
-    from .frame_manager import Frame  # noqa: F401
+    from .domWorld import DOMWorld  # noqa: F401
 
 __all__ = ["WaitTask"]
 
+ACCEPTABLE_POLLING_STRINGS: List[str] = ["raf", "mutation"]
 
-class WaitTask(object):
-    """WaitTask class.
 
-    Instance of this class is awaitable.
-    """
-
+class WaitTask:
     def __init__(
         self,
-        frame: "Frame",
+        domWorld: "DOMWorld",
         predicateBody: str,
+        title: str,
         polling: Union[str, int, float],
         timeout: Union[float, int],
+        js_timeout: Union[float, int],
         *args: Any,
     ) -> None:
-        if isinstance(polling, str):
-            if polling not in ["raf", "mutation"]:
+        if Helper.is_string(polling):
+            if polling not in ACCEPTABLE_POLLING_STRINGS:
                 raise ValueError(f"Unknown polling: {polling}")
-        elif isinstance(polling, (int, float)):
-            if polling <= 0:
+        elif Helper.is_number(polling):
+            if polling < 0:
                 raise ValueError(f"Cannot poll with non-positive interval: {polling}")
         else:
             raise ValueError(f"Unknown polling option: {polling}")
 
-        self._frame: "Frame" = frame
+        self._domWorld: "DOMWorld" = domWorld
+        self._title: str = title
+        self._loop: AbstractEventLoop = self._domWorld.loop
         self._polling: Union[str, int, float] = polling
         self._timeout: Union[float, int] = timeout
-        if args or Helper.is_jsfunc(predicateBody):
-            self._predicateBody = f"return ({predicateBody})(...args)"
-        else:
-            self._predicateBody = f"return {predicateBody}"
-        self._args = args
-        self._runCount = 0
-        self._terminated = False
-        self._timeoutError = False
-        frame._waitTasks.add(self)
+        self._js_timeout: Union[float, int] = js_timeout
+        self._predicateBody: str = f"return ({predicateBody})(...args);" if Helper.is_jsfunc(
+            predicateBody
+        ) else f"return {predicateBody}"
 
-        loop = asyncio.get_event_loop()
-        self.promise = loop.create_future()
-        if timeout:
-            self._timeoutTimer = loop.create_task(self.timeout_timer(self._timeout))
-        loop.create_task(self.rerun())
+        self._args: Any = args
+        self._runCount: int = 0
+        self._terminated: bool = False
+        self._timeoutError: bool = False
+        self._promise: Future = self._loop.create_future()
+        self._timeoutTimer: Optional[Task] = self._loop.create_task(
+            self._timeout_timer(self._timeout)
+        ) if timeout is not None else None
+        self._domWorld.add_wait_task(self)
+        self._loop.create_task(self.rerun())
 
-    async def timeout_timer(self, to: Union[int, float]) -> None:
-        await asyncio.sleep(to / 1000)
-        self._timeoutError = True
-        self.terminate(WaitTimeoutError(f"Waiting failed: timeout {to}ms exceeds."))
-
-    def __await__(self) -> Any:
-        """Make this class **awaitable**."""
-        yield from self.promise
-        return self.promise.result()
+    @property
+    def promise(self) -> Awaitable[JSHandle]:
+        return self._promise
 
     def terminate(self, error: Exception) -> None:
         """Terminate this task."""
         self._terminated = True
-        if self.promise and not self.promise.done():
-            self.promise.set_exception(error)
+        if self._promise is not None and not self._promise.done():
+            self._promise.set_exception(error)
         self._cleanup()
 
     async def rerun(self) -> None:  # noqa: C901
@@ -77,20 +72,21 @@ class WaitTask(object):
         error = None
 
         try:
-            context = await self._frame.executionContext()
+            context = await self._domWorld.executionContext()
             if context is None:
-                raise PageError("No execution context.")
-            success = await context.evaluateHandle(
-                waitForPredicatePageFunction,
-                self._predicateBody,
-                self._polling,
-                self._timeout,
-                *self._args,
-            )
+                error = Exception("No execution context.")
+            else:
+                success = await context.evaluateHandle(
+                    waitForPredicatePageFunction,
+                    self._predicateBody,
+                    self._polling,
+                    self._js_timeout,
+                    *self._args,
+                )
         except Exception as e:
             error = e
 
-        if self.promise.done():
+        if self._promise.done():
             return
 
         if self._terminated or runCount != self._runCount:
@@ -98,23 +94,30 @@ class WaitTask(object):
                 await success.dispose()
             return
 
-        if (
-            error is None
-            and success
-            and (await self._frame.evaluate("s => !s", success))
-        ):
+        # Ignore timeouts in pageScript - we track timeouts ourselves.
+        # If the frame's execution context has already changed, `frame.evaluate` will
+        # throw an error - ignore this predicate run altogether.
+        try:
+            ignore_based_on_frame_execution_context = await self._domWorld.evaluate(
+                "s => !s", success
+            )
+        except Exception:
+            ignore_based_on_frame_execution_context = True
+
+        if error is None and ignore_based_on_frame_execution_context:
             await success.dispose()
             return
 
-        # page is navigated and context is destroyed.
-        # Try again in the new execution context.
+        # When the page is navigated, the promise is rejected
+        # We will try again in the new execution context.
         if (
             isinstance(error, Exception)
             and "Execution context was destroyed" in error.args[0]
         ):
             return
 
-        # Try again in the new execution context.
+        # We could have tried to evaluate in a context which was already
+        # destroyed
         if (
             isinstance(error, Exception)
             and "Cannot find context with specified id" in error.args[0]
@@ -122,23 +125,36 @@ class WaitTask(object):
             return
 
         if error:
-            self.promise.set_exception(error)
+            self._promise.set_exception(error)
         else:
-            self.promise.set_result(success)
+            self._promise.set_result(success)
 
         self._cleanup()
 
     def _cleanup(self) -> None:
-        if self._timeout and self._timeoutTimer and not self._timeoutTimer.done():
+        if self._timeoutTimer and not self._timeoutTimer.done():
             self._timeoutTimer.cancel()
-        self._frame._waitTasks.remove(self)
+        self._domWorld.remove_wait_task(self)
+
+    async def _timeout_timer(self, to: Union[int, float]) -> None:
+        await aio_sleep(to, loop=self._loop)
+        self._timeoutError = True
+        self.terminate(
+            WaitTimeoutError(
+                f"Waiting for {self._title} failed: timeout {to}s exceeds."
+            )
+        )
+
+    def __await__(self) -> Generator[Any, Any, JSHandle]:
+        yield from self._promise.__await__()
+        return self._promise.result()
 
 
-waitForPredicatePageFunction: str = """
-async function waitForPredicatePageFunction(predicateBody, polling, timeout, ...args) {
+waitForPredicatePageFunction: str = """async function waitForPredicatePageFunction(predicateBody, polling, timeout, ...args) {
   const predicate = new Function('...args', predicateBody);
   let timedOut = false;
-  setTimeout(() => timedOut = true, timeout);
+  if (timeout)
+    setTimeout(() => timedOut = true, timeout);
   if (polling === 'raf')
     return await pollRaf();
   if (polling === 'mutation')
@@ -219,5 +235,4 @@ async function waitForPredicatePageFunction(predicateBody, polling, timeout, ...
         setTimeout(onTimeout, pollInterval);
     }
   }
-}
-"""
+}"""

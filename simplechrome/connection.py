@@ -19,7 +19,7 @@ ClientType = Union[ConnectionType, SessionType]
 async def createForWebSocket(
     url: str, loop: Optional[AbstractEventLoop] = None
 ) -> Connection:
-    conn = Connection(url, loop=loop)
+    conn = Connection(url, flatten_sessions=True, loop=loop)
     await conn.connect()
     return conn
 

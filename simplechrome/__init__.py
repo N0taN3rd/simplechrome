@@ -18,7 +18,9 @@ from .errors import (
     WaitTimeoutError,
     NetworkError,
 )
-from .execution_context import ElementHandle, ExecutionContext, JSHandle
+from .events import Events
+from .execution_context import ExecutionContext
+from .jsHandle import ElementHandle, JSHandle
 from .frame_manager import FrameManager, Frame
 from .input import Keyboard, Mouse, Touchscreen
 from .launcher import Launcher, launch, connect
@@ -28,7 +30,7 @@ from .page import Page, ConsoleMessage
 from .target import Target
 from .us_keyboard_layout import keyDefinitions
 
-__version__ = "1.3.4"
+__version__ = "1.4.0"
 
 __all__ = [
     "BrowserContext",
@@ -47,6 +49,7 @@ __all__ = [
     "EmulationManager",
     "EvaluationError",
     "ExecutionContext",
+    "Events",
     "Frame",
     "FrameManager",
     "InputError",

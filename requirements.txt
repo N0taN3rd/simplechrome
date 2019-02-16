@@ -5,7 +5,7 @@ appdirs
 async-timeout
 attrs
 cchardet
-pyee
+pyee2
 tqdm
 ujson
 uvloop
