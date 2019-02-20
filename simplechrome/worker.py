@@ -1,10 +1,12 @@
-from collections import Callable
-from typing import List, Dict, Optional, Any
 from asyncio import AbstractEventLoop
-from pyee import EventEmitter
-from .execution_context import ExecutionContext, JSHandle
+from collections import Callable
+from typing import Any, Dict, List, Optional
+
+from pyee2 import EventEmitter
+
 from .connection import ClientType
-from .util import ensure_loop
+from .execution_context import JSHandle
+from .helper import Helper
 
 
 class Worker(EventEmitter):
@@ -16,7 +18,7 @@ class Worker(EventEmitter):
         exceptionThrown: Callable[[Dict], Any],
         loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__(loop=ensure_loop(loop))
+        super().__init__(loop=Helper.ensure_loop(loop))
         self._client = client
         self._url = url
         self._executionContextPromise = self._loop.create_future()

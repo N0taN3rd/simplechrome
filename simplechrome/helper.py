@@ -1,17 +1,21 @@
 """Helper functions."""
-import asyncio
-import ujson
-from typing import Any, Callable, Dict, List, Union, Awaitable, Optional
-
 import math
+from asyncio import (
+    AbstractEventLoop,
+    Future,
+    Task,
+    TimeoutError as AIOTimeoutError,
+    get_event_loop as aio_get_event_loop,
+)
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type, Union
+from ujson import dumps as ujson_dumps
+
+from aiohttp import AsyncResolver, ClientSession, TCPConnector
 from async_timeout import timeout as aiotimeout
-from asyncio import AbstractEventLoop, Future, Task
-from .util import ensure_loop
+from pyee2 import EventEmitter
 
 from .connection import ClientType
 from .errors import ElementHandleError, WaitTimeoutError
-from pyee import EventEmitter
-
 
 __all__ = ["Helper", "unserializableValueMap", "EEListener"]
 
@@ -25,16 +29,17 @@ unserializableValueMap = {
 
 EEListener = Dict[str, Union[str, EventEmitter, Callable]]
 
+MAYBE_NUMBER_CHECK_TUPLE: Tuple[Type[int], Type[float]] = (int, float)
 
-class Helper(object):
+
+class Helper:
     @staticmethod
     def evaluationString(fun: str, *args: Any) -> str:
         """Convert function and arguments to str."""
         _args = ", ".join(
-            [ujson.dumps("undefined" if arg is None else arg) for arg in args]
+            ["undefined" if arg is None else ujson_dumps(arg) for arg in args]
         )
-        expr = f"({fun})({_args})"
-        return expr
+        return f"({fun})({_args})"
 
     @staticmethod
     def getExceptionMessage(exceptionDetails: dict) -> str:
@@ -42,20 +47,22 @@ class Helper(object):
         exception = exceptionDetails.get("exception")
         if exception is not None:
             return exception.get("description", exception.get("value", ""))
-        message = exceptionDetails.get("text", "")
+        message = [exceptionDetails.get("text", "")]
         stackTrace = exceptionDetails.get("stackTrace")
         if stackTrace is not None:
             for callframe in stackTrace.get("callFrames"):
-                location = (
-                    str(callframe.get("url", ""))
-                    + ":"
-                    + str(callframe.get("lineNumber", ""))
-                    + ":"
-                    + str(callframe.get("columnNumber"))
+                location = "".join(
+                    [
+                        str(callframe.get("url", "")),
+                        ":",
+                        str(callframe.get("lineNumber", "")),
+                        ":",
+                        str(callframe.get("columnNumber")),
+                    ]
                 )
                 functionName = callframe.get("functionName", "<anonymous>")
-                message = message + f"\n    at {functionName} ({location})"
-        return message
+                message.append(f"\n    at {functionName} ({location})")
+        return "".join(message)
 
     @staticmethod
     def addEventListener(
@@ -97,7 +104,7 @@ class Helper(object):
         return remoteObject.get("value")
 
     @staticmethod
-    async def releaseObject(client: ClientType, remoteObject: dict) -> None:
+    async def releaseObject(client: ClientType, remoteObject: Dict) -> None:
         """Release remote object."""
         objectId = remoteObject.get("objectId")
         if not objectId:
@@ -110,7 +117,7 @@ class Helper(object):
             pass
 
     @staticmethod
-    def get_positive_int(obj: dict, name: str) -> int:
+    def get_positive_int(obj: Dict, name: str) -> int:
         """Get and check the value of name in obj is positive integer."""
         value = obj[name]
         if not isinstance(value, int):
@@ -130,21 +137,26 @@ class Helper(object):
         return False
 
     @staticmethod
-    async def timed_wait(
+    async def waitWithTimeout(
         awaitable: Awaitable[Any],
         to: Union[int, float],
+        taskName: Optional[str] = "",
         loop: Optional[AbstractEventLoop] = None,
+        raise_exception: bool = True
     ) -> None:
         try:
-            async with aiotimeout(to, loop=ensure_loop(loop)):
+            async with aiotimeout(to, loop=Helper.ensure_loop(loop)):
                 await awaitable
-        except asyncio.TimeoutError:
-            raise WaitTimeoutError("Timeout exceeded while waiting for event")
+        except AIOTimeoutError:
+            if raise_exception:
+                raise WaitTimeoutError(
+                    f"Timeout of {to} seconds exceeded while waiting for {taskName}"
+                )
 
     @staticmethod
     def cleanup_futures(*args: Future) -> None:
         for future in args:
-            if future and not future.done():
+            if future and not (future.cancelled() or future.done()):
                 future.cancel()
 
     @staticmethod
@@ -154,14 +166,15 @@ class Helper(object):
         predicate: Callable[[Any], bool],
         timeout: Optional[Union[int, float]] = None,
     ) -> Union[Future, Task]:
-        loop = ensure_loop(emitter._loop)
+        loop = Helper.ensure_loop(emitter._loop)
 
         promise = loop.create_future()
 
-        @emitter.on(eventName)
         def listener(event: Any = None) -> None:
             if predicate(event) and not promise.done():
                 promise.set_result(None)
+
+        emitter.on(eventName, listener)
 
         def clean_up(*args: Any, **kwargs: Any) -> None:
             emitter.remove_listener(eventName, listener)
@@ -172,7 +185,7 @@ class Helper(object):
                 try:
                     async with aiotimeout(timeout):
                         await promise
-                except asyncio.TimeoutError:
+                except AIOTimeoutError:
                     raise WaitTimeoutError("Timeout exceeded while waiting for event")
                 finally:
                     clean_up()
@@ -180,3 +193,52 @@ class Helper(object):
             return loop.create_task(timed_promise())
         promise.add_done_callback(clean_up)
         return promise
+
+    @staticmethod
+    def is_number(maybe_number: Any) -> bool:
+        return isinstance(maybe_number, MAYBE_NUMBER_CHECK_TUPLE)
+
+    @staticmethod
+    def is_string(maybe_string: Any) -> bool:
+        return isinstance(maybe_string, str)
+
+    @staticmethod
+    def noop(*args: Any, **kwargs: Any) -> Any:
+        return None
+
+    @staticmethod
+    def merge_dict(dict1: Optional[Dict], dict2: Optional[Dict]) -> Dict[Any, Any]:
+        new_dict = {}
+        if dict1:
+            new_dict.update(dict1)
+        if dict2:
+            new_dict.update(dict2)
+        return new_dict
+
+    @staticmethod
+    def loop_factory() -> AbstractEventLoop:
+        return aio_get_event_loop()
+
+    @staticmethod
+    def ensure_loop(loop: Optional[AbstractEventLoop] = None) -> AbstractEventLoop:
+        """Helper method for checking if the loop is none and if so use asyncio.get_event_loop
+        to retrieve it otherwise the loop is passed through
+        """
+        if loop is not None:
+            return loop
+        return aio_get_event_loop()
+
+    @staticmethod
+    def make_aiohttp_session(loop: Optional[AbstractEventLoop] = None) -> ClientSession:
+        """Creates and returns a new aiohttp.ClientSession that uses AsyncResolver
+
+        :param loop: Optional asyncio event loop to use. Defaults to asyncio.get_event_loop()
+        :return: An instance of aiohttp.ClientSession
+        """
+        if loop is None:
+            loop = aio_get_event_loop()
+        return ClientSession(
+            connector=TCPConnector(resolver=AsyncResolver(loop=loop), loop=loop),
+            loop=loop,
+            json_serialize=ujson_dumps,
+        )

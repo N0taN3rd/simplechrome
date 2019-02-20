@@ -9,15 +9,15 @@ __all__ = ["Dialog"]
 
 
 @attr.dataclass(slots=True, frozen=True)
-class DialogType(object):
+class DialogType:
     Alert: str = attr.ib(default="alert")
     BeforeUnload: str = attr.ib(default="beforeunload")
     Confirm: str = attr.ib(default="confirm")
     Prompt: str = attr.ib(default="prompt")
 
 
-@attr.dataclass(slots=True)
-class Dialog(object):
+@attr.dataclass(slots=True, cmp=False, hash=False)
+class Dialog:
     """Dialog class.
 
     Dialog objects are dispatched by page via the ``dialog`` event.

@@ -6,59 +6,44 @@ import logging
 import math
 import mimetypes
 from asyncio import AbstractEventLoop, Future, Task
-from typing import Any, ClassVar, Callable, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    ClassVar,
+    Dict,
+    List,
+    Optional,
+    TYPE_CHECKING,
+    Union,
+)
 
 import aiofiles
 import attr
-from pyee import EventEmitter
+from pyee2 import EventEmitter
 
-from .connection import ClientType, connection_from_session
+from .connection import ClientType, Connection
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import PageError
-from .execution_context import JSHandle, ElementHandle, createJSHandle
-from .frame_manager import FrameManager, Frame
+from .events import Events
+from .execution_context import ElementHandle, JSHandle, createJSHandle
+from .frame_manager import Frame, FrameManager
 from .helper import Helper
 from .input import Keyboard, Mouse, Touchscreen
-from .network_manager import NetworkManager, Response, Request
+from .network_manager import NetworkManager, Request, Response
+from .timeoutSettings import TimeoutSettings
 from .tracing import Tracing
-from .util import merge_dict, ensure_loop
 
 if TYPE_CHECKING:
     from .target import Target  # noqa: F401
-    from .waitTask import WaitTask  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Page", "ConsoleMessage", "create"]
-
-
-@attr.dataclass(slots=True, frozen=True)
-class PageEvents(object):
-    Close: str = attr.ib(default="close")
-    Console: str = attr.ib(default="console")
-    Dialog: str = attr.ib(default="dialog")
-    DOMContentLoaded: str = attr.ib(default="domcontentloaded")
-    Error: str = attr.ib(default="error")
-    PageError: str = attr.ib(default="pageerror")
-    Request: str = attr.ib(default="request")
-    Response: str = attr.ib(default="response")
-    RequestFailed: str = attr.ib(default="requestfailed")
-    RequestFinished: str = attr.ib(default="requestfinished")
-    FrameAttached: str = attr.ib(default="frameattached")
-    FrameDetached: str = attr.ib(default="framedetached")
-    FrameNavigated: str = attr.ib(default="framenavigated")
-    Load: str = attr.ib(default="load")
-    Metrics: str = attr.ib(default="metrics")
-    LifecycleEvent: str = attr.ib(default="lifecycleevent")
-    LogEntry: str = attr.ib(default="logentry")
-    NavigatedWithinDoc: str = attr.ib(default="navigatedwithindoc")
-    FrameNavigatedWithinDocument: str = attr.ib(default="framenavigatedwithindocument")
+__all__ = ["Page", "ConsoleMessage"]
 
 
 class Page(EventEmitter):
-
-    Events: ClassVar[PageEvents] = PageEvents()
 
     PaperFormats: ClassVar[Dict[str, Dict[str, float]]] = dict(
         letter={"width": 8.5, "height": 11},
@@ -79,31 +64,36 @@ class Page(EventEmitter):
         target: "Target",
         defaultViewport: Optional[Dict[str, int]] = None,
         ignoreHTTPSErrors: bool = False,
+        isolateWorlds: bool = True,
         screenshotTaskQueue: list = None,
         loop: Optional[AbstractEventLoop] = None,
     ) -> "Page":
         """Async function which makes new page object."""
-        await client.send("Page.enable"),
-        frameTree = (await client.send("Page.getFrameTree"))["frameTree"]
+        await client.send("Page.enable")
+        frameTree = await client.send("Page.getFrameTree")
         page = Page(
-            client, target, frameTree, ignoreHTTPSErrors, screenshotTaskQueue, loop
+            client,
+            target,
+            frameTree["frameTree"],
+            ignoreHTTPSErrors=ignoreHTTPSErrors,
+            isolateWorlds=isolateWorlds,
+            screenshotTaskQueue=screenshotTaskQueue,
+            loop=loop,
         )
+
+        async def enable_runtime() -> None:
+            await client.send("Runtime.enable", {})
+            if isolateWorlds:
+                await page._frameManager.ensureSecondaryDOMWorld()
 
         await asyncio.gather(
             client.send("Page.setLifecycleEventsEnabled", {"enabled": True}),
             client.send("Network.enable", {}),
-            client.send("Runtime.enable", {}),
+            enable_runtime(),
             client.send("Log.enable", {}),
+            loop=loop
         )
-        await client.send(
-            "Log.startViolationsReport",
-            dict(
-                config=[
-                    dict(name="blockedEvent", threshold=1),
-                    dict(name="blockedParser", threshold=1),
-                ]
-            ),
-        )
+
         if ignoreHTTPSErrors:
             await client.send(
                 "Security.setOverrideCertificateErrors", {"override": True}
@@ -118,66 +108,74 @@ class Page(EventEmitter):
         target: "Target",
         frameTree: Dict,
         ignoreHTTPSErrors: bool = False,
+        isolateWorlds: bool = True,
         screenshotTaskQueue: list = None,
         loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__(loop=ensure_loop(loop))
-        self._closed = False
-        self._client = client
-        self._target = target
-        self._keyboard = Keyboard(client)
-        self._mouse = Mouse(client, self._keyboard)
-        self._touchscreen = Touchscreen(client, self._keyboard)
-        self._networkManager = NetworkManager(client, loop=self._loop)
-        self._frameManager = FrameManager(
-            client, frameTree, self, self._networkManager, self._loop
+        super().__init__(loop=Helper.ensure_loop(loop))
+        self._closed: bool = False
+        self._client: ClientType = client
+        self._target: "Target" = target
+        self._keyboard: Keyboard = Keyboard(client)
+        self._mouse: Mouse = Mouse(client, self._keyboard)
+        self._timeoutSettings: TimeoutSettings = TimeoutSettings()
+        self._touchscreen: Touchscreen = Touchscreen(client, self._keyboard)
+        self._networkManager: NetworkManager = NetworkManager(client, loop=self._loop)
+        self._frameManager: FrameManager = FrameManager(
+            client,
+            frameTree,
+            timeoutSettings=self._timeoutSettings,
+            page=self,
+            networkManager=self._networkManager,
+            isolateWorlds=isolateWorlds,
+            loop=self._loop,
         )
         self._networkManager.setFrameManager(self._frameManager)
-        self._emulationManager = EmulationManager(client)
-        self._tracing = Tracing(client)
-        self._ignoreHTTPSErrors = ignoreHTTPSErrors
-        self._javascriptEnabled = True
-        self._lifecycle_emitting = False
+        self._emulationManager: EmulationManager = EmulationManager(client)
+        self._tracing: Tracing = Tracing(client)
+        self._ignoreHTTPSErrors: bool = ignoreHTTPSErrors
+        self._javascriptEnabled: bool = True
+        self._lifecycle_emitting: bool = False
         self._viewport: Optional[Dict[str, Union[str, float, bool, int]]] = None
 
         if screenshotTaskQueue is None:
             screenshotTaskQueue = list()
-        self._screenshotTaskQueue = screenshotTaskQueue
+        self._screenshotTaskQueue: List = screenshotTaskQueue
 
         _fm = self._frameManager
         _fm.on(
-            FrameManager.Events.FrameAttached,
-            lambda event: self.emit(Page.Events.FrameAttached, event),
+            Events.FrameManager.FrameAttached,
+            lambda event: self.emit(Events.Page.FrameAttached, event),
         )
         _fm.on(
-            FrameManager.Events.FrameDetached,
-            lambda event: self.emit(Page.Events.FrameDetached, event),
+            Events.FrameManager.FrameDetached,
+            lambda event: self.emit(Events.Page.FrameDetached, event),
         )
         _fm.on(
-            FrameManager.Events.FrameNavigated,
-            lambda event: self.emit(Page.Events.FrameNavigated, event),
+            Events.FrameManager.FrameNavigated,
+            lambda event: self.emit(Events.Page.FrameNavigated, event),
         )
         _fm.on(
-            FrameManager.Events.FrameNavigatedWithinDocument,
-            lambda event: self.emit(Page.Events.FrameNavigatedWithinDocument, event),
+            Events.FrameManager.FrameNavigatedWithinDocument,
+            lambda event: self.emit(Events.Page.FrameNavigatedWithinDocument, event),
         )
 
         _nm = self._networkManager
         _nm.on(
-            NetworkManager.Events.Request,
-            lambda event: self.emit(Page.Events.Request, event),
+            Events.NetworkManager.Request,
+            lambda event: self.emit(Events.Page.Request, event),
         )
         _nm.on(
-            NetworkManager.Events.Response,
-            lambda event: self.emit(Page.Events.Response, event),
+            Events.NetworkManager.Response,
+            lambda event: self.emit(Events.Page.Response, event),
         )
         _nm.on(
-            NetworkManager.Events.RequestFailed,
-            lambda event: self.emit(Page.Events.RequestFailed, event),
+            Events.NetworkManager.RequestFailed,
+            lambda event: self.emit(Events.Page.RequestFailed, event),
         )
         _nm.on(
-            NetworkManager.Events.RequestFinished,
-            lambda event: self.emit(Page.Events.RequestFinished, event),
+            Events.NetworkManager.RequestFinished,
+            lambda event: self.emit(Events.Page.RequestFinished, event),
         )
 
         client.on("Page.domContentEventFired", self._onDomContentEventFired)
@@ -188,8 +186,8 @@ class Page(EventEmitter):
         client.on("Inspector.targetCrashed", self._onTargetCrashed)
         client.on("Log.entryAdded", self._onLogEntryAdded)
 
-        def closed(fut: asyncio.futures.Future) -> None:
-            self.emit(Page.Events.Close)
+        def closed(*args: Any, **kwargs: Any) -> None:
+            self.emit(Events.Page.Close)
             self._closed = True
 
         self._target._isClosedPromise.add_done_callback(closed)
@@ -264,13 +262,37 @@ class Page(EventEmitter):
         """
         self._frameManager.setDefaultNavigationTimeout(timeout)
 
+    def setDefaultTimeout(self, timeout: Union[int, float]) -> None:
+        self._timeoutSettings.setDefaultTimeout(timeout)
+
+    def setDefaultJSTimeout(self, timeout: Union[int, float]) -> None:
+        self._timeoutSettings.setDefaultJSTimeout(timeout)
+
+    def network_idle_promise(
+        self, num_inflight: int = 2, idle_time: int = 2, global_wait: int = 60
+    ) -> Awaitable[None]:
+        return self._frameManager.network_idle_promise(
+            num_inflight=num_inflight, idle_time=idle_time, global_wait=global_wait
+        )
+
     def enable_lifecycle_emitting(self) -> None:
-        self._frameManager.on(FrameManager.Events.LifecycleEvent, self._on_lifecycle)
+        self._frameManager.on(Events.FrameManager.LifecycleEvent, self._on_lifecycle)
 
     def disable_lifecycle_emitting(self) -> None:
         self._frameManager.disable_lifecycle_emitting()
         self._frameManager.remove_listener(
-            FrameManager.Events.LifecycleEvent, self._on_lifecycle
+            Events.FrameManager.LifecycleEvent, self._on_lifecycle
+        )
+
+    async def enable_violation_reporting(self) -> None:
+        await self._client.send(
+            "Log.startViolationsReport",
+            dict(
+                config=[
+                    dict(name="blockedEvent", threshold=1),
+                    dict(name="blockedParser", threshold=1),
+                ]
+            ),
         )
 
     async def setBypassCSP(self, enabled: bool) -> None:
@@ -349,7 +371,7 @@ class Page(EventEmitter):
         windowDescriptor = await self.getWindowDescriptor()
         return windowDescriptor.get("bounds")
 
-    async def tap(self, selector: str) -> None:
+    def tap(self, selector: str) -> Awaitable[None]:
         """Tap the element which matches the ``selector``.
 
         :arg str selector: A selector to search element to touch.
@@ -357,12 +379,12 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if frame is None:
             raise PageError("no main frame")
-        await frame.tap(selector)
+        return frame.tap(selector)
 
     async def stopLoading(self) -> None:
         await self._client.send("Page.stopLoading")
 
-    async def querySelector(self, selector: str) -> Optional["ElementHandle"]:
+    def querySelector(self, selector: str) -> Awaitable[Optional["ElementHandle"]]:
         """Get an Element which matches ``selector``.
 
         :arg str selector: A selector to search element.
@@ -374,9 +396,11 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        return await frame.querySelector(selector)
+        return frame.querySelector(selector)
 
-    async def evaluateHandle(self, pageFunction: str, *args: Any) -> JSHandle:
+    def evaluateHandle(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> Awaitable[JSHandle]:
         """Execute function on this page.
 
         Difference between :meth:`~simplechrome.page.Page.evaluate` and
@@ -387,10 +411,7 @@ class Page(EventEmitter):
         """
         if not self.mainFrame:
             raise PageError("no main frame.")
-        context = await self.mainFrame.executionContext()
-        if not context:
-            raise PageError("No context.")
-        return await context.evaluateHandle(pageFunction, *args)
+        return self.mainFrame.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
 
     async def queryObjects(self, prototypeHandle: JSHandle) -> JSHandle:
         """Iterate js heap and finds all the objects with the handle.
@@ -404,9 +425,9 @@ class Page(EventEmitter):
             raise PageError("No context.")
         return await context.queryObjects(prototypeHandle)
 
-    async def querySelectorEval(
+    def querySelectorEval(
         self, selector: str, pageFunction: str, *args: Any
-    ) -> Optional[Any]:
+    ) -> Awaitable[Any]:
         """Execute function with an element which matches ``selector``.
 
         :arg str selector: A selector to query page for.
@@ -420,11 +441,11 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        return await frame.querySelectorEval(selector, pageFunction, *args)
+        return frame.querySelectorEval(selector, pageFunction, *args)
 
-    async def querySelectorAllEval(
+    def querySelectorAllEval(
         self, selector: str, pageFunction: str, *args: Any
-    ) -> Optional[Any]:
+    ) -> Awaitable[Any]:
         """Execute function with all elements which matches ``selector``.
 
         :arg str selector: A selector to query page for.
@@ -436,9 +457,9 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        return await frame.querySelectorAllEval(selector, pageFunction, *args)
+        return frame.querySelectorAllEval(selector, pageFunction, *args)
 
-    async def querySelectorAll(self, selector: str) -> List["ElementHandle"]:
+    def querySelectorAll(self, selector: str) -> Awaitable[List["ElementHandle"]]:
         """Get all element which matches `selector` as a list.
 
         :arg str selector: A selector to search element.
@@ -450,9 +471,9 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        return await frame.querySelectorAll(selector)
+        return frame.querySelectorAll(selector)
 
-    async def xpath(self, expression: str) -> List[ElementHandle]:
+    def xpath(self, expression: str) -> Awaitable[List[ElementHandle]]:
         """Evaluate XPath expression.
 
         If there is no such element in this page, return None.
@@ -462,7 +483,7 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        return await frame.xpath(expression)
+        return frame.xpath(expression)
 
     async def cookies(self, *urls: str) -> Dict:
         """Get cookies."""
@@ -502,7 +523,9 @@ class Page(EventEmitter):
         if items:
             await self._client.send("Network.setCookies", {"cookies": items})
 
-    async def addScriptTag(self, options: Dict = None, **kwargs: str) -> ElementHandle:
+    def addScriptTag(
+        self, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[ElementHandle]:
         """Add script tag to this page.
 
         One of ``url``, ``path`` or ``content`` option is necessary.
@@ -516,10 +539,11 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        options = merge_dict(options, kwargs)
-        return await frame.addScriptTag(options)
+        return frame.addScriptTag(options, **kwargs)
 
-    async def addStyleTag(self, options: Dict = None, **kwargs: str) -> ElementHandle:
+    def addStyleTag(
+        self, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[ElementHandle]:
         """Add style or link tag to this page.
 
         One of ``url``, ``path`` or ``content`` option is necessary.
@@ -533,18 +557,7 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        options = merge_dict(options, kwargs)
-        return await frame.addStyleTag(options)
-
-    async def injectFile(self, filePath: str) -> str:
-        """[Deprecated] Inject file to this page.
-
-        This method is deprecated. Use :meth:`addScriptTag` instead.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return await frame.injectFile(filePath)
+        return frame.addStyleTag(options, **kwargs)
 
     async def authenticate(self, credentials: Dict[str, str]) -> Any:
         """Provide credentials for http authentication.
@@ -559,12 +572,12 @@ class Page(EventEmitter):
         response = await self._client.send("Performance.getMetrics")
         return self._buildMetricsObject(response["metrics"])
 
-    async def content(self) -> str:
+    def content(self) -> Awaitable[str]:
         """Get the whole HTML contents of the page."""
         frame = self.mainFrame
         if frame is None:
             raise PageError("No main frame.")
-        return await frame.content()
+        return frame.content()
 
     async def goto(
         self,
@@ -615,7 +628,7 @@ class Page(EventEmitter):
 
         Available options are same as :meth:`goto` method.
         """
-        options = merge_dict(options, kwargs)
+        options = Helper.merge_dict(options, kwargs)
         response = (
             await asyncio.gather(
                 self.waitForNavigation(options), self._client.send("Page.reload")
@@ -638,7 +651,7 @@ class Page(EventEmitter):
         options: Optional[Dict] = None,
         **kwargs: Any,
     ) -> Union[Future, Task]:
-        timeout = merge_dict(options, kwargs).get("timeout", 30)
+        timeout = Helper.merge_dict(options, kwargs).get("timeout", 30)
 
         def wrapped_predicate(req: Request) -> bool:
             if isinstance(urlOrPredicate, str):
@@ -647,7 +660,7 @@ class Page(EventEmitter):
 
         return Helper.waitForEvent(
             self._networkManager,
-            NetworkManager.Events.Request,
+            Events.NetworkManager.Request,
             wrapped_predicate,
             timeout,
         )
@@ -658,7 +671,7 @@ class Page(EventEmitter):
         options: Optional[Dict] = None,
         **kwargs: Any,
     ) -> Union[Future, Task]:
-        timeout = merge_dict(options, kwargs).get("timeout", 30)
+        timeout = Helper.merge_dict(options, kwargs).get("timeout", 30)
 
         def wrapped_predicate(res: Response) -> bool:
             if isinstance(urlOrPredicate, str):
@@ -667,7 +680,7 @@ class Page(EventEmitter):
 
         return Helper.waitForEvent(
             self._networkManager,
-            NetworkManager.Events.Response,
+            Events.NetworkManager.Response,
             wrapped_predicate,
             timeout,
         )
@@ -677,7 +690,7 @@ class Page(EventEmitter):
 
         Available options are same as :meth:`goto` method.
         """
-        options = merge_dict(options, kwargs)
+        options = Helper.merge_dict(options, kwargs)
         return await self._go(-1, options)
 
     async def goForward(
@@ -687,7 +700,7 @@ class Page(EventEmitter):
 
         Available options are same as :meth:`goto` method.
         """
-        options = merge_dict(options, kwargs)
+        options = Helper.merge_dict(options, kwargs)
         return await self._go(+1, options)
 
     async def _go(self, delta: int, options: Dict) -> Optional[Response]:
@@ -713,7 +726,7 @@ class Page(EventEmitter):
 
     async def emulate(self, options: Dict = None, **kwargs: Any) -> None:
         """Emulate viewport and user agent."""
-        options = merge_dict(options, kwargs)
+        options = Helper.merge_dict(options, kwargs)
         await self.setViewport(options.get("viewport", {}))
         await self.setUserAgent(options.get("userAgent", ""))
 
@@ -724,35 +737,6 @@ class Page(EventEmitter):
         await self._client.send(
             "Emulation.setEmulatedMedia", {"media": mediaType or ""}
         )
-
-    async def evaluate(
-        self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> Any:
-        """Evaluates the js-function or js-expression in the main frame retrieving the results
-        of the valuation.
-
-        :param str pageFunction: String of js-function/expression to be executed
-                               in the browser.
-        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
-        If this keyword argument is true args are ignored
-        """
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("No main frame.")
-        return await frame.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
-
-    async def evaluate_expression(
-        self, expression: str, withCliAPI: bool = False
-    ) -> Any:
-        """Evaluates the js expression in the main frame returning the results by value.
-
-        :param str expression: The js expression to be evaluated in the main frame.
-        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
-        """
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("No main frame.")
-        return await frame.evaluate_expression(expression, withCliAPI=withCliAPI)
 
     async def evaluateOnNewDocument(
         self, pageFunction: str, *args: str, raw: bool = False
@@ -782,7 +766,7 @@ class Page(EventEmitter):
         await self._client.send("Page.removeScriptToEvaluateOnNewDocument", identifier)
 
     async def raw_screenshot(self, options: Dict = None, **kwargs: Any) -> bytes:
-        options = merge_dict(options, kwargs)
+        options = Helper.merge_dict(options, kwargs)
         screenshotType = None
         if "type" in options:
             screenshotType = options["type"]
@@ -824,7 +808,7 @@ class Page(EventEmitter):
         * ``omitBackground`` (bool): Hide default white background and allow
           capturing screenshot with transparency.
         """
-        options = merge_dict(options, kwargs)
+        options = Helper.merge_dict(options, kwargs)
         screenshotType = None
         if "type" in options:
             screenshotType = options["type"]
@@ -914,7 +898,7 @@ class Page(EventEmitter):
 
         :return bytes: Return generated PDF ``bytes`` object.
         """
-        options = merge_dict(options, kwargs)
+        options = Helper.merge_dict(options, kwargs)
         scale = options.get("scale", 1)
         displayHeaderFooter = bool(options.get("displayHeaderFooter"))
         headerTemplate = options.get("headerTemplate", "")
@@ -980,21 +964,37 @@ class Page(EventEmitter):
                 await f.write(buffer)
         return buffer
 
-    async def plainText(self) -> str:
-        """[Deprecated] Get page content as plain text."""
-        logger.warning("`Page.plainText` is deprecated.")
-        return await self.evaluate("() => document.body.innerText")
+    def evaluate(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> Awaitable[Any]:
+        frame = self.mainFrame
+        if frame is None:
+            raise Exception("No main frame.")
+        return frame.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
 
-    async def title(self) -> str:
+    async def evaluate_expression(
+        self, expression: str, withCliAPI: bool = False
+    ) -> Any:
+        """Evaluates the js expression in the main frame returning the results by value.
+
+        :param str expression: The js expression to be evaluated in the main frame.
+        :param bool withCliAPI:  Determines whether Command Line API should be available during the evaluation.
+        """
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("No main frame.")
+        return await frame.evaluate_expression(expression, withCliAPI=withCliAPI)
+
+    def title(self) -> Awaitable[str]:
         """Get page title."""
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        return await frame.title()
+        return frame.title()
 
     async def close(self) -> None:
         """Close connection."""
-        conn = connection_from_session(self._client)
+        conn = Connection.from_session(self._client)
 
         if conn is None:
             raise PageError(
@@ -1003,7 +1003,9 @@ class Page(EventEmitter):
             )
         await conn.send("Target.closeTarget", {"targetId": self._target._targetId})
 
-    async def click(self, selector: str, options: Dict = None, **kwargs: Any) -> None:
+    def click(
+        self, selector: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[None]:
         """Click element which matches ``selector``.
 
         This method fetches an element with ``selector``, scrolls it into view
@@ -1032,9 +1034,9 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if frame is None:
             raise PageError("No main frame.")
-        await frame.click(selector, options, **kwargs)
+        return frame.click(selector, options, **kwargs)
 
-    async def hover(self, selector: str) -> None:
+    def hover(self, selector: str) -> Awaitable[None]:
         """Mouse hover the element which matches ``selector``.
 
         If no element matched the ``selector``, raise ``PageError``.
@@ -1042,9 +1044,9 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if frame is None:
             raise PageError("No main frame.")
-        await frame.hover(selector)
+        return frame.hover(selector)
 
-    async def focus(self, selector: str) -> None:
+    def focus(self, selector: str) -> Awaitable[None]:
         """Focus the element which matches ``selector``.
 
         If no element matched the ``selector``, raise ``PageError``.
@@ -1052,9 +1054,9 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if frame is None:
             raise PageError("No main frame.")
-        await frame.focus(selector)
+        return frame.focus(selector)
 
-    async def select(self, selector: str, *values: str) -> List[str]:
+    def select(self, selector: str, *values: str) -> Awaitable[List[str]]:
         """Select options and return selected values.
 
         If no element matched the ``selector``, raise ``ElementHandleError``.
@@ -1062,11 +1064,11 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        return await frame.select(selector, *values)
+        return frame.select(selector, *values)
 
-    async def type(
+    def type(
         self, selector: str, text: str, options: Dict = None, **kwargs: Any
-    ) -> None:
+    ) -> Awaitable[None]:
         """Type ``text`` on the element which matches ``selector``.
 
         If no element matched the ``selector``, raise ``PageError``.
@@ -1076,7 +1078,7 @@ class Page(EventEmitter):
         frame = self.mainFrame
         if not frame:
             raise PageError("no main frame.")
-        return await frame.type(selector, text, options, **kwargs)
+        return frame.type(selector, text, options, **kwargs)
 
     def waitFor(
         self,
@@ -1084,7 +1086,7 @@ class Page(EventEmitter):
         options: Optional[Dict] = None,
         *args: Any,
         **kwargs: Any,
-    ) -> Union[Future, "WaitTask"]:
+    ) -> Awaitable[Optional[JSHandle]]:
         """Wait for function, timeout, or element which matches on page.
 
         This method behaves differently with respect to the first argument:
@@ -1118,8 +1120,8 @@ class Page(EventEmitter):
         return frame.waitFor(selectorOrFunctionOrTimeout, options, *args, **kwargs)
 
     def waitForSelector(
-        self, selector: str, options: Dict = None, **kwargs: Any
-    ) -> Union[Future, "WaitTask"]:
+        self, selector: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[Optional[ElementHandle]]:
         """Wait until element which matches ``selector`` appears on page.
 
         Wait for the ``selector`` to appear in page. If at the moment of
@@ -1148,8 +1150,8 @@ class Page(EventEmitter):
         return frame.waitForSelector(selector, options, **kwargs)
 
     def waitForXPath(
-        self, xpath: str, options: Dict = None, **kwargs: Any
-    ) -> Union[Future, "WaitTask"]:
+        self, xpath: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[Optional[ElementHandle]]:
         """Wait until eleemnt which matches ``xpath`` appears on page.
 
         Wait for the ``xpath`` to appear in page. If the moment of calling the
@@ -1179,8 +1181,8 @@ class Page(EventEmitter):
         return frame.waitForXPath(xpath, options, **kwargs)
 
     def waitForFunction(
-        self, pageFunction: str, options: Dict = None, *args: str, **kwargs: Any
-    ) -> Union[Future, "WaitTask"]:
+        self, pageFunction: str, options: Dict = None, *args: Any, **kwargs: Any
+    ) -> Awaitable[Optional[JSHandle]]:
         """Wait until the function completes and returns a truethy value.
 
         :arg Any args: Arguments to pass to ``pageFunction``.
@@ -1209,8 +1211,14 @@ class Page(EventEmitter):
             raise PageError("no main frame.")
         return frame.waitForFunction(pageFunction, options, *args, **kwargs)
 
+    def enableNetworkCache(self) -> Awaitable[None]:
+        return self._networkManager.enableNetworkCache()
+
+    def disableNetworkCache(self) -> Awaitable[None]:
+        return self._networkManager.disableNetworkCache()
+
     async def _screenshotTask(
-        self, format: str, options: Dict
+        self, format_: str, options: Dict
     ) -> bytes:  # noqa: C901,E501
         await self._client.send(
             "Target.activateTarget", {"targetId": self._target._targetId}
@@ -1243,13 +1251,13 @@ class Page(EventEmitter):
                     "screenOrientation": screenOrientation,
                 },
             )
-        shouldSetDefaultBackground = options.get("omitBackground") and format == "png"
+        shouldSetDefaultBackground = options.get("omitBackground") and format_ == "png"
         if shouldSetDefaultBackground:
             await self._client.send(
                 "Emulation.setDefaultBackgroundColorOverride",
                 {"color": {"r": 0, "g": 0, "b": 0, "a": 0}},
             )
-        opt = {"format": format}
+        opt = {"format": format_}
         if clip:
             opt["clip"] = clip
         if options.get("quality"):
@@ -1271,7 +1279,7 @@ class Page(EventEmitter):
         return buffer
 
     async def _rawScreenshotTask(
-        self, format: str, options: Dict
+        self, format_: str, options: Dict
     ) -> bytes:  # noqa: C901,E501
         await self._client.send(
             "Target.activateTarget", {"targetId": self._target._targetId}
@@ -1310,7 +1318,7 @@ class Page(EventEmitter):
                 "Emulation.setDefaultBackgroundColorOverride",
                 {"color": {"r": 0, "g": 0, "b": 0, "a": 0}},
             )
-        opt = {"format": format}
+        opt = {"format": format_}
         if clip:
             opt["clip"] = clip
         result: Dict[str, bytes] = await self._client.send(
@@ -1335,7 +1343,7 @@ class Page(EventEmitter):
         )
 
     def _onTargetCrashed(self, *args: Any, **kwargs: Any) -> None:
-        self.emit("error", PageError("Page crashed!"))
+        self.emit(Events.Page.Crashed, PageError("Page crashed!"))
 
     def _check_worker(self, event: Dict) -> None:
         tinfo = event.get("targetInfo")
@@ -1345,8 +1353,7 @@ class Page(EventEmitter):
                 self._loop.create_task(
                     self._client.send(
                         "Target.detachFromTarget", {"sessionId": event.get("sessionId")}
-                    ),
-                    loop=self._loop,
+                    )
                 )
 
     def _onLogEntryAdded(self, event: Dict) -> None:
@@ -1355,14 +1362,14 @@ class Page(EventEmitter):
         if args is not None:
             self._loop.create_task(self._release_log_args(args))
         if entry.get("source", "") != "worker":
-            self.emit(Page.Events.LogEntry, entry)
+            self.emit(Events.Page.LogEntry, entry)
 
     def _on_lifecycle(self, le: Callable) -> None:
-        self.emit(Page.Events.LifecycleEvent, le)
+        self.emit(Events.Page.LifecycleEvent, le)
 
     def _emitMetrics(self, event: Dict) -> None:
         self.emit(
-            Page.Events.Metrics,
+            Events.Page.Metrics,
             {
                 "title": event["title"],
                 "metrics": self._buildMetricsObject(event["metrics"]),
@@ -1378,7 +1385,7 @@ class Page(EventEmitter):
 
     def _handleException(self, exceptionDetails: Dict) -> None:
         message = Helper.getExceptionMessage(exceptionDetails)
-        self.emit(Page.Events.PageError, PageError(message))
+        self.emit(Events.Page.PageError, PageError(message))
 
     def _onConsoleAPI(self, event: Dict) -> None:
         context = self._frameManager.executionContextById(
@@ -1387,7 +1394,7 @@ class Page(EventEmitter):
         values = []
         for arg in event.get("args", []):
             values.append(createJSHandle(context, arg))
-        if not self.listeners(Page.Events.Console):
+        if not self.listeners(Events.Page.Console):
             for arg in values:
                 self._loop.create_task(arg.dispose())
             return
@@ -1400,7 +1407,7 @@ class Page(EventEmitter):
                 textTokens.append(str(Helper.valueFromRemoteObject(remoteObject)))
 
         message = ConsoleMessage(event["type"], " ".join(textTokens), values)
-        self.emit(Page.Events.Console, message)
+        self.emit(Events.Page.Console, message)
 
     def _onDialog(self, event: Any) -> None:
         dialogType = ""
@@ -1416,13 +1423,13 @@ class Page(EventEmitter):
         dialog = Dialog(
             self._client, dialogType, event.get("message"), event.get("defaultPrompt")
         )
-        self.emit(Page.Events.Dialog, dialog)
+        self.emit(Events.Page.Dialog, dialog)
 
     def _onDomContentEventFired(self, event: Dict) -> None:
-        self.emit(Page.Events.DOMContentLoaded)
+        self.emit(Events.Page.DOMContentLoaded)
 
     def _onLoadEventFired(self, event: Dict) -> None:
-        self.emit(Page.Events.Load)
+        self.emit(Events.Page.Load)
 
     def _onExceptionThrown(self, event: Dict) -> None:
         self._handleException(event.get("exceptionDetails"))
@@ -1491,7 +1498,7 @@ def convertPrintParameterToInches(
     return pixels / 96
 
 
-@attr.dataclass(slots=True)
+@attr.dataclass(slots=True, cmp=False, hash=False)
 class ConsoleMessage(object):
     """Console message class.
 
@@ -1502,6 +1509,3 @@ class ConsoleMessage(object):
     text: str = attr.ib()
     args: List[JSHandle] = attr.ib()
 
-
-#: alias to :func:`create_page()`
-create = Page.create

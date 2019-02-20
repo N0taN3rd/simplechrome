@@ -1,15 +1,38 @@
-from typing import List, Callable, Tuple
+from asyncio import AbstractEventLoop, Future, get_event_loop as aio_get_event_loop
+from collections import defaultdict
+from typing import Any, Callable, DefaultDict, List, Optional, Tuple
 
 import attr
-from pyee import EventEmitter
+from pyee2 import EventEmitter
 
+from simplechrome.frame_manager import Frame
 from simplechrome.helper import EEListener
+from simplechrome.page import Page
 
-__all__ = ["EEHandler"]
+__all__ = ["EEHandler", "TestUtil", "PageCrashState"]
+
+
+def dummy_predicate(*args: Any, **kwargs: Any) -> bool:
+    return True
 
 
 @attr.dataclass(slots=True)
-class EEHandler(object):
+class PageCrashState:
+    _crashed: bool = attr.ib(default=False)
+
+    @property
+    def crashed(self) -> bool:
+        return self._crashed
+
+    def _page_crashed(self) -> None:
+        self._crashed = True
+
+    def reset(self) -> None:
+        self._crashed = False
+
+
+@attr.dataclass(slots=True)
+class EEHandler:
     listeners: List[EEListener] = attr.ib(factory=list)
 
     def addEventListener(
@@ -33,3 +56,70 @@ class EEHandler(object):
             handler = listener["handler"]
             emitter.remove_listener(eventName, handler)
         self.listeners.clear()
+
+
+class TestUtil:
+    @staticmethod
+    async def attachFrame(page: Page, frameId: str, url: str) -> Frame:
+        func = """async function attachFrame(frameId, url) {
+          const frame = document.createElement('iframe');
+          frame.src = url;
+          frame.id = frameId;
+          document.body.appendChild(frame);
+          await new Promise(resolve => frame.onload = resolve);
+          return frame;
+        }"""
+        handle = await page.evaluateHandle(func, frameId, url)
+        return await handle.asElement().contentFrame()
+
+    @staticmethod
+    async def detachFrame(page: Page, frameId: str) -> None:
+        func = """function detachFrame(frameId) {
+            const frame = document.getElementById(frameId);
+            frame.remove();
+        }"""
+        await page.evaluate(func, frameId)
+
+    @staticmethod
+    async def navigateFrame(page: Page, frameId: str, url: str) -> None:
+        func = """function navigateFrame(frameId, url) {
+          const frame = document.getElementById(frameId);
+          frame.src = url;
+          return new Promise(resolve => frame.onload = resolve);
+        }"""
+        await page.evaluate(func, frameId, url)
+
+    @staticmethod
+    def dumpFrames(frame: Frame) -> DefaultDict[str, List[str]]:
+        results = defaultdict(list)
+        results["0"].append(frame.url)
+        depth = 1
+        frames: List = list(map(lambda x: dict(f=x, depth=depth), frame.childFrames))
+        while frames:
+            cf = frames.pop()
+            f = cf.get("f")
+            results[f"{cf.get('depth')}"].append(f.url)
+            if f.childFrames:
+                frames.extend(
+                    list(map(lambda x: dict(f=x, depth=depth + 1), f.childFrames))
+                )
+        return results
+
+    @staticmethod
+    async def waitEvent(
+        emitter: EventEmitter,
+        eventName: str,
+        predicate: Optional[Callable[[Any], bool]] = None,
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> Future:
+        _loop = loop if loop is not None else aio_get_event_loop()
+        _predicate = predicate if predicate is not None else dummy_predicate
+        promise = _loop.create_future()
+
+        def listener(event: Any = None) -> None:
+            if _predicate(event) and not promise.done():
+                emitter.remove_listener(eventName, listener)
+                promise.set_result(event)
+
+        emitter.on(eventName, listener)
+        return promise

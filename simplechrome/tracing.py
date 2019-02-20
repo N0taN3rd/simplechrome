@@ -1,11 +1,12 @@
-import base64
-from typing import Any, Dict, List, Optional, Awaitable
-
-import attr
-import aiofiles
 import asyncio
+import base64
+from typing import Any, Awaitable, Dict, List, Optional
+
+import aiofiles
+import attr
+
 from .connection import ClientType
-from .util import merge_dict
+from .helper import Helper
 
 __all__ = ["Tracing"]
 
@@ -17,7 +18,7 @@ class Tracing(object):
     _path: Optional[str] = attr.ib(init=False, default="")
 
     async def start(self, options: Optional[Dict], **kwargs: Any) -> None:
-        opts = merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
         defaultCategories: List[str] = [
             "-*",
             "devtools.timeline",
@@ -62,21 +63,21 @@ class Tracing(object):
 
     async def _readStream(self, handle: str) -> bytes:
         eof = False
-        content: List[bytes] = []
+        content = bytearray()
         while not eof:
             response = await self.client.send("IO.read", dict(handle=handle))
             eof = response.get("eof")
             if response.get("base64Encoded", False):
-                content.append(base64.b64decode(response.get("data")))
+                content += base64.b64decode(response.get("data"))
             else:
-                content.append(response.get("data").encode("utf-8"))
+                content += response.get("data").encode("utf-8")
 
         await self.client.send("IO.close", dict(handle=handle))
-        return b"".join(content)
+        return bytes(content)
 
     async def _serialize_stream_to_file(self, handle: str, path: str) -> bytes:
         eof = False
-        content: List[bytes] = []
+        content = bytearray()
         async with aiofiles.open(path, "wb") as out:
             while not eof:
                 response = await self.client.send("IO.read", dict(handle=handle))
@@ -85,6 +86,6 @@ class Tracing(object):
                     data = base64.b64decode(response.get("data"))
                 else:
                     data = response.get("data").encode("utf-8")
-                content.append(data)
+                content += data
                 await out.write(data)
-        return b"".join(content)
+        return bytes(content)
