@@ -40,7 +40,9 @@ class LifecycleWatcher:
     _expectedLifecycle: List[str] = attr.ib(init=False, factory=list)
     _hasSameDocumentNavigation: bool = attr.ib(init=False, default=False)
     _eventListeners: List[EEListener] = attr.ib(init=False, repr=False, default=None)
-    _navigationRequest: Optional["Request"] = attr.ib(init=False, repr=False, default=None)
+    _navigationRequest: Optional["Request"] = attr.ib(
+        init=False, repr=False, default=None
+    )
     _sameDocumentNavigationPromise: Future = attr.ib(
         init=False, repr=False, default=None
     )
@@ -153,7 +155,8 @@ class LifecycleWatcher:
                 await timeoutPromise
         except AIOTimeoutError:
             return NavigationTimeoutError(
-                f"Navigation Timeout Exceeded: {self._timeout} seconds exceeded."
+                f"Navigation Timeout Exceeded: {self._timeout} seconds exceeded.",
+                response=self.navigationResponse
             )
         return None
 

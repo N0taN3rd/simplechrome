@@ -30,7 +30,7 @@ from .page import Page, ConsoleMessage
 from .target import Target
 from .us_keyboard_layout import keyDefinitions
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 __all__ = [
     "BrowserContext",

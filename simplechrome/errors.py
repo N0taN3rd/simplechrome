@@ -1,4 +1,9 @@
+from typing import Any, Optional, TYPE_CHECKING
+
 from cripy.errors import NetworkError, ProtocolError
+
+if TYPE_CHECKING:
+    from .network_manager import Response
 
 __all__ = [
     "BrowserError",
@@ -51,6 +56,10 @@ class NavigationError(Exception):
 
 class NavigationTimeoutError(Exception):
     """For navigation timeout errors"""
+
+    def __init__(self, *args: Any, response: Optional["Response"] = None) -> None:
+        super().__init__(*args)
+        self.response: Optional["Response"] = response
 
 
 class EvaluationError(Exception):
