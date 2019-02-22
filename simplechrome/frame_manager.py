@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from sys import exc_info as sys_exc_info
 from asyncio import (
     AbstractEventLoop,
     FIRST_COMPLETED as AIO_FIRST_COMPLETED,
@@ -157,9 +158,16 @@ class FrameManager(EventEmitter):
                 ensureNewDocumentNavigation = bool(response.get("loaderId"))
                 errorText = response.get("errorText")
                 if errorText:
-                    return NavigationError(f"Navigation to {url} failed: {errorText}")
+                    return NavigationError.Failed(
+                        f"Navigation to {url} failed: {errorText}",
+                        response=watcher.navigationResponse,
+                    )
             except Exception as e:
-                return NavigationError(f"Navigation to {url} failed: {e.args[0]}")
+                return NavigationError.Failed(
+                    f"Navigation to {url} failed: {e.args[0]}",
+                    response=watcher.navigationResponse,
+                    tb=sys_exc_info()[2],
+                )
             return None
 
         # asyncio.wait does not work like Promise.race

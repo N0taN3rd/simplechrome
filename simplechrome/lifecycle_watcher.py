@@ -4,7 +4,7 @@ from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING, Union
 import attr
 from async_timeout import timeout as aio_timeout
 
-from .errors import NavigationError, NavigationTimeoutError
+from .errors import NavigationError
 from .events import Events
 from .helper import EEListener, Helper
 
@@ -126,7 +126,11 @@ class LifecycleWatcher:
 
     def _onFrameDetached(self, frame: "Frame") -> None:
         if frame is self._frame:
-            self._terminate(NavigationError("Navigating frame was detached"))
+            self._terminate(
+                NavigationError.Failed(
+                    "Navigating frame was detached", response=self.navigationResponse
+                )
+            )
             return
         self._checkLifecycleComplete()
 
@@ -147,16 +151,14 @@ class LifecycleWatcher:
             return self._loop.create_task(self._timeout_func(timeoutPromise))
         return timeoutPromise
 
-    async def _timeout_func(
-        self, timeoutPromise: Future
-    ) -> Optional[NavigationTimeoutError]:
+    async def _timeout_func(self, timeoutPromise: Future) -> Optional[NavigationError]:
         try:
             async with aio_timeout(self._timeout, loop=self._loop):
                 await timeoutPromise
         except AIOTimeoutError:
-            return NavigationTimeoutError(
+            return NavigationError.TimedOut(
                 f"Navigation Timeout Exceeded: {self._timeout} seconds exceeded.",
-                response=self.navigationResponse
+                response=self.navigationResponse,
             )
         return None
 
@@ -183,8 +185,9 @@ class LifecycleWatcher:
                 self._frameManager._client,
                 self._frameManager._client.Events.Disconnected,
                 lambda: self._terminate(
-                    NavigationError(
-                        "Navigation failed because browser has disconnected!"
+                    NavigationError.Disconnected(
+                        "Navigation failed because browser has disconnected!",
+                        response=self.navigationResponse,
                     )
                 ),
             ),

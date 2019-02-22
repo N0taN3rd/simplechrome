@@ -5,7 +5,7 @@ import time
 import pytest
 from grappa import should
 
-from simplechrome.errors import NavigationTimeoutError, EvaluationError
+from simplechrome.errors import NavigationError, EvaluationError
 from simplechrome.events import Events
 from .base_test import BaseChromeTest
 from .utils import TestUtil
@@ -450,7 +450,7 @@ console.log(Promise.resolve('should not wait until resolved!'));
     @pytest.mark.asyncio
     async def test_goto_time_out(self):
         with pytest.raises(
-            NavigationTimeoutError,
+            NavigationError,
             match="Navigation Timeout Exceeded: 3 seconds exceeded",
         ):
             await self.goto_never_loads(waitUntil="load", timeout=3)

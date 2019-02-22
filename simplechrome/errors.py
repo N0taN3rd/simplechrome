@@ -17,7 +17,6 @@ __all__ = [
     "InputError",
     "NavigationError",
     "EvaluationError",
-    "NavigationTimeoutError",
     "WaitSetupError",
 ]
 
@@ -53,13 +52,40 @@ class InputError(Exception):
 class NavigationError(Exception):
     """For navigation errors"""
 
-
-class NavigationTimeoutError(Exception):
-    """For navigation timeout errors"""
-
-    def __init__(self, *args: Any, response: Optional["Response"] = None) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        response: Optional["Response"] = None,
+        timeout: bool = False,
+        failed: bool = False,
+        disconnected: bool = False,
+    ) -> None:
         super().__init__(*args)
         self.response: Optional["Response"] = response
+        self.timeout: bool = timeout
+        self.failed: bool = failed
+        self.disconnected: bool = disconnected
+
+    @classmethod
+    def TimedOut(
+        cls, msg: str, response: Optional["Response"] = None
+    ) -> "NavigationError":
+        return cls(msg, response=response, timeout=True)
+
+    @classmethod
+    def Failed(
+        cls, msg: str, response: Optional["Response"] = None, tb: Any = None
+    ) -> "NavigationError":
+        ne: NavigationError = cls(msg, response=response, failed=True)
+        if tb is not None:
+            ne.with_traceback(tb)
+        return ne
+
+    @classmethod
+    def Disconnected(
+        cls, msg: str, response: Optional["Response"] = None
+    ) -> "NavigationError":
+        return cls(msg, response=response, disconnected=True)
 
 
 class EvaluationError(Exception):

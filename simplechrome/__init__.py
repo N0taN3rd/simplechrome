@@ -1,36 +1,35 @@
 """The simple chrome package"""
 from .browser_fetcher import BrowserFetcher, RevisionInfo
-from .chrome import Chrome, BrowserContext
-from .connection import Connection, CDPSession, ClientType
+from .chrome import BrowserContext, Chrome
+from .connection import CDPSession, ClientType, Connection
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import (
-    LauncherError,
-    NavigationTimeoutError,
     BrowserError,
     BrowserFetcherError,
     ElementHandleError,
     EvaluationError,
     InputError,
+    LauncherError,
     NavigationError,
+    NetworkError,
     PageError,
     WaitSetupError,
     WaitTimeoutError,
-    NetworkError,
 )
 from .events import Events
 from .execution_context import ExecutionContext
-from .jsHandle import ElementHandle, JSHandle
-from .frame_manager import FrameManager, Frame
+from .frame_manager import Frame, FrameManager
 from .input import Keyboard, Mouse, Touchscreen
-from .launcher import Launcher, launch, connect
+from .jsHandle import ElementHandle, JSHandle
+from .launcher import Launcher, connect, launch
 from .lifecycle_watcher import LifecycleWatcher
 from .network_manager import NetworkManager, Request, Response, SecurityDetails
-from .page import Page, ConsoleMessage
+from .page import ConsoleMessage, Page
 from .target import Target
 from .us_keyboard_layout import keyDefinitions
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 __all__ = [
     "BrowserContext",
@@ -62,7 +61,6 @@ __all__ = [
     "LifecycleWatcher",
     "Mouse",
     "NavigationError",
-    "NavigationTimeoutError",
     "NetworkError",
     "NetworkManager",
     "Page",
