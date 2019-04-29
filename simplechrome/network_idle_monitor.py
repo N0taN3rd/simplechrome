@@ -3,13 +3,13 @@ from asyncio import (
     CancelledError,
     Future,
     Task,
-    TimeoutError as AIOTimeoutError,
-    sleep as aio_sleep,
+    TimeoutError,
+    sleep,
 )
 from typing import Any, Dict, List, Optional, Set
 
-from async_timeout import timeout as aio_timeout
-from pyee2 import EventEmitter
+from async_timeout import timeout
+from pyee2 import EventEmitterS
 
 from .connection import ClientType
 from .helper import EEListener, Helper
@@ -17,9 +17,21 @@ from .helper import EEListener, Helper
 __all__ = ["NetworkIdleMonitor"]
 
 
-class NetworkIdleMonitor(EventEmitter):
+class NetworkIdleMonitor(EventEmitterS):
     """Monitors the network requests of the remote browser to determine when
     network idle happens"""
+
+    __slots__: List[str] = [
+        "_client",
+        "_global_wait",
+        "_idle_future",
+        "_idle_time",
+        "_listeners",
+        "_num_inflight",
+        "_requestIds",
+        "_safety_task",
+        "_to",
+    ]
 
     def __init__(
         self,
@@ -102,24 +114,24 @@ class NetworkIdleMonitor(EventEmitter):
 
         try:
             self._safety_task = self._loop.create_task(self.safety())
-            async with aio_timeout(self._global_wait, loop=self._loop):
+            async with timeout(self._global_wait, loop=self._loop):
                 await self._idle_future
-        except AIOTimeoutError:
+        except TimeoutError:
             self.emit("idle")
 
         self._requestIds.clear()
         if self._to is not None and not self._to.done():
             self._to.cancel()
             try:
-                async with aio_timeout(10, loop=self._loop):
+                async with timeout(10, loop=self._loop):
                     await self._to
-            except (AIOTimeoutError, CancelledError):
+            except (TimeoutError, CancelledError):
                 pass
             self._to = None
 
     async def safety(self) -> None:
         """Guards against waiting the full global wait time if the network was idle and stays idle"""
-        await aio_sleep(5, loop=self._loop)
+        await sleep(5, loop=self._loop)
         if self._idle_future and not self._idle_future.done():
             self._idle_future.set_result(True)
 
@@ -128,7 +140,7 @@ class NetworkIdleMonitor(EventEmitter):
         and the idle time elapses the idle event is emitted signifying
         network idle has been reached
         """
-        await aio_sleep(self._idle_time, loop=self._loop)
+        await sleep(self._idle_time, loop=self._loop)
         self.emit("idle")
 
     def req_started(self, info: Dict) -> None:

@@ -1,18 +1,12 @@
 """Helper functions."""
-import math
-from asyncio import (
-    AbstractEventLoop,
-    Future,
-    Task,
-    TimeoutError as AIOTimeoutError,
-    get_event_loop as aio_get_event_loop,
-)
+from asyncio import AbstractEventLoop, Future, Task, TimeoutError, get_event_loop
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type, Union
-from ujson import dumps as ujson_dumps
 
+import math
 from aiohttp import AsyncResolver, ClientSession, TCPConnector
 from async_timeout import timeout as aiotimeout
-from pyee2 import EventEmitter
+from pyee2 import EventEmitter, EventEmitterS
+from ujson import dumps
 
 from .connection import ClientType
 from .errors import ElementHandleError, WaitTimeoutError
@@ -27,7 +21,8 @@ unserializableValueMap = {
     "-Infinity": -math.inf,
 }
 
-EEListener = Dict[str, Union[str, EventEmitter, Callable]]
+EEType = Union[EventEmitter, EventEmitterS]
+EEListener = Dict[str, Union[str, EEType, Callable]]
 
 MAYBE_NUMBER_CHECK_TUPLE: Tuple[Type[int], Type[float]] = (int, float)
 
@@ -36,9 +31,7 @@ class Helper:
     @staticmethod
     def evaluationString(fun: str, *args: Any) -> str:
         """Convert function and arguments to str."""
-        _args = ", ".join(
-            ["undefined" if arg is None else ujson_dumps(arg) for arg in args]
-        )
+        _args = ", ".join(["undefined" if arg is None else dumps(arg) for arg in args])
         return f"({fun})({_args})"
 
     @staticmethod
@@ -51,22 +44,14 @@ class Helper:
         stackTrace = exceptionDetails.get("stackTrace")
         if stackTrace is not None:
             for callframe in stackTrace.get("callFrames"):
-                location = "".join(
-                    [
-                        str(callframe.get("url", "")),
-                        ":",
-                        str(callframe.get("lineNumber", "")),
-                        ":",
-                        str(callframe.get("columnNumber")),
-                    ]
-                )
+                location = f'{callframe.get("url", "")}:{callframe.get("lineNumber", "")}:{callframe.get("columnNumber")}'
                 functionName = callframe.get("functionName", "<anonymous>")
                 message.append(f"\n    at {functionName} ({location})")
         return "".join(message)
 
     @staticmethod
     def addEventListener(
-        emitter: EventEmitter, eventName: str, handler: Callable
+        emitter: EEType, eventName: str, handler: Callable
     ) -> EEListener:
         """Add handler to the emitter and return emitter/handler."""
         emitter.on(eventName, handler)
@@ -76,7 +61,7 @@ class Helper:
     def removeEventListeners(listeners: List[EEListener]) -> None:
         """Remove listeners from emitter."""
         for listener in listeners:
-            emitter: EventEmitter = listener["emitter"]
+            emitter: EEType = listener["emitter"]
             eventName: str = listener["eventName"]
             handler: Callable = listener["handler"]
             emitter.remove_listener(eventName, handler)
@@ -142,12 +127,12 @@ class Helper:
         to: Union[int, float],
         taskName: Optional[str] = "",
         loop: Optional[AbstractEventLoop] = None,
-        raise_exception: bool = True
+        raise_exception: bool = True,
     ) -> None:
         try:
             async with aiotimeout(to, loop=Helper.ensure_loop(loop)):
                 await awaitable
-        except AIOTimeoutError:
+        except TimeoutError:
             if raise_exception:
                 raise WaitTimeoutError(
                     f"Timeout of {to} seconds exceeded while waiting for {taskName}"
@@ -161,7 +146,7 @@ class Helper:
 
     @staticmethod
     def waitForEvent(
-        emitter: EventEmitter,
+        emitter: EEType,
         eventName: str,
         predicate: Callable[[Any], bool],
         timeout: Optional[Union[int, float]] = None,
@@ -170,11 +155,10 @@ class Helper:
 
         promise = loop.create_future()
 
+        @emitter.on(eventName)
         def listener(event: Any = None) -> None:
             if predicate(event) and not promise.done():
                 promise.set_result(None)
-
-        emitter.on(eventName, listener)
 
         def clean_up(*args: Any, **kwargs: Any) -> None:
             emitter.remove_listener(eventName, listener)
@@ -185,7 +169,7 @@ class Helper:
                 try:
                     async with aiotimeout(timeout):
                         await promise
-                except AIOTimeoutError:
+                except TimeoutError:
                     raise WaitTimeoutError("Timeout exceeded while waiting for event")
                 finally:
                     clean_up()
@@ -199,8 +183,17 @@ class Helper:
         return isinstance(maybe_number, MAYBE_NUMBER_CHECK_TUPLE)
 
     @staticmethod
+    def is_boolean(maybe_boolean: Any) -> bool:
+        return isinstance(maybe_boolean, bool)
+
+    @staticmethod
     def is_string(maybe_string: Any) -> bool:
         return isinstance(maybe_string, str)
+
+    @staticmethod
+    def remove_dict_keys(dictionary: Dict, *args: str) -> None:
+        for key in args:
+            dictionary.pop(key, None)
 
     @staticmethod
     def noop(*args: Any, **kwargs: Any) -> Any:
@@ -217,7 +210,7 @@ class Helper:
 
     @staticmethod
     def loop_factory() -> AbstractEventLoop:
-        return aio_get_event_loop()
+        return get_event_loop()
 
     @staticmethod
     def ensure_loop(loop: Optional[AbstractEventLoop] = None) -> AbstractEventLoop:
@@ -226,7 +219,7 @@ class Helper:
         """
         if loop is not None:
             return loop
-        return aio_get_event_loop()
+        return get_event_loop()
 
     @staticmethod
     def make_aiohttp_session(loop: Optional[AbstractEventLoop] = None) -> ClientSession:
@@ -236,9 +229,9 @@ class Helper:
         :return: An instance of aiohttp.ClientSession
         """
         if loop is None:
-            loop = aio_get_event_loop()
+            loop = get_event_loop()
         return ClientSession(
             connector=TCPConnector(resolver=AsyncResolver(loop=loop), loop=loop),
             loop=loop,
-            json_serialize=ujson_dumps,
+            json_serialize=dumps,
         )

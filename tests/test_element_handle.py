@@ -61,7 +61,7 @@ class TestClick(BaseChromeTest):
             '() => document.querySelector("button").firstChild'
         )
         buttonTextNode = handle.asElement()
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(Exception) as cm:
             await buttonTextNode.click()
         str(cm.value) | should.be.equal.to("Node is not of type HTMLElement")
 
@@ -70,7 +70,7 @@ class TestClick(BaseChromeTest):
         await self.goto_test("button.html")
         button = await self.page.J("button")
         await self.page.evaluate("btn => btn.remove()", button)
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(Exception) as cm:
             await button.click()
         str(cm.value) | should.be.equal.to("Node is detached from document")
 
@@ -79,7 +79,7 @@ class TestClick(BaseChromeTest):
         await self.goto_test("button.html")
         button = await self.page.J("button")
         await self.page.evaluate('btn => btn.style.display = "none"', button)
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(Exception) as cm:
             await button.click()
         str(cm.value) | should.be.equal.to(
             "Node is either not visible or not an HTMLElement"
@@ -92,7 +92,7 @@ class TestClick(BaseChromeTest):
         await self.page.evaluate(
             'btn => btn.parentElement.style.display = "none"', button
         )
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(Exception) as cm:
             await button.click()
         str(cm.value) | should.be.equal.to(
             "Node is either not visible or not an HTMLElement"
@@ -102,7 +102,7 @@ class TestClick(BaseChromeTest):
     async def test_br_node(self):
         await self.page.setContent("hello<br>goodbye")
         br = await self.page.J("br")
-        with pytest.raises(ElementHandleError) as cm:
+        with pytest.raises(Exception) as cm:
             await br.click()
         str(cm.value) | should.be.equal.to(
             "Node is either not visible or not an HTMLElement"

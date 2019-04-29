@@ -1,10 +1,11 @@
 import copy
 import math
 import os
-from typing import Any, Dict, Optional, TYPE_CHECKING, Union, List, Awaitable
+from asyncio import gather as aio_gather
+from typing import Any, Awaitable, Dict, List, Optional, TYPE_CHECKING, Union
 
 from .connection import ClientType
-from .errors import ElementHandleError, ProtocolError
+from .errors import ProtocolError
 from .helper import Helper
 
 if TYPE_CHECKING:
@@ -28,6 +29,8 @@ def createJSHandle(
 
 
 class JSHandle:
+    __slots__: List[str] = ["_context", "_client", "_remoteObject", "_disposed"]
+
     def __init__(
         self, context: "ExecutionContext", client: ClientType, remoteObject: Dict
     ) -> None:
@@ -74,11 +77,12 @@ class JSHandle:
             "Runtime.getProperties",
             {"objectId": self._remoteObject.get("objectId", ""), "ownProperties": True},
         )
-        result = dict()
+        result = {}
+        context = self._context
         for prop in response["result"]:
             if not prop.get("enumerable"):
                 continue
-            result[prop.get("name")] = createJSHandle(self._context, prop.get("value"))
+            result[prop.get("name")] = createJSHandle(context, prop.get("value"))
         return result
 
     async def jsonValue(self) -> Dict:
@@ -112,6 +116,8 @@ class JSHandle:
 
 
 class ElementHandle(JSHandle):
+    __slots__: List[str] = ["_page", "_frameManager"]
+
     def __init__(
         self,
         context: "ExecutionContext",
@@ -464,30 +470,56 @@ class ElementHandle(JSHandle):
             self._page._javascriptEnabled,
         )
         if error:
-            raise ElementHandleError(error)
+            raise Exception(error)
+
+    def _intersectQuadWithViewport(
+        self,
+        quad: List[Dict[str, Union[int, float]]],
+        width: Union[int, float],
+        height: Union[int, float],
+    ) -> List[Dict[str, Union[int, float]]]:
+        return [
+            {"x": min(max(point["x"], 0), width), "y": min(max(point["y"], 0), height)}
+            for point in quad
+        ]
 
     async def _clickablePoint(self) -> Dict[str, float]:
         try:
-            result = await self._client.send(
-                "DOM.getContentQuads", dict(objectId=self._remoteObject.get("objectId"))
+            result, layoutMetrics = await aio_gather(
+                self._client.send(
+                    "DOM.getContentQuads",
+                    {"objectId": self._remoteObject.get("objectId")},
+                ),
+                self._client.send("Page.getLayoutMetrics"),
+                loop=self._client.loop,
             )
         except Exception:
-            raise ElementHandleError("Node is either not visible or not an HTMLElement")
+            raise Exception("Node is either not visible or not an HTMLElement")
 
+        if not result.get("quads"):
+            raise Exception("Node is either not visible or not an HTMLElement")
+
+        clientWidth = layoutMetrics["layoutViewport"]["clientWidth"]
+        clientHeight = layoutMetrics["layoutViewport"]["clientHeight"]
         quads = []
         for pquad in result.get("quads"):
             quad = self._fromProtocolQuad(pquad)
-            if computeQuadArea(quad) > 1:
+            if (
+                computeQuadArea(
+                    self._intersectQuadWithViewport(quad, clientWidth, clientHeight)
+                )
+                > 1
+            ):
                 quads.append(quad)
         if len(quads) == 0:
-            raise ElementHandleError("Node is either not visible or not an HTMLElement")
+            raise Exception("Node is either not visible or not an HTMLElement")
         quad = quads[0]
         x = 0.0
         y = 0.0
         for point in quad:
             x += point["x"]
             y += point["y"]
-        return dict(x=x / 4, y=y / 4)
+        return {"x": x / 4, "y": y / 4}
 
     async def _getBoxModel(self) -> Optional[Dict]:
         try:
@@ -510,14 +542,14 @@ class ElementHandle(JSHandle):
         await self._scrollIntoViewIfNeeded()
         box = await self.boundingBox()
         if not box:
-            raise ElementHandleError("Node is not visible.")
+            raise Exception("Node is not visible.")
         return {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
 
     async def _assertBoundingBox(self) -> Dict:
         boundingBox = await self.boundingBox()
         if boundingBox:
             return boundingBox
-        raise ElementHandleError("Node is either not visible or not an HTMLElement")
+        raise Exception("Node is either not visible or not an HTMLElement")
 
 
 def computeQuadArea(quad: List[Dict[str, float]]) -> float:

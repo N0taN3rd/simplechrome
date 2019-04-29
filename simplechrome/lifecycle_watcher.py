@@ -1,8 +1,7 @@
-from asyncio import AbstractEventLoop, Future, Task, TimeoutError as AIOTimeoutError
+from asyncio import AbstractEventLoop, Future, Task, TimeoutError
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING, Union
 
-import attr
-from async_timeout import timeout as aio_timeout
+from async_timeout import timeout
 
 from .errors import NavigationError
 from .events import Events
@@ -23,35 +22,90 @@ WaitToProtocolLifecycle: Dict[str, str] = {
 }
 
 
-@attr.dataclass(slots=True, cmp=False, hash=False)
 class LifecycleWatcher:
-    _frameManager: "FrameManager" = attr.ib(repr=False)
-    _frame: "Frame" = attr.ib()
-    _waitUntil: Union[Iterable[str], str] = attr.ib(default=None)
-    _timeout: Optional[Union[int, float]] = attr.ib(default=None)
-    _all_frames: bool = attr.ib(default=True)
-    _loop: Optional[AbstractEventLoop] = attr.ib(
-        default=None, repr=False, converter=Helper.ensure_loop
-    )
-    _networkManager: Optional["NetworkManager"] = attr.ib(
-        init=False, repr=False, default=None
-    )
-    _initialLoaderId: str = attr.ib(init=False, default=None)
-    _expectedLifecycle: List[str] = attr.ib(init=False, factory=list)
-    _hasSameDocumentNavigation: bool = attr.ib(init=False, default=False)
-    _eventListeners: List[EEListener] = attr.ib(init=False, repr=False, default=None)
-    _navigationRequest: Optional["Request"] = attr.ib(
-        init=False, repr=False, default=None
-    )
-    _sameDocumentNavigationPromise: Future = attr.ib(
-        init=False, repr=False, default=None
-    )
-    _lifecyclePromise: Future = attr.ib(init=False, repr=False, default=None)
-    _newDocumentNavigationPromise: Future = attr.ib(
-        init=False, repr=False, default=None
-    )
-    _timeoutPromise: Future = attr.ib(init=False, repr=False, default=None)
-    _terminationPromise: Future = attr.ib(init=False, repr=False, default=None)
+    __slots__ = [
+        "_all_frames",
+        "_eventListeners",
+        "_expectedLifecycle",
+        "_frame",
+        "_frameManager",
+        "_hasSameDocumentNavigation",
+        "_initialLoaderId",
+        "_lifecyclePromise",
+        "_loop",
+        "_navigationRequest",
+        "_networkManager",
+        "_newDocumentNavigationPromise",
+        "_sameDocumentNavigationPromise",
+        "_terminationPromise",
+        "_timeout",
+        "_timeoutPromise",
+        "_waitUntil",
+    ]
+
+    def __init__(
+        self,
+        frameManager: "FrameManager",
+        frame: "Frame",
+        waitUntil: Union[Iterable[str], str],
+        to: Optional[Union[int, float]],
+        all_frames: bool,
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> None:
+        self._frameManager: "FrameManager" = frameManager
+        self._frame: "Frame" = frame
+        self._waitUntil: Union[Iterable[str], str] = waitUntil
+        self._timeout: Optional[Union[int, float]] = to
+        self._all_frames: bool = all_frames
+        self._loop: AbstractEventLoop = Helper.ensure_loop(loop)
+        self._networkManager: Optional[
+            "NetworkManager"
+        ] = self._frameManager._networkManager
+        self._navigationRequest: Optional["Request"] = None
+        self._initialLoaderId: str = self._frame._loaderId
+        self._expectedLifecycle: List[str] = []
+        self._hasSameDocumentNavigation: bool = False
+        self._build_expected_lifecyle()
+        self._eventListeners: List[EEListener] = [
+            Helper.addEventListener(
+                self._frameManager._client,
+                self._frameManager._client.Events.Disconnected,
+                lambda: self._terminate(
+                    NavigationError.Disconnected(
+                        "Navigation failed because browser has disconnected!",
+                        response=self.navigationResponse,
+                    )
+                ),
+            ),
+            Helper.addEventListener(
+                self._frameManager,
+                Events.FrameManager.LifecycleEvent,
+                self._checkLifecycleComplete,
+            ),
+            Helper.addEventListener(
+                self._frameManager,
+                Events.FrameManager.FrameDetached,
+                self._onFrameDetached,
+            ),
+            Helper.addEventListener(
+                self._frameManager,
+                Events.FrameManager.FrameNavigatedWithinDocument,
+                self._navigatedWithinDocument,
+            ),
+        ]
+        if self._networkManager is not None:
+            self._eventListeners.append(
+                Helper.addEventListener(
+                    self._networkManager, Events.NetworkManager.Request, self._onRequest
+                )
+            )
+
+        self._sameDocumentNavigationPromise: Future = self._loop.create_future()
+        self._lifecyclePromise: Future = self._loop.create_future()
+        self._newDocumentNavigationPromise: Future = self._loop.create_future()
+        self._timeoutPromise: Future = self._createTimeoutPromise()
+        self._terminationPromise: Future = self._loop.create_future()
+        self._checkLifecycleComplete()
 
     @property
     def timeoutPromise(self) -> Future:
@@ -153,9 +207,9 @@ class LifecycleWatcher:
 
     async def _timeout_func(self, timeoutPromise: Future) -> Optional[NavigationError]:
         try:
-            async with aio_timeout(self._timeout, loop=self._loop):
+            async with timeout(self._timeout, loop=self._loop):
                 await timeoutPromise
-        except AIOTimeoutError:
+        except TimeoutError:
             return NavigationError.TimedOut(
                 f"Navigation Timeout Exceeded: {self._timeout} seconds exceeded.",
                 response=self.navigationResponse,
@@ -176,47 +230,9 @@ class LifecycleWatcher:
                 raise ValueError(f"Unknown value for options.waitUntil: {value}")
             self._expectedLifecycle.append(protocolEvent)
 
-    def __attrs_post_init__(self) -> None:
-        self._build_expected_lifecyle()
-        self._networkManager = self._frameManager._networkManager
-        self._initialLoaderId = self._frame._loaderId
-        self._eventListeners = [
-            Helper.addEventListener(
-                self._frameManager._client,
-                self._frameManager._client.Events.Disconnected,
-                lambda: self._terminate(
-                    NavigationError.Disconnected(
-                        "Navigation failed because browser has disconnected!",
-                        response=self.navigationResponse,
-                    )
-                ),
-            ),
-            Helper.addEventListener(
-                self._frameManager,
-                Events.FrameManager.LifecycleEvent,
-                self._checkLifecycleComplete,
-            ),
-            Helper.addEventListener(
-                self._frameManager,
-                Events.FrameManager.FrameDetached,
-                self._onFrameDetached,
-            ),
-            Helper.addEventListener(
-                self._frameManager,
-                Events.FrameManager.FrameNavigatedWithinDocument,
-                self._navigatedWithinDocument,
-            ),
-        ]
-        if self._networkManager is not None:
-            self._eventListeners.append(
-                Helper.addEventListener(
-                    self._networkManager, Events.NetworkManager.Request, self._onRequest
-                )
-            )
+    def __str__(self) -> str:
+        info = f"all_frames={self._all_frames}, waitUntil={self._waitUntil}, timeout={self._timeout}"
+        return f"LifecycleWatcher({info}, frame={self._frame})"
 
-        self._sameDocumentNavigationPromise = self._loop.create_future()
-        self._lifecyclePromise = self._loop.create_future()
-        self._newDocumentNavigationPromise = self._loop.create_future()
-        self._timeoutPromise = self._createTimeoutPromise()
-        self._terminationPromise = self._loop.create_future()
-        self._checkLifecycleComplete()
+    def __repr__(self) -> str:
+        return self.__str__()

@@ -3,7 +3,7 @@ from inspect import isawaitable
 from subprocess import Popen
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
-from pyee2 import EventEmitter
+from pyee2 import EventEmitterS
 
 from .connection import ClientType
 from .errors import BrowserError
@@ -15,7 +15,21 @@ from .target import Target
 __all__ = ["Chrome", "BrowserContext"]
 
 
-class Chrome(EventEmitter):
+class Chrome(EventEmitterS):
+    __slots__: List[str] = [
+        "_closeCallback",
+        "_connection",
+        "_contexts",
+        "_defaultContext",
+        "_defaultViewport",
+        "_ignoreHTTPSErrors",
+        "_page",
+        "_process",
+        "_screenshotTaskQueue",
+        "_targetInfo",
+        "_targets",
+    ]
+
     @staticmethod
     async def create(
         connection: ClientType,
@@ -68,7 +82,7 @@ class Chrome(EventEmitter):
             connection, self, browserContextId
         )
 
-        self._contexts: Dict[str, BrowserContext] = dict()
+        self._contexts: Dict[str, BrowserContext] = {}
         for contextId in contextIds:
             self._contexts[contextId] = BrowserContext(
                 connection, self, contextId, self._loop
@@ -248,8 +262,17 @@ class Chrome(EventEmitter):
     def _on_close(self) -> None:
         self.emit(Events.Chrome.Disconnected, None)
 
+    def __str__(self) -> str:
+        return f"Chrome(targetInfo={self._targetInfo})"
 
-class BrowserContext(EventEmitter):
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
+class BrowserContext(EventEmitterS):
+
+    __slots__: List[str] = ["_browser", "_id", "client"]
+
     def __init__(
         self,
         client: ClientType,
@@ -339,3 +362,9 @@ class BrowserContext(EventEmitter):
     async def close(self) -> None:
         if self._id is not None:
             await self._browser._disposeContext(self._id)
+
+    def __str__(self) -> str:
+        return f"BrowserContext(id={self._id})"
+
+    def __repr__(self) -> str:
+        return self.__str__()

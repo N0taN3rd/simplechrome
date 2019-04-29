@@ -9,8 +9,9 @@ from typing import Awaitable, Dict, List, Optional, Set, Union
 from urllib.parse import unquote
 
 import attr
-from pyee2 import EventEmitter
+from pyee2 import EventEmitterS
 
+from ._typings import CDPEvent
 from .connection import ClientType
 from .errors import NetworkError
 from .events import Events
@@ -22,8 +23,26 @@ from .network_idle_monitor import NetworkIdleMonitor
 __all__ = ["NetworkManager", "Request", "Response", "SecurityDetails"]
 
 
-class NetworkManager(EventEmitter):
+class NetworkManager(EventEmitterS):
     """NetworkManager class."""
+
+    __slots__: List[str] = [
+        "__weakref__",
+        "_client",
+        "_frameManager",
+        "_requestIdToRequest",
+        "_interceptionIdToRequest",
+        "_requestIdToRequestWillBeSentEvent",
+        "_extraHTTPHeaders",
+        "_offline",
+        "_credentials",
+        "_offline",
+        "_attemptedAuthentications",
+        "_userRequestInterceptionEnabled",
+        "_protocolRequestInterceptionEnabled",
+        "_requestHashToRequestIds",
+        "_requestHashToInterceptionIds",
+    ]
 
     def __init__(
         self, client: ClientType, loop: Optional[AbstractEventLoop] = None
@@ -32,9 +51,9 @@ class NetworkManager(EventEmitter):
         super().__init__(loop=Helper.ensure_loop(loop))
         self._client: ClientType = client
         self._frameManager: Optional["FrameManager"] = None
-        self._requestIdToRequest: Dict[str, Request] = dict()
-        self._interceptionIdToRequest: Dict[str, Request] = dict()
-        self._requestIdToRequestWillBeSentEvent: Dict[str, Dict] = dict()
+        self._requestIdToRequest: Dict[str, Request] = {}
+        self._interceptionIdToRequest: Dict[str, Request] = {}
+        self._requestIdToRequestWillBeSentEvent: Dict[str, Dict] = {}
         self._extraHTTPHeaders: OrderedDict[str, str] = OrderedDict()
         self._offline: bool = False
         self._credentials: Optional[Dict[str, str]] = None
@@ -135,7 +154,9 @@ class NetworkManager(EventEmitter):
         )
 
     def _onRequestWillBeSent(self, event: Dict) -> None:
-        if self._protocolRequestInterceptionEnabled and not event.get('url', '').startswith('data:'):
+        if self._protocolRequestInterceptionEnabled and not event.get(
+            "url", ""
+        ).startswith("data:"):
             requestHash = generateRequestHash(event["request"])
             interceptionId = self._requestHashToInterceptionIds.firstValue(requestHash)
             if interceptionId:
@@ -212,10 +233,10 @@ class NetworkManager(EventEmitter):
             frame = self._frameManager.frame(event.get("frameId"))
         request = Request(
             self._client,
+            event,
             frame,
             interceptionId,
             self._userRequestInterceptionEnabled,
-            event,
             redirectChain,
         )
         self._requestIdToRequest[requestId] = request
@@ -281,22 +302,48 @@ class NetworkManager(EventEmitter):
         self.emit(Events.NetworkManager.RequestFailed, request)
 
 
-@attr.dataclass(slots=True, str=False, cmp=False, hash=False)
 class Request:
-    _client: ClientType = attr.ib()
-    _frame: Optional[Frame] = attr.ib()
-    _interceptionId: Optional[str] = attr.ib()
-    _allowInterception: bool = attr.ib()
-    _requestInfo: Dict = attr.ib()
-    _redirectChain: List["Request"] = attr.ib()
-    _response: Optional["Response"] = attr.ib(init=False, default=None)
-    _preq: Dict = attr.ib(init=False, default=None)
-    _type: str = attr.ib(init=False, default="")
-    _failureText: str = attr.ib(init=False, default="")
-    _fromMemoryCache: bool = attr.ib(init=False, default=False)
-    _wasCanceled: bool = attr.ib(init=False, default=False)
-    _interceptionHandled: bool = attr.ib(init=False, default=False)
-    _blockedReason: Optional[str] = attr.ib(init=False, default=None)
+    __slots__: List[str] = [
+        "__weakref__",
+        "_allowInterception",
+        "_blockedReason",
+        "_client",
+        "_failureText",
+        "_frame",
+        "_fromMemoryCache",
+        "_interceptionHandled",
+        "_interceptionId",
+        "_preq",
+        "_redirectChain",
+        "_requestInfo",
+        "_response",
+        "_type",
+        "_wasCanceled",
+    ]
+
+    def __init__(
+        self,
+        client: ClientType,
+        cdpEvent: CDPEvent,
+        frame: Optional[Frame] = None,
+        interceptionId: Optional[str] = None,
+        userRequestInterceptionEnabled: bool = False,
+        redirectChain: Optional[List["Request"]] = None,
+    ) -> None:
+        self._client: ClientType = client
+        self._frame: Optional[Frame] = frame
+        self._interceptionId: Optional[str] = interceptionId
+        self._allowInterception: bool = userRequestInterceptionEnabled
+        self._requestInfo: CDPEvent = cdpEvent
+        self._redirectChain: List["Request"] = redirectChain or []
+        self._response: Optional["Response"] = None
+        self._preq: Dict = self._requestInfo.get("request")
+        self._type: str = self._requestInfo.get("type")
+        self._failureText: str = ""
+        self._fromMemoryCache: bool = False
+        self._wasCanceled: bool = False
+        self._interceptionHandled: bool = False
+        self._blockedReason: Optional[str] = None
 
     @property
     def wasCanceled(self) -> bool:
@@ -537,18 +584,17 @@ class Request:
         self._interceptionHandled = True
         await self._client.send(
             "Network.continueInterceptedRequest",
-            dict(interceptionId=self._interceptionId, errorReason=errorReason),
+            {"interceptionId": self._interceptionId, "errorReason": errorReason},
         )
 
     def to_dict(self) -> Dict:
         return self._requestInfo
 
-    def __attrs_post_init__(self) -> None:
-        self._preq = self._requestInfo.get("request")
-        self._type = self._requestInfo.get("type")
-
     def __str__(self) -> str:
         return f"Request(url={self.url}, method={self.method}, headers={self.headers})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 errorReasons = {
@@ -569,18 +615,42 @@ errorReasons = {
 }
 
 
-@attr.dataclass(slots=True, str=False, cmp=False, hash=False)
 class Response:
-    _client: ClientType = attr.ib()
-    _request: Request = attr.ib()
-    _responseInfo: Dict = attr.ib()
-    _loop: Optional[AbstractEventLoop] = attr.ib(default=None, converter=Helper.ensure_loop)
-    _contentPromise: Optional[Future] = attr.ib(init=False, default=None)
-    _bodyLoadedPromise: Event = attr.ib(init=False, default=None)
-    _pres: Dict = attr.ib(init=False, default=None)
-    _protocol: str = attr.ib(init=False, default="")
-    _encodedDataLength: float = attr.ib(init=False, default=0.0)
-    _securityDetails: Optional["SecurityDetails"] = attr.ib(init=False, default=None)
+    __slots__: List[str] = [
+        "__weakref__",
+        "_bodyLoadedPromise",
+        "_client",
+        "_contentPromise",
+        "_encodedDataLength",
+        "_loop",
+        "_pres",
+        "_pres",
+        "_protocol",
+        "_request",
+        "_responseInfo",
+        "_responseInfo",
+        "_securityDetails",
+    ]
+
+    def __init__(
+        self,
+        client: ClientType,
+        request: Request,
+        cdpEvent: CDPEvent,
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> None:
+        self._client: ClientType = client
+        self._request: Request = request
+        self._responseInfo: Dict = cdpEvent
+        self._loop: AbstractEventLoop = Helper.ensure_loop(loop)
+        self._contentPromise: Optional[Future] = attr.ib(init=False, default=None)
+        self._bodyLoadedPromise: Event = Event(loop=self._loop)
+        self._pres: Dict = self._responseInfo.get("response")
+        self._protocol: str = self._pres.get("protocol")
+        self._securityDetails: Optional["SecurityDetails"] = None
+        if self._pres.get("securityDetails") is not None:
+            self._securityDetails = SecurityDetails(self._pres.get("securityDetails"))
+        self._encodedDataLength: float = self._pres.get("encodedDataLength", 0.0)
 
     @property
     def frame(self) -> Optional[Frame]:
@@ -722,16 +792,6 @@ class Response:
     def to_dict(self) -> Dict:
         return self._responseInfo
 
-    def __attrs_post_init__(self) -> None:
-        self._bodyLoadedPromise = Event(loop=self._loop)
-        self._pres = self._responseInfo.get("response")
-        sdetails = None
-        if self._pres.get("securityDetails") is not None:
-            sdetails = SecurityDetails(self._pres.get("securityDetails"))
-        self._securityDetails: Optional[SecurityDetails] = sdetails
-        self._protocol = self._pres.get("protocol")
-        self._encodedDataLength = self._pres.get("encodedDataLength")
-
     def __str__(self) -> str:
         repr_args = []
         if self.url is not None:
@@ -743,6 +803,9 @@ class Response:
         if self.status is not None:
             repr_args.append("status={!r}".format(self.status))
         return f"Response({', '.join(repr_args)})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 def generateRequestHash(request: Dict) -> str:
@@ -759,7 +822,7 @@ def generateRequestHash(request: Dict) -> str:
         "postData": request.get("postData"),
     }
 
-    _new_headers: Dict[str, str] = dict()
+    _new_headers: Dict[str, str] = {}
 
     if not normalizedURL.startswith("data:"):
         headers: List[str] = list(request["headers"].keys())
@@ -778,11 +841,15 @@ def generateRequestHash(request: Dict) -> str:
     return ujson_dumps(_hash, ensure_ascii=False)
 
 
-@attr.dataclass(slots=True, cmp=False, hash=False)
 class SecurityDetails:
     """Class represents responses which are received by page."""
 
-    _details: Dict[str, Union[str, int, List[int], List[str]]] = attr.ib()
+    __slots__: List[str] = ["__weakref__", "_details"]
+
+    def __init__(
+        self, details: Dict[str, Union[str, int, List[int], List[str]]]
+    ) -> None:
+        self._details: Dict[str, Union[str, int, List[int], List[str]]] = details
 
     @property
     def subjectName(self) -> str:
@@ -808,6 +875,12 @@ class SecurityDetails:
     def protocol(self) -> str:
         """Return string of with the security protocol, e.g. "TLS1.2"."""
         return self._details.get("protocol")
+
+    def __str__(self) -> str:
+        return f"SecurityDetails({self._details})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 statusTexts: Dict[str, str] = {

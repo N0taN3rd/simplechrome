@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Page module."""
 import asyncio
 import base64
@@ -20,7 +19,7 @@ from typing import (
 
 import aiofiles
 import attr
-from pyee2 import EventEmitter
+from pyee2 import EventEmitterS
 
 from .connection import ClientType, Connection
 from .dialog import Dialog
@@ -34,16 +33,36 @@ from .input import Keyboard, Mouse, Touchscreen
 from .network_manager import NetworkManager, Request, Response
 from .timeoutSettings import TimeoutSettings
 from .tracing import Tracing
+from .console_message import ConsoleMessage
 
 if TYPE_CHECKING:
     from .target import Target  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Page", "ConsoleMessage"]
+__all__ = ["Page", "ConsoleMessage2"]
 
 
-class Page(EventEmitter):
+class Page(EventEmitterS):
+    __slots__: List[str] = [
+        "_client",
+        "_closed",
+        "_emulationManager",
+        "_frameManager",
+        "_ignoreHTTPSErrors",
+        "_javascriptEnabled",
+        "_keyboard",
+        "_lifecycle_emitting",
+        "_mouse",
+        "_mouse",
+        "_networkManager",
+        "_screenshotTaskQueue",
+        "_target",
+        "_timeoutSettings",
+        "_touchscreen",
+        "_tracing",
+        "_viewport",
+    ]
 
     PaperFormats: ClassVar[Dict[str, Dict[str, float]]] = dict(
         letter={"width": 8.5, "height": 11},
@@ -91,7 +110,7 @@ class Page(EventEmitter):
             client.send("Network.enable", {}),
             enable_runtime(),
             client.send("Log.enable", {}),
-            loop=loop
+            loop=loop,
         )
 
         if ignoreHTTPSErrors:
@@ -139,7 +158,7 @@ class Page(EventEmitter):
         self._viewport: Optional[Dict[str, Union[str, float, bool, int]]] = None
 
         if screenshotTaskQueue is None:
-            screenshotTaskQueue = list()
+            screenshotTaskQueue = []
         self._screenshotTaskQueue: List = screenshotTaskQueue
 
         _fm = self._frameManager
@@ -287,12 +306,12 @@ class Page(EventEmitter):
     async def enable_violation_reporting(self) -> None:
         await self._client.send(
             "Log.startViolationsReport",
-            dict(
-                config=[
-                    dict(name="blockedEvent", threshold=1),
-                    dict(name="blockedParser", threshold=1),
+            {
+                "config": [
+                    {"name": "blockedEvent", "threshold": 1},
+                    {"name": "blockedParser", "threshold": 1},
                 ]
-            ),
+            },
         )
 
     async def setBypassCSP(self, enabled: bool) -> None:
@@ -327,7 +346,7 @@ class Page(EventEmitter):
         windowDescriptor = await self.getWindowDescriptor()
         await self._client.send(
             "Browser.setWindowBounds",
-            dict(windowId=windowDescriptor["windowId"], bounds=bounds),
+            {"windowId": windowDescriptor["windowId"], "bounds": bounds},
         )
 
     async def setRequestInterception(self, value: bool) -> None:
@@ -364,7 +383,7 @@ class Page(EventEmitter):
 
     async def getWindowDescriptor(self) -> Dict:
         return await self._client.send(
-            "Browser.getWindowForTarget", dict(targetId=self._target._targetId)
+            "Browser.getWindowForTarget", {"targetId": self._target._targetId}
         )
 
     async def getWindowBounds(self) -> Dict:
@@ -941,22 +960,22 @@ class Page(EventEmitter):
 
         result = await self._client.send(
             "Page.printToPDF",
-            dict(
-                landscape=landscape,
-                displayHeaderFooter=displayHeaderFooter,
-                headerTemplate=headerTemplate,
-                footerTemplate=footerTemplate,
-                printBackground=printBackground,
-                scale=scale,
-                paperWidth=paperWidth,
-                paperHeight=paperHeight,
-                marginTop=marginTop,
-                marginBottom=marginBottom,
-                marginLeft=marginLeft,
-                marginRight=marginRight,
-                pageRanges=pageRanges,
-                preferCSSPageSize=preferCSSPageSize,
-            ),
+            {
+                "landscape": landscape,
+                "displayHeaderFooter": displayHeaderFooter,
+                "headerTemplate": headerTemplate,
+                "footerTemplate": footerTemplate,
+                "printBackground": printBackground,
+                "scale": scale,
+                "paperWidth": paperWidth,
+                "paperHeight": paperHeight,
+                "marginTop": marginTop,
+                "marginBottom": marginBottom,
+                "marginLeft": marginLeft,
+                "marginRight": marginRight,
+                "pageRanges": pageRanges,
+                "preferCSSPageSize": preferCSSPageSize,
+            },
         )
         buffer = base64.b64decode(result.get("data", b""))
         if "path" in options:
@@ -1233,14 +1252,14 @@ class Page(EventEmitter):
             height = math.ceil(metrics["contentSize"]["height"])
 
             # Overwrite clip for full page at all times.
-            clip = dict(x=0, y=0, width=width, height=height, scale=1)
+            clip = {"x": 0, "y": 0, "width": width, "height": height, "scale": 1}
             mobile = self._viewport.get("isMobile", False)
             deviceScaleFactor = self._viewport.get("deviceScaleFactor", 1)
             landscape = self._viewport.get("isLandscape", False)
             if landscape:
-                screenOrientation = dict(angle=90, type="landscapePrimary")
+                screenOrientation = {"angle": 90, "type": "landscapePrimary"}
             else:
-                screenOrientation = dict(angle=0, type="portraitPrimary")
+                screenOrientation = {"angle": 0, "type": "portraitPrimary"}
             await self._client.send(
                 "Emulation.setDeviceMetricsOverride",
                 {
@@ -1294,7 +1313,7 @@ class Page(EventEmitter):
             height = math.ceil(metrics["contentSize"]["height"])
 
             # Overwrite clip for full page at all times.
-            clip = dict(x=0, y=0, width=width, height=height, scale=1)
+            clip = {"x": 0, "y": 0, "width": width, "height": height, "scale": 1}
             mobile = self._viewport.get("isMobile", False)
             deviceScaleFactor = self._viewport.get("deviceScaleFactor", 1)
             landscape = self._viewport.get("isLandscape", False)
@@ -1391,39 +1410,14 @@ class Page(EventEmitter):
         context = self._frameManager.executionContextById(
             event.get("executionContextId")
         )
-        values = []
-        for arg in event.get("args", []):
-            values.append(createJSHandle(context, arg))
         if not self.listeners(Events.Page.Console):
-            for arg in values:
-                self._loop.create_task(arg.dispose())
+            for arg in event.get("args", []):
+                self._loop.create_task(createJSHandle(context, arg).dispose())
             return
-        textTokens = []
-        for arg in values:
-            remoteObject = arg._remoteObject
-            if remoteObject.get("objectId"):
-                textTokens.append(arg.toString())
-            else:
-                textTokens.append(str(Helper.valueFromRemoteObject(remoteObject)))
+        self.emit(Events.Page.Console, ConsoleMessage(event, context=context))
 
-        message = ConsoleMessage(event["type"], " ".join(textTokens), values)
-        self.emit(Events.Page.Console, message)
-
-    def _onDialog(self, event: Any) -> None:
-        dialogType = ""
-        _type = event.get("type")
-        if _type == "alert":
-            dialogType = Dialog.Type.Alert
-        elif _type == "confirm":
-            dialogType = Dialog.Type.Confirm
-        elif _type == "prompt":
-            dialogType = Dialog.Type.Prompt
-        elif _type == "beforeunload":
-            dialogType = Dialog.Type.BeforeUnload
-        dialog = Dialog(
-            self._client, dialogType, event.get("message"), event.get("defaultPrompt")
-        )
-        self.emit(Events.Page.Dialog, dialog)
+    def _onDialog(self, event: Dict) -> None:
+        self.emit(Events.Page.Dialog, Dialog(self._client, event))
 
     def _onDomContentEventFired(self, event: Dict) -> None:
         self.emit(Events.Page.DOMContentLoaded)
@@ -1499,7 +1493,7 @@ def convertPrintParameterToInches(
 
 
 @attr.dataclass(slots=True, cmp=False, hash=False)
-class ConsoleMessage(object):
+class ConsoleMessage2:
     """Console message class.
 
     ConsoleMessage objects are dispatched by page via the ``console`` event.
@@ -1508,4 +1502,3 @@ class ConsoleMessage(object):
     type: str = attr.ib()
     text: str = attr.ib()
     args: List[JSHandle] = attr.ib()
-

@@ -2,6 +2,7 @@
 from .browser_fetcher import BrowserFetcher, RevisionInfo
 from .chrome import BrowserContext, Chrome
 from .connection import CDPSession, ClientType, Connection
+from .console_message import ConsoleMessage
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import (
@@ -24,12 +25,13 @@ from .input import Keyboard, Mouse, Touchscreen
 from .jsHandle import ElementHandle, JSHandle
 from .launcher import Launcher, connect, launch
 from .lifecycle_watcher import LifecycleWatcher
+from .log import Log, LogEntry
 from .network_manager import NetworkManager, Request, Response, SecurityDetails
-from .page import ConsoleMessage, Page
+from .page import Page
 from .target import Target
 from .us_keyboard_layout import keyDefinitions
 
-__version__ = "1.4.2"
+__version__ = "1.5.0"
 
 __all__ = [
     "BrowserContext",

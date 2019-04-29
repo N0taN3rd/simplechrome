@@ -27,7 +27,7 @@ from .helper import Helper
 
 __all__ = ["Launcher", "launch", "connect", "DEFAULT_ARGS"]
 
-DEFAULT_CHROMIUM_REVISION: str = "630727"
+DEFAULT_CHROMIUM_REVISION: str = "654752"
 CHROMIUM_REVISION: str = os.getenv(
     "SIMPLECHROME_CHROMIUM_REVISION", DEFAULT_CHROMIUM_REVISION
 )
@@ -40,30 +40,30 @@ logger = logging.getLogger(__name__)
 # https://peter.sh/experiments/chromium-command-line-switches/
 # https://cs.chromium.org/chromium/src/chrome/common/chrome_switches.cc
 DEFAULT_ARGS = [
+    "--autoplay-policy=no-user-gesture-required",
     "--disable-background-networking",
     "--disable-background-timer-throttling",
-    "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
-    "--disable-ipc-flooding-protection",
-    "--enable-features=NetworkService,NetworkServiceInProcess",
+    "--disable-backing-store-limit",
+    "--disable-breakpad",
     "--disable-client-side-phishing-detection",
     "--disable-default-apps",
-    "--disable-extensions",
-    "--disable-popup-blocking",
-    "--disable-hang-monitor",
-    "--disable-prompt-on-repost",
-    "--disable-sync",
     "--disable-domain-reliability",
+    "--disable-extensions",
+    "--disable-features=site-per-process,TranslateUI,LazyFrameLoading,BlinkGenPropertyTrees",
+    "--disable-hang-monitor",
     "--disable-infobars",
-    "--disable-features=site-per-process,TranslateUI,LazyFrameLoading",
-    "--disable-breakpad",
-    "--disable-backing-store-limit",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--disable-sync",
+    "--enable-features=NetworkService,NetworkServiceInProcess",
+    "--force-color-profile=srgb",
     "--metrics-recording-only",
+    "--mute-audio",
     "--no-first-run",
     "--safebrowsing-disable-auto-update",
-    "--mute-audio",
-    "--autoplay-policy=no-user-gesture-required",
-    "--enable-automation",
 ]
 
 Options = Dict[str, Union[int, str, bool, List[str]]]
@@ -131,7 +131,7 @@ async def find_target(url: str, loop: Optional[AbstractEventLoop] = None) -> Dic
 
 
 @attr.dataclass(slots=True)
-class Launcher(object):
+class Launcher:
     projectRoot: str = attr.ib(default=SIMPLECHROME_HOME)
     preferredRevision: str = attr.ib(default=CHROMIUM_REVISION)
     chrome_dead: bool = attr.ib(default=False, init=False)

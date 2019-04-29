@@ -1,9 +1,7 @@
 """ExecutionContext Context Module."""
 import math
 import re
-from typing import Any, Dict, Optional, Pattern, TYPE_CHECKING
-
-import attr
+from typing import Any, Dict, List, Optional, Pattern, TYPE_CHECKING
 
 from .connection import ClientType
 from .domWorld import DOMWorld
@@ -23,13 +21,25 @@ SOURCE_URL_REGEX: Pattern = re.compile(
 suffix = f"//# sourceURL={EVALUATION_SCRIPT_URL}"
 
 
-@attr.dataclass(slots=True, str=False, cmp=False)
 class ExecutionContext:
-    _client: ClientType = attr.ib()
-    _contextPayload: Dict = attr.ib()
-    _world: Optional[DOMWorld] = attr.ib()
-    _contextId: str = attr.ib(init=False)
-    _isDefault: bool = attr.ib(init=False)
+    __slots__: List[str] = [
+        "_client",
+        "_contextPayload",
+        "_world",
+        "_contextId",
+        "_isDefault",
+    ]
+
+    def __init__(
+        self, client: ClientType, contextPayload: Dict, world: DOMWorld
+    ) -> None:
+        self._client: ClientType = client
+        self._contextPayload: Dict = contextPayload
+        self._world: Optional[DOMWorld] = world
+        self._contextId: str = self._contextPayload.get("id")
+        self._isDefault: bool = self._contextPayload.get("auxData", {}).get(
+            "isDefault", False
+        )
 
     @property
     def default(self) -> bool:
@@ -205,8 +215,5 @@ class ExecutionContext:
         frame_id = f"frameId={self.frame.id}, " if self.frame else ""
         return f"ExecutionContext(contextId={self._contextId}, {frame_id}isDefault={self._isDefault})"
 
-    def __attrs_post_init__(self) -> None:
-        self._contextId = self._contextPayload.get("id")
-        self._isDefault = self._contextPayload.get("auxData", {}).get(
-            "isDefault", False
-        )
+    def __repr__(self) -> str:
+        return self.__str__()

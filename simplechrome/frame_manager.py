@@ -14,7 +14,7 @@ from asyncio import (
 from collections import OrderedDict
 from typing import Any, Awaitable, Dict, List, Optional, Set, TYPE_CHECKING, Union
 
-from pyee2 import EventEmitter
+from pyee2 import EventEmitterS
 
 from .connection import ClientType
 from .domWorld import DOMWorld
@@ -37,8 +37,23 @@ logger = logging.getLogger(__name__)
 UTILITY_WORLD_NAME: str = "__simplechrome_utility_world__"
 
 
-class FrameManager(EventEmitter):
+class FrameManager(EventEmitterS):
     """FrameManager class."""
+
+    __slots__: List[str] = [
+        "__weakref__",
+        "_client",
+        "_contextIdToContext",
+        "_emits_life",
+        "_frames",
+        "_isolatedWorlds",
+        "_isolateWorlds",
+        "_mainFrame",
+        "_networkManager",
+        "_networkManager",
+        "_page",
+        "_timeoutSettings",
+    ]
 
     def __init__(
         self,
@@ -148,27 +163,7 @@ class FrameManager(EventEmitter):
             self, frame, waitUnitl, timeout, all_frames, self._loop
         )
 
-        ensureNewDocumentNavigation = False
-
-        async def navigate() -> Optional[NavigationError]:
-            nonlocal ensureNewDocumentNavigation
-            try:
-                response = await self._client.send("Page.navigate", nav_args)
-                # if we navigated within document i.e history modification then loaderId is None
-                ensureNewDocumentNavigation = bool(response.get("loaderId"))
-                errorText = response.get("errorText")
-                if errorText:
-                    return NavigationError.Failed(
-                        f"Navigation to {url} failed: {errorText}",
-                        response=watcher.navigationResponse,
-                    )
-            except Exception as e:
-                return NavigationError.Failed(
-                    f"Navigation to {url} failed: {e.args[0]}",
-                    response=watcher.navigationResponse,
-                    tb=sys_exc_info()[2],
-                )
-            return None
+        ensureNewDocumentNavigation = {"ensure": False}
 
         # asyncio.wait does not work like Promise.race
         # if we were to use watcher.timeoutOrTerminationPromise and there was an error
@@ -176,7 +171,7 @@ class FrameManager(EventEmitter):
         # requiring two result calls :(
         done, pending = await aio_wait(
             {
-                self._loop.create_task(navigate()),
+                self.__navigate(ensureNewDocumentNavigation, nav_args, url, watcher),
                 watcher.timeoutPromise,
                 watcher.terminationPromise,
             },
@@ -185,7 +180,7 @@ class FrameManager(EventEmitter):
         )
         error = done.pop().result()
         if error is None:
-            if ensureNewDocumentNavigation:
+            if ensureNewDocumentNavigation['ensure']:
                 final_prom = watcher.newDocumentNavigationPromise
             else:
                 final_prom = watcher.sameDocumentNavigationPromise
@@ -199,6 +194,27 @@ class FrameManager(EventEmitter):
         if error is not None:
             raise error
         return watcher.navigationResponse
+
+    async def __navigate(
+        self, ensureNewDocumentNavigation: Dict[str, bool], nav_args, url, watcher
+    ) -> Optional[NavigationError]:
+        try:
+            response = await self._client.send("Page.navigate", nav_args)
+            # if we navigated within document i.e history modification then loaderId is None
+            ensureNewDocumentNavigation["ensure"] = bool(response.get("loaderId"))
+            errorText = response.get("errorText")
+            if errorText:
+                return NavigationError.Failed(
+                    f"Navigation to {url} failed: {errorText}",
+                    response=watcher.navigationResponse,
+                )
+        except Exception as e:
+            return NavigationError.Failed(
+                f"Navigation to {url} failed: {e.args[0]}",
+                response=watcher.navigationResponse,
+                tb=sys_exc_info()[2],
+            )
+        return None
 
     async def waitForFrameNavigation(
         self, frame: "Frame", options: Optional[Dict] = None, **kwargs: Any
@@ -251,8 +267,9 @@ class FrameManager(EventEmitter):
             self._mainFrame = self._frames[frameId]
         if "childFrames" not in frameTree:
             return
+        handleFrameTree = self._handleFrameTree
         for child in frameTree["childFrames"]:
-            self._handleFrameTree(child)
+            handleFrameTree(child)
 
     def _onFrameAttached(self, eventOrFrame: Dict) -> None:
         frameId: str = eventOrFrame.get("frameId", "")
@@ -337,7 +354,10 @@ class FrameManager(EventEmitter):
         if frame:
             if auxData and auxData.get("isDefault", False):
                 world = frame._mainWorld
-            else:
+            elif (
+                contextPayload.get("name") == UTILITY_WORLD_NAME
+                and not frame._secondaryWorld._hasContext()
+            ):
                 world = frame._secondaryWorld
 
         if auxData and auxData.get("type") == "isolated":
@@ -364,8 +384,9 @@ class FrameManager(EventEmitter):
         self._contextIdToContext.clear()
 
     def _removeFramesRecursively(self, frame: "Frame") -> None:
+        removeFramesRecursively = self._removeFramesRecursively
         for child in frame.childFrames:
-            self._removeFramesRecursively(child)
+            removeFramesRecursively(child)
         frame._detach()
         self._frames.pop(frame.id, None)
         self.emit(Events.FrameManager.FrameDetached, frame)
@@ -378,9 +399,10 @@ class FrameManager(EventEmitter):
         )
         coroutines: List = []
         coroutines_append = coroutines.append
+        client_send = self._client.send
         for frame in self.frames():
             coroutines_append(
-                self._client.send(
+                client_send(
                     "Page.createIsolatedWorld",
                     {
                         "frameId": frame.id,
@@ -392,11 +414,29 @@ class FrameManager(EventEmitter):
         await aio_gather(*coroutines, return_exceptions=True, loop=self._loop)
 
 
-class Frame(EventEmitter):
+class Frame(EventEmitterS):
     """Frame class.
 
     Frame objects can be obtained via :attr:`simplechrome.page.Page.mainFrame`.
     """
+
+    __slots__: List[str] = [
+        "__weakref__",
+        "_at_lifecycle",
+        "_childFrames",
+        "_client",
+        "_detached",
+        "_emits_life",
+        "_frameManager",
+        "_id",
+        "_lifecycleEvents",
+        "_loaderId",
+        "_mainWorld",
+        "_name",
+        "_parentFrame",
+        "_secondaryWorld",
+        "_url",
+    ]
 
     @classmethod
     def from_cdp_frame(

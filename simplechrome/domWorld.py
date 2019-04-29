@@ -1,19 +1,11 @@
-from asyncio import (
-    AbstractEventLoop,
-    Event,
-    Future,
-    wait as aio_wait,
-    FIRST_COMPLETED as aio_wait_until_first_completed,
-)
+from asyncio import AbstractEventLoop, Event, FIRST_COMPLETED, Future, wait
 from typing import Any, Awaitable, Dict, List, Optional, Set, TYPE_CHECKING
 
 from aiofiles import open as aio_file_open
-import attr
 
-
-from .lifecycle_watcher import LifecycleWatcher
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle
+from .lifecycle_watcher import LifecycleWatcher
 from .timeoutSettings import TimeoutSettings
 from .waitTask import WaitTask
 
@@ -22,20 +14,45 @@ if TYPE_CHECKING:
     from .frame_manager import FrameManager, Frame
 
 
-@attr.dataclass(slots=True, cmp=False)
 class DOMWorld:
-    _frameManager: "FrameManager" = attr.ib()
-    _frame: "Frame" = attr.ib()
-    _timeoutSettings: TimeoutSettings = attr.ib()
-    _loop: Optional[AbstractEventLoop] = attr.ib(
-        default=None, converter=Helper.ensure_loop
-    )
-    _documentPromise: Future = attr.ib(init=False, default=None, repr=False)
-    _executionContext: "ExecutionContext" = attr.ib(init=False, default=None)
-    _hasContextEvent: Event = attr.ib(init=False, default=None, repr=False)
-    _contextResolveCallback: Future = attr.ib(init=False, default=None, repr=False)
-    _waitTasks: Set[WaitTask] = attr.ib(init=False, factory=set, repr=False)
-    _detached: bool = attr.ib(init=False, default=False)
+    __slots__: List[str] = [
+        "__weakref__",
+        "_contextResolveCallback",
+        "_detached",
+        "_documentPromise",
+        "_executionContext",
+        "_frame",
+        "_frameManager",
+        "_hasContextEvent",
+        "_loop",
+        "_timeoutSettings",
+        "_waitTasks",
+    ]
+
+    def __init__(
+        self,
+        frameManager: "FrameManager",
+        frame: "Frame",
+        timeoutSettings: TimeoutSettings,
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> None:
+        """Initialize a new instance of DOMWorld
+
+        :param frameManager: The frame manager for the page
+        :param frame: The frame this DOMWorld is associated with
+        :param timeoutSettings: The global timeout settings
+        :param loop:
+        """
+        self._frameManager: "FrameManager" = frameManager
+        self._frame: "Frame" = frame
+        self._timeoutSettings: TimeoutSettings = timeoutSettings
+        self._loop: AbstractEventLoop = Helper.ensure_loop(loop)
+        self._waitTasks: Set[WaitTask] = set()
+        self._hasContextEvent: Event = Event(loop=self._loop)
+        self._detached: bool = False
+        self._executionContext: Optional["ExecutionContext"] = None
+        self._contextResolveCallback: Optional[Future] = None
+        self._documentPromise: Optional[Future] = None
 
     @property
     def frame(self) -> "Frame":
@@ -156,13 +173,13 @@ class DOMWorld:
         watcher = LifecycleWatcher(
             self._frameManager, self._frame, waitUnitl, timeout, all_frames, self._loop
         )
-        done, pending = await aio_wait(
+        done, pending = await wait(
             {
                 watcher.timeoutPromise,
                 watcher.terminationPromise,
                 watcher.lifecyclePromise,
             },
-            return_when=aio_wait_until_first_completed,
+            return_when=FIRST_COMPLETED,
             loop=self._loop,
         )
         watcher.dispose()
@@ -378,8 +395,8 @@ class DOMWorld:
                 Exception("waitForFunction failed: frame got detached.")
             )
 
-    def __attrs_post_init__(self) -> None:
-        self._hasContextEvent = Event(loop=self._loop)
+    def _hasContext(self) -> bool:
+        return self._contextResolveCallback is not None
 
 
 GET_DOCUMENT_HTML_JS: str = """() => {
