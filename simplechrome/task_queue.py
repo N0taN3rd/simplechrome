@@ -1,14 +1,17 @@
-from asyncio import AbstractEventLoop, Task
+from asyncio import Task
 from typing import Any, Coroutine
 
-import attr
+from ._typings import Loop, OptionalLoop, SlotsT
+from .helper import Helper
 
 __all__ = ["TaskQueue"]
 
 
-@attr.dataclass(slots=True)
 class TaskQueue:
-    loop: AbstractEventLoop = attr.ib()
+    __slots__: SlotsT = ["loop"]
+
+    def __init__(self, loop: OptionalLoop = None) -> None:
+        self.loop: Loop = Helper.ensure_loop(loop)
 
     def post_task(self, task: Coroutine[Any, Any, Any]) -> Task:
         return self.loop.create_task(task)

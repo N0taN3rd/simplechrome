@@ -9,7 +9,7 @@ from .helper import EEListener, Helper
 
 if TYPE_CHECKING:
     from .frame_manager import FrameManager, Frame  # noqa: F401
-    from .network_manager import NetworkManager, Request, Response  # noqa: F401
+    from .network import NetworkManager, Request, Response  # noqa: F401
 
 
 __all__ = ["LifecycleWatcher"]

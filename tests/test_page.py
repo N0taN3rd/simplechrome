@@ -238,15 +238,16 @@ class TestPage(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_console_event(self, ee_helper):
-        messages = []
-        ee_helper.addEventListener(
-            self.page, Events.Page.Console, lambda m: messages.append(m)
-        )
+        await self.goto_empty()
+        loop = asyncio.get_event_loop()
+        promise = loop.create_future()
+        def log(message) -> None:
+            print(message)
+            if not promise.done():
+                promise.set_result(message)
+        self.page.once(Events.Page.Console, log)
         await self.page.evaluate('() => console.log("hello", 5, {foo: "bar"})')
-        await asyncio.sleep(0.01)
-        len(messages) | should.be.equal.to(1)
-
-        msg = messages[0]
+        msg = await promise
         msg.type | should.be.equal.to("log")
         msg.text | should.be.equal.to("hello 5 JSHandle@object")
         await msg.args[0].jsonValue() | should.be.equal.to("hello")

@@ -26,7 +26,13 @@ from .jsHandle import ElementHandle, JSHandle
 from .launcher import Launcher, connect, launch
 from .lifecycle_watcher import LifecycleWatcher
 from .log import Log, LogEntry
-from .network_manager import NetworkManager, Request, Response, SecurityDetails
+from .network import (
+    NetworkIdleMonitor,
+    NetworkManager,
+    Request,
+    Response,
+    SecurityDetails,
+)
 from .page import Page
 from .target import Target
 from .us_keyboard_layout import keyDefinitions

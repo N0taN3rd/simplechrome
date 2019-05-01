@@ -1,18 +1,12 @@
-from asyncio import (
-    AbstractEventLoop,
-    CancelledError,
-    Future,
-    Task,
-    TimeoutError,
-    sleep,
-)
+from asyncio import CancelledError, Future, Task, TimeoutError, sleep
 from typing import Any, Dict, List, Optional, Set
 
 from async_timeout import timeout
 from pyee2 import EventEmitterS
 
-from .connection import ClientType
-from .helper import EEListener, Helper
+from simplechrome._typings import OptionalLoop, SlotsT
+from simplechrome.connection import ClientType
+from simplechrome.helper import EEListener, Helper
 
 __all__ = ["NetworkIdleMonitor"]
 
@@ -21,7 +15,7 @@ class NetworkIdleMonitor(EventEmitterS):
     """Monitors the network requests of the remote browser to determine when
     network idle happens"""
 
-    __slots__: List[str] = [
+    __slots__: SlotsT = [
         "_client",
         "_global_wait",
         "_idle_future",
@@ -39,7 +33,7 @@ class NetworkIdleMonitor(EventEmitterS):
         num_inflight: int = 2,
         idle_time: int = 2,
         global_wait: int = 60,
-        loop: Optional[AbstractEventLoop] = None
+        loop: OptionalLoop = None,
     ) -> None:
         super().__init__(loop=Helper.ensure_loop(loop))
         self._client: ClientType = client
@@ -59,14 +53,14 @@ class NetworkIdleMonitor(EventEmitterS):
         num_inflight: int = 2,
         idle_time: int = 2,
         global_wait: int = 60,
-        loop: Optional[AbstractEventLoop] = None
+        loop: OptionalLoop = None,
     ) -> Task:
         niw = cls(
             client=client,
             num_inflight=num_inflight,
             idle_time=idle_time,
             global_wait=global_wait,
-            loop=loop
+            loop=loop,
         )
         return niw.create_idle_future()
 

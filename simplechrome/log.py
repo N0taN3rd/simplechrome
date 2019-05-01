@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Union
 
 from pyee2 import EventEmitterS
 
-from ._typings import Number
+from ._typings import CDPEvent, Number
 from .connection import ClientType
 from .helper import Helper
 from .events import LogEvents
@@ -29,10 +29,7 @@ class Log(EventEmitterS):
         self._client: ClientType = client
         self._enabled: bool = False
         self._reporting_violations: bool = False
-        self._client.on(
-            "Log.entryAdded",
-            lambda event: self.emit(LogEvents.EntryAdded, LogEntry(event.get("entry"))),
-        )
+        self._client.on("Log.entryAdded", self._onLogEntryAdded)
 
     @property
     def enabled(self) -> bool:
@@ -83,6 +80,17 @@ class Log(EventEmitterS):
         """Stop violation reporting"""
         self._reporting_violations = False
         await self._client.send("Log.stopViolationsReport", {})
+
+    def _onLogEntryAdded(self, event: CDPEvent) -> None:
+        entry = event.get("entry")
+        args = entry.get("args")
+        if args is not None:
+            self._loop.create_task(self._release_log_args(args))
+        self.emit(LogEvents.EntryAdded, LogEntry(entry))
+
+    async def _release_log_args(self, args: List[Dict]) -> None:
+        for arg in args:
+            await Helper.releaseObject(self._client, arg)
 
     def __str__(self) -> str:
         return f"Log(enabled={self._enabled}, reporting_violations={self._reporting_violations})"

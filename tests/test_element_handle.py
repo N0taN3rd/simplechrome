@@ -100,6 +100,7 @@ class TestClick(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_br_node(self):
+        await self.goto_empty()
         await self.page.setContent("hello<br>goodbye")
         br = await self.page.J("br")
         with pytest.raises(Exception) as cm:

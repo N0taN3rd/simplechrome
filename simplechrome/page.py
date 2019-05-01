@@ -2,9 +2,8 @@
 import asyncio
 import base64
 import logging
-import math
 import mimetypes
-from asyncio import AbstractEventLoop, Future, Task
+from asyncio import Future, Task
 from typing import (
     Any,
     Awaitable,
@@ -18,10 +17,20 @@ from typing import (
 )
 
 import aiofiles
-import attr
+import math
 from pyee2 import EventEmitterS
 
+from ._typings import (
+    CDPEvent,
+    HTTPHeaders,
+    Number,
+    OptionalLoop,
+    OptionalViewport,
+    SlotsT,
+    Viewport,
+)
 from .connection import ClientType, Connection
+from .console_message import ConsoleMessage
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import PageError
@@ -30,29 +39,29 @@ from .execution_context import ElementHandle, JSHandle, createJSHandle
 from .frame_manager import Frame, FrameManager
 from .helper import Helper
 from .input import Keyboard, Mouse, Touchscreen
-from .network_manager import NetworkManager, Request, Response
+from .network import NetworkManager, Request, Response
 from .timeoutSettings import TimeoutSettings
 from .tracing import Tracing
-from .console_message import ConsoleMessage
+from .log import Log, LogEntry
 
 if TYPE_CHECKING:
     from .target import Target  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Page", "ConsoleMessage2"]
+__all__ = ["Page"]
 
 
 class Page(EventEmitterS):
-    __slots__: List[str] = [
+    __slots__: SlotsT = [
         "_client",
         "_closed",
         "_emulationManager",
         "_frameManager",
-        "_ignoreHTTPSErrors",
         "_javascriptEnabled",
         "_keyboard",
         "_lifecycle_emitting",
+        "_log",
         "_mouse",
         "_mouse",
         "_networkManager",
@@ -64,59 +73,45 @@ class Page(EventEmitterS):
         "_viewport",
     ]
 
-    PaperFormats: ClassVar[Dict[str, Dict[str, float]]] = dict(
-        letter={"width": 8.5, "height": 11},
-        legal={"width": 8.5, "height": 14},
-        tabloid={"width": 11, "height": 17},
-        ledger={"width": 17, "height": 11},
-        a0={"width": 33.1, "height": 46.8},
-        a1={"width": 23.4, "height": 33.1},
-        a2={"width": 16.5, "height": 23.4},
-        a3={"width": 11.7, "height": 16.5},
-        a4={"width": 8.27, "height": 11.7},
-        a5={"width": 5.83, "height": 8.27},
-    )
+    PaperFormats: ClassVar[Dict[str, Dict[str, Number]]] = {
+        "letter": {"width": 8.5, "height": 11},
+        "legal": {"width": 8.5, "height": 14},
+        "tabloid": {"width": 11, "height": 17},
+        "ledger": {"width": 17, "height": 11},
+        "a0": {"width": 33.1, "height": 46.8},
+        "a1": {"width": 23.4, "height": 33.1},
+        "a2": {"width": 16.5, "height": 23.4},
+        "a3": {"width": 11.7, "height": 16.5},
+        "a4": {"width": 8.27, "height": 11.7},
+        "a5": {"width": 5.83, "height": 8.27},
+    }
 
     @staticmethod
     async def create(
         client: ClientType,
         target: "Target",
-        defaultViewport: Optional[Dict[str, int]] = None,
+        defaultViewport: OptionalViewport = None,
         ignoreHTTPSErrors: bool = False,
         isolateWorlds: bool = True,
         screenshotTaskQueue: list = None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> "Page":
         """Async function which makes new page object."""
-        await client.send("Page.enable")
-        frameTree = await client.send("Page.getFrameTree")
         page = Page(
             client,
             target,
-            frameTree["frameTree"],
             ignoreHTTPSErrors=ignoreHTTPSErrors,
             isolateWorlds=isolateWorlds,
             screenshotTaskQueue=screenshotTaskQueue,
             loop=loop,
         )
 
-        async def enable_runtime() -> None:
-            await client.send("Runtime.enable", {})
-            if isolateWorlds:
-                await page._frameManager.ensureSecondaryDOMWorld()
-
         await asyncio.gather(
-            client.send("Page.setLifecycleEventsEnabled", {"enabled": True}),
-            client.send("Network.enable", {}),
-            enable_runtime(),
-            client.send("Log.enable", {}),
+            page.frame_manager.initialize(),
+            page.network_manager.initialize(),
+            page.log.enable(),
             loop=loop,
         )
-
-        if ignoreHTTPSErrors:
-            await client.send(
-                "Security.setOverrideCertificateErrors", {"override": True}
-            )
         if defaultViewport is not None:
             await page.setViewport(defaultViewport)
         return page
@@ -125,24 +120,25 @@ class Page(EventEmitterS):
         self,
         client: ClientType,
         target: "Target",
-        frameTree: Dict,
         ignoreHTTPSErrors: bool = False,
         isolateWorlds: bool = True,
         screenshotTaskQueue: list = None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> None:
         super().__init__(loop=Helper.ensure_loop(loop))
         self._closed: bool = False
         self._client: ClientType = client
         self._target: "Target" = target
+        self._log: Log = Log(self._client, loop=self._loop)
         self._keyboard: Keyboard = Keyboard(client)
         self._mouse: Mouse = Mouse(client, self._keyboard)
         self._timeoutSettings: TimeoutSettings = TimeoutSettings()
         self._touchscreen: Touchscreen = Touchscreen(client, self._keyboard)
-        self._networkManager: NetworkManager = NetworkManager(client, loop=self._loop)
+        self._networkManager: NetworkManager = NetworkManager(
+            client, ignoreHTTPSErrors=ignoreHTTPSErrors, loop=self._loop
+        )
         self._frameManager: FrameManager = FrameManager(
             client,
-            frameTree,
             timeoutSettings=self._timeoutSettings,
             page=self,
             networkManager=self._networkManager,
@@ -152,7 +148,6 @@ class Page(EventEmitterS):
         self._networkManager.setFrameManager(self._frameManager)
         self._emulationManager: EmulationManager = EmulationManager(client)
         self._tracing: Tracing = Tracing(client)
-        self._ignoreHTTPSErrors: bool = ignoreHTTPSErrors
         self._javascriptEnabled: bool = True
         self._lifecycle_emitting: bool = False
         self._viewport: Optional[Dict[str, Union[str, float, bool, int]]] = None
@@ -197,13 +192,14 @@ class Page(EventEmitterS):
             lambda event: self.emit(Events.Page.RequestFinished, event),
         )
 
+        self._log.on(Events.Log.EntryAdded, self._onLogEntryAdded)
+
         client.on("Page.domContentEventFired", self._onDomContentEventFired)
         client.on("Page.loadEventFired", self._onLoadEventFired)
         client.on("Page.javascriptDialogOpening", self._onDialog)
         client.on("Runtime.consoleAPICalled", self._onConsoleAPI)
         client.on("Runtime.exceptionThrown", self._onExceptionThrown)
         client.on("Inspector.targetCrashed", self._onTargetCrashed)
-        client.on("Log.entryAdded", self._onLogEntryAdded)
 
         def closed(*args: Any, **kwargs: Any) -> None:
             self.emit(Events.Page.Close)
@@ -216,14 +212,12 @@ class Page(EventEmitterS):
         return self._frameManager
 
     @property
-    def target(self) -> "Target":
-        """Return a target this page created from."""
-        return self._target
+    def network_manager(self) -> NetworkManager:
+        return self._networkManager
 
     @property
-    def mainFrame(self) -> Optional[Frame]:
-        """Get main :class:`~simplechrome.frame_manager.Frame` of this page."""
-        return self._frameManager.mainFrame
+    def emulation_manager(self) -> EmulationManager:
+        return self._emulationManager
 
     @property
     def keyboard(self) -> Keyboard:
@@ -234,6 +228,29 @@ class Page(EventEmitterS):
     def touchscreen(self) -> Touchscreen:
         """Get :class:`~simplechrome.input.Touchscreen` object."""
         return self._touchscreen
+
+    @property
+    def mouse(self) -> Mouse:
+        """Get :class:`~simplechrome.input.Mouse` object."""
+        return self._mouse
+
+    @property
+    def tracing(self) -> Tracing:
+        return self._tracing
+
+    @property
+    def log(self) -> Log:
+        return self._log
+
+    @property
+    def target(self) -> "Target":
+        """Return a target this page created from."""
+        return self._target
+
+    @property
+    def mainFrame(self) -> Optional[Frame]:
+        """Get main :class:`~simplechrome.frame_manager.Frame` of this page."""
+        return self._frameManager.mainFrame
 
     @property
     def url(self) -> str:
@@ -256,16 +273,7 @@ class Page(EventEmitterS):
         """
         return self._viewport
 
-    @property
-    def mouse(self) -> Mouse:
-        """Get :class:`~simplechrome.input.Mouse` object."""
-        return self._mouse
-
-    @property
-    def tracing(self) -> Tracing:
-        return self._tracing
-
-    def setDefaultNavigationTimeout(self, timeout: Union[int, float]) -> None:
+    def setDefaultNavigationTimeout(self, timeout: Number) -> None:
         """Change the default maximum navigation timeout.
 
         This method changes the default timeout of 30 seconds for the following
@@ -281,10 +289,10 @@ class Page(EventEmitterS):
         """
         self._frameManager.setDefaultNavigationTimeout(timeout)
 
-    def setDefaultTimeout(self, timeout: Union[int, float]) -> None:
+    def setDefaultTimeout(self, timeout: Number) -> None:
         self._timeoutSettings.setDefaultTimeout(timeout)
 
-    def setDefaultJSTimeout(self, timeout: Union[int, float]) -> None:
+    def setDefaultJSTimeout(self, timeout: Number) -> None:
         self._timeoutSettings.setDefaultJSTimeout(timeout)
 
     def network_idle_promise(
@@ -303,15 +311,16 @@ class Page(EventEmitterS):
             Events.FrameManager.LifecycleEvent, self._on_lifecycle
         )
 
+    async def captureSnapshot(self, format_: str = "mhtml") -> str:
+        result = await self._frameManager.captureSnapshot(format_)
+        return result
+
     async def enable_violation_reporting(self) -> None:
-        await self._client.send(
-            "Log.startViolationsReport",
-            {
-                "config": [
-                    {"name": "blockedEvent", "threshold": 1},
-                    {"name": "blockedParser", "threshold": 1},
-                ]
-            },
+        await self._log.startViolationsReport(
+            [
+                {"name": "blockedEvent", "threshold": 1},
+                {"name": "blockedParser", "threshold": 1},
+            ]
         )
 
     async def setBypassCSP(self, enabled: bool) -> None:
@@ -326,7 +335,7 @@ class Page(EventEmitterS):
             "Emulation.setScriptExecutionDisabled", {"value": not enabled}
         )
 
-    async def setViewport(self, viewport: Dict) -> None:
+    async def setViewport(self, viewport: Viewport) -> None:
         """Set viewport.
 
         Available options are:
@@ -351,13 +360,13 @@ class Page(EventEmitterS):
 
     async def setRequestInterception(self, value: bool) -> None:
         """Enable/disable request interception."""
-        return await self._networkManager.setRequestInterception(value)
+        await self._networkManager.setRequestInterception(value)
 
     async def setOfflineMode(self, enabled: bool) -> None:
         """Set offline mode enable/disable."""
         await self._networkManager.setOfflineMode(enabled)
 
-    async def setExtraHTTPHeaders(self, headers: Dict[str, str]) -> None:
+    async def setExtraHTTPHeaders(self, headers: HTTPHeaders) -> None:
         """Set extra http headers."""
         return await self._networkManager.setExtraHTTPHeaders(headers)
 
@@ -501,7 +510,7 @@ class Page(EventEmitterS):
         """
         frame = self.mainFrame
         if not frame:
-            raise PageError("no main frame.")
+            raise Exception("no main frame.")
         return frame.xpath(expression)
 
     async def cookies(self, *urls: str) -> Dict:
@@ -601,7 +610,7 @@ class Page(EventEmitterS):
     async def goto(
         self,
         url: str,
-        options: Optional[Dict[str, Union[str, int, bool]]] = None,
+        options: Optional[Dict[str, Union[str, Number]]] = None,
         **kwargs: Any,
     ) -> Optional[Response]:
         """Go to the ``url``.
@@ -781,7 +790,7 @@ class Page(EventEmitterS):
     ) -> None:
         """Removes given script from the list."""
         if not isinstance(identifier, dict):
-            identifier = dict(identifier=identifier)
+            identifier = {"identifier": identifier}
         await self._client.send("Page.removeScriptToEvaluateOnNewDocument", identifier)
 
     async def raw_screenshot(self, options: Dict = None, **kwargs: Any) -> bytes:
@@ -1101,7 +1110,7 @@ class Page(EventEmitterS):
 
     def waitFor(
         self,
-        selectorOrFunctionOrTimeout: Union[str, int, float],
+        selectorOrFunctionOrTimeout: Union[str, Number],
         options: Optional[Dict] = None,
         *args: Any,
         **kwargs: Any,
@@ -1351,20 +1360,10 @@ class Page(EventEmitterS):
             await self.setViewport(self._viewport)
         return result.get("data", b"")
 
-    def _onCertificateError(self, event: Any) -> None:
-        if not self._ignoreHTTPSErrors:
-            return
-        self._loop.create_task(
-            self._client.send(
-                "Security.handleCertificateError",
-                {"eventId": event.get("eventId"), "action": "continue"},
-            )
-        )
-
     def _onTargetCrashed(self, *args: Any, **kwargs: Any) -> None:
         self.emit(Events.Page.Crashed, PageError("Page crashed!"))
 
-    def _check_worker(self, event: Dict) -> None:
+    def _check_worker(self, event: CDPEvent) -> None:
         tinfo = event.get("targetInfo")
         if tinfo is not None:
             type_ = tinfo["type"]
@@ -1375,18 +1374,13 @@ class Page(EventEmitterS):
                     )
                 )
 
-    def _onLogEntryAdded(self, event: Dict) -> None:
-        entry = event.get("entry")
-        args = entry.get("args")
-        if args is not None:
-            self._loop.create_task(self._release_log_args(args))
-        if entry.get("source", "") != "worker":
-            self.emit(Events.Page.LogEntry, entry)
+    def _onLogEntryAdded(self, entry: LogEntry) -> None:
+        self.emit(Events.Page.LogEntry, entry)
 
     def _on_lifecycle(self, le: Callable) -> None:
         self.emit(Events.Page.LifecycleEvent, le)
 
-    def _emitMetrics(self, event: Dict) -> None:
+    def _emitMetrics(self, event: CDPEvent) -> None:
         self.emit(
             Events.Page.Metrics,
             {
@@ -1406,31 +1400,28 @@ class Page(EventEmitterS):
         message = Helper.getExceptionMessage(exceptionDetails)
         self.emit(Events.Page.PageError, PageError(message))
 
-    def _onConsoleAPI(self, event: Dict) -> None:
+    def _onConsoleAPI(self, event: CDPEvent) -> None:
         context = self._frameManager.executionContextById(
             event.get("executionContextId")
         )
         if not self.listeners(Events.Page.Console):
+            create_task = self._loop.create_task
             for arg in event.get("args", []):
-                self._loop.create_task(createJSHandle(context, arg).dispose())
+                create_task(createJSHandle(context, arg).dispose())
             return
         self.emit(Events.Page.Console, ConsoleMessage(event, context=context))
 
-    def _onDialog(self, event: Dict) -> None:
+    def _onDialog(self, event: CDPEvent) -> None:
         self.emit(Events.Page.Dialog, Dialog(self._client, event))
 
-    def _onDomContentEventFired(self, event: Dict) -> None:
+    def _onDomContentEventFired(self, event: CDPEvent) -> None:
         self.emit(Events.Page.DOMContentLoaded)
 
-    def _onLoadEventFired(self, event: Dict) -> None:
+    def _onLoadEventFired(self, event: CDPEvent) -> None:
         self.emit(Events.Page.Load)
 
-    def _onExceptionThrown(self, event: Dict) -> None:
+    def _onExceptionThrown(self, event: CDPEvent) -> None:
         self._handleException(event.get("exceptionDetails"))
-
-    async def _release_log_args(self, args: List[Dict]) -> None:
-        for arg in args:
-            await Helper.releaseObject(self._client, arg)
 
     #: alias to :meth:`querySelector`
     J = querySelector
@@ -1465,7 +1456,7 @@ unitToPixels = {"px": 1, "in": 96, "cm": 37.8, "mm": 3.78}
 
 
 def convertPrintParameterToInches(
-    parameter: Union[None, int, float, str]
+    parameter: Optional[Union[Number, str]]
 ) -> Optional[float]:
     """Convert print parameter to inches."""
     if parameter is None:
@@ -1490,15 +1481,3 @@ def convertPrintParameterToInches(
             "page.pdf() Cannot handle parameter type: " + str(type(parameter))
         )
     return pixels / 96
-
-
-@attr.dataclass(slots=True, cmp=False, hash=False)
-class ConsoleMessage2:
-    """Console message class.
-
-    ConsoleMessage objects are dispatched by page via the ``console`` event.
-    """
-
-    type: str = attr.ib()
-    text: str = attr.ib()
-    args: List[JSHandle] = attr.ib()

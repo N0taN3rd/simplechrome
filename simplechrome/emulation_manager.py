@@ -1,7 +1,7 @@
 """Emulation Manager module."""
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
-from ._typings import Number
+from ._typings import Number, SlotsT
 from .connection import ClientType
 from .helper import Helper
 
@@ -11,7 +11,7 @@ __all__ = ["EmulationManager"]
 class EmulationManager:
     """This domain emulates different environments for the page"""
 
-    __slots__: List[str] = [
+    __slots__: SlotsT = [
         "_client",
         "_emulatingMedia",
         "_emulatingMobile",

@@ -1,13 +1,26 @@
 """Helper functions."""
-from asyncio import AbstractEventLoop, Future, Task, TimeoutError, get_event_loop
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type, Union
+from asyncio import FIRST_COMPLETED, Future, TimeoutError, get_event_loop, wait
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    Union,
+)
 
 import math
 from aiohttp import AsyncResolver, ClientSession, TCPConnector
-from async_timeout import timeout as aiotimeout
+from async_timeout import timeout
 from pyee2 import EventEmitter, EventEmitterS
 from ujson import dumps
 
+from ._typings import FutureOrTask, Loop, Number, OptionalLoop, OptionalNumber
 from .connection import ClientType
 from .errors import ElementHandleError, WaitTimeoutError
 
@@ -29,13 +42,35 @@ MAYBE_NUMBER_CHECK_TUPLE: Tuple[Type[int], Type[float]] = (int, float)
 
 class Helper:
     @staticmethod
+    def is_number(maybe_number: Any) -> bool:
+        return isinstance(maybe_number, MAYBE_NUMBER_CHECK_TUPLE)
+
+    @staticmethod
+    def is_boolean(maybe_boolean: Any) -> bool:
+        return isinstance(maybe_boolean, bool)
+
+    @staticmethod
+    def is_string(maybe_string: Any) -> bool:
+        return isinstance(maybe_string, str)
+
+    @staticmethod
+    def is_jsfunc(func: str) -> bool:  # not in puppeteer
+        """Heuristically check function or expression."""
+        func = func.strip()
+        if func.startswith("function") or func.startswith("async "):
+            return True
+        elif "=>" in func:
+            return True
+        return False
+
+    @staticmethod
     def evaluationString(fun: str, *args: Any) -> str:
         """Convert function and arguments to str."""
         _args = ", ".join(["undefined" if arg is None else dumps(arg) for arg in args])
         return f"({fun})({_args})"
 
     @staticmethod
-    def getExceptionMessage(exceptionDetails: dict) -> str:
+    def getExceptionMessage(exceptionDetails: Dict) -> str:
         """Get exception message from `exceptionDetails` object."""
         exception = exceptionDetails.get("exception")
         if exception is not None:
@@ -112,83 +147,10 @@ class Helper:
         return value
 
     @staticmethod
-    def is_jsfunc(func: str) -> bool:  # not in puppeteer
-        """Huristically check function or expression."""
-        func = func.strip()
-        if func.startswith("function") or func.startswith("async "):
-            return True
-        elif "=>" in func:
-            return True
-        return False
-
-    @staticmethod
-    async def waitWithTimeout(
-        awaitable: Awaitable[Any],
-        to: Union[int, float],
-        taskName: Optional[str] = "",
-        loop: Optional[AbstractEventLoop] = None,
-        raise_exception: bool = True,
-    ) -> None:
-        try:
-            async with aiotimeout(to, loop=Helper.ensure_loop(loop)):
-                await awaitable
-        except TimeoutError:
-            if raise_exception:
-                raise WaitTimeoutError(
-                    f"Timeout of {to} seconds exceeded while waiting for {taskName}"
-                )
-
-    @staticmethod
     def cleanup_futures(*args: Future) -> None:
         for future in args:
             if future and not (future.cancelled() or future.done()):
                 future.cancel()
-
-    @staticmethod
-    def waitForEvent(
-        emitter: EEType,
-        eventName: str,
-        predicate: Callable[[Any], bool],
-        timeout: Optional[Union[int, float]] = None,
-    ) -> Union[Future, Task]:
-        loop = Helper.ensure_loop(emitter._loop)
-
-        promise = loop.create_future()
-
-        @emitter.on(eventName)
-        def listener(event: Any = None) -> None:
-            if predicate(event) and not promise.done():
-                promise.set_result(None)
-
-        def clean_up(*args: Any, **kwargs: Any) -> None:
-            emitter.remove_listener(eventName, listener)
-
-        if timeout is not None:
-
-            async def timed_promise() -> None:
-                try:
-                    async with aiotimeout(timeout):
-                        await promise
-                except TimeoutError:
-                    raise WaitTimeoutError("Timeout exceeded while waiting for event")
-                finally:
-                    clean_up()
-
-            return loop.create_task(timed_promise())
-        promise.add_done_callback(clean_up)
-        return promise
-
-    @staticmethod
-    def is_number(maybe_number: Any) -> bool:
-        return isinstance(maybe_number, MAYBE_NUMBER_CHECK_TUPLE)
-
-    @staticmethod
-    def is_boolean(maybe_boolean: Any) -> bool:
-        return isinstance(maybe_boolean, bool)
-
-    @staticmethod
-    def is_string(maybe_string: Any) -> bool:
-        return isinstance(maybe_string, str)
 
     @staticmethod
     def remove_dict_keys(dictionary: Dict, *args: str) -> None:
@@ -209,11 +171,21 @@ class Helper:
         return new_dict
 
     @staticmethod
-    def loop_factory() -> AbstractEventLoop:
-        return get_event_loop()
+    def make_aiohttp_session(loop: OptionalLoop = None) -> ClientSession:
+        """Creates and returns a new aiohttp.ClientSession that uses AsyncResolver
+
+        :param loop: Optional asyncio event loop to use. Defaults to asyncio.get_event_loop()
+        :return: An instance of aiohttp.ClientSession
+        """
+        eloop = Helper.ensure_loop(loop)
+        return ClientSession(
+            connector=TCPConnector(resolver=AsyncResolver(loop=eloop), loop=eloop),
+            loop=eloop,
+            json_serialize=dumps,
+        )
 
     @staticmethod
-    def ensure_loop(loop: Optional[AbstractEventLoop] = None) -> AbstractEventLoop:
+    def ensure_loop(loop: OptionalLoop = None) -> Loop:
         """Helper method for checking if the loop is none and if so use asyncio.get_event_loop
         to retrieve it otherwise the loop is passed through
         """
@@ -222,16 +194,57 @@ class Helper:
         return get_event_loop()
 
     @staticmethod
-    def make_aiohttp_session(loop: Optional[AbstractEventLoop] = None) -> ClientSession:
-        """Creates and returns a new aiohttp.ClientSession that uses AsyncResolver
+    async def waitWithTimeout(
+        awaitable: Awaitable[Any],
+        to: Number,
+        taskName: Optional[str] = "",
+        loop: OptionalLoop = None,
+        raise_exception: bool = True,
+        cb: Optional[Callable] = None,
+    ) -> None:
+        try:
+            async with timeout(to, loop=Helper.ensure_loop(loop)):
+                await awaitable
+        except TimeoutError:
+            if raise_exception:
+                raise WaitTimeoutError(
+                    f"Timeout of {to} seconds exceeded while waiting for {taskName}"
+                )
+        finally:
+            if cb is not None:
+                try:
+                    result = cb()
+                except Exception:
+                    pass
 
-        :param loop: Optional asyncio event loop to use. Defaults to asyncio.get_event_loop()
-        :return: An instance of aiohttp.ClientSession
-        """
-        if loop is None:
-            loop = get_event_loop()
-        return ClientSession(
-            connector=TCPConnector(resolver=AsyncResolver(loop=loop), loop=loop),
-            loop=loop,
-            json_serialize=dumps,
+    @staticmethod
+    def waitForEvent(
+        emitter: EEType,
+        eventName: str,
+        predicate: Callable[[Any], bool],
+        to: OptionalNumber = None,
+    ) -> FutureOrTask:
+        loop = Helper.ensure_loop(emitter._loop)
+        done_promise = loop.create_future()
+
+        def listener(event: Any = None) -> None:
+            if predicate(event) and not done_promise.done():
+                done_promise.set_result(None)
+
+        emitter.on(eventName, listener)
+
+        promise = (
+            done_promise
+            if to is None
+            else loop.create_task(
+                Helper.waitWithTimeout(done_promise, to, eventName, loop=loop)
+            )
         )
+        promise.add_done_callback(lambda _: emitter.remove_listener(eventName, listener))
+        return done_promise
+
+    @staticmethod
+    def wait_for_first_done(
+        *args: Union[Coroutine, FutureOrTask], loop: OptionalLoop = None
+    ) -> Awaitable[Tuple[Set[Future], Set[Future]]]:
+        return wait(args, return_when=FIRST_COMPLETED, loop=loop)

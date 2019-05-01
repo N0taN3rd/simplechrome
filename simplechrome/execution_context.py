@@ -1,11 +1,13 @@
 """ExecutionContext Context Module."""
-import math
 import re
-from typing import Any, Dict, List, Optional, Pattern, TYPE_CHECKING
+from typing import Any, Dict, Optional, Pattern, TYPE_CHECKING
 
+import math
+
+from ._typings import SlotsT
 from .connection import ClientType
 from .domWorld import DOMWorld
-from .errors import ElementHandleError, EvaluationError, ProtocolError
+from .errors import EvaluationError, ProtocolError
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle, createJSHandle
 
@@ -22,7 +24,7 @@ suffix = f"//# sourceURL={EVALUATION_SCRIPT_URL}"
 
 
 class ExecutionContext:
-    __slots__: List[str] = [
+    __slots__: SlotsT = [
         "_client",
         "_contextPayload",
         "_world",
@@ -156,9 +158,9 @@ class ExecutionContext:
         Details see :meth:`simplechrome.page.Page.queryObjects`.
         """
         if prototypeHandle._disposed:
-            raise ElementHandleError("Prototype JSHandle is disposed!")
+            raise Exception("Prototype JSHandle is disposed!")
         if not prototypeHandle._remoteObject.get("objectId"):
-            raise ElementHandleError(
+            raise Exception(
                 "Prototype JSHandle must not be referencing primitive value"
             )
         response = await self._client.send(

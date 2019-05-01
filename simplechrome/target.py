@@ -1,12 +1,11 @@
-from asyncio import AbstractEventLoop, Event, Future, Task
+from asyncio import Event, Future, Task
 from typing import Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
 
-import attr
-
+from ._typings import Loop, OptionalLoop, OptionalTask, SlotsT, TargetInfo, Viewport
 from .connection import SessionType
 from .events import Events
-from .page import Page
 from .helper import Helper
+from .page import Page
 
 if TYPE_CHECKING:
     from .chrome import BrowserContext, Chrome  # noqa: F401
@@ -14,22 +13,51 @@ if TYPE_CHECKING:
 __all__ = ["Target"]
 
 
-@attr.dataclass(slots=True, cmp=False, hash=False)
 class Target:
-    _targetInfo: Dict[str, str] = attr.ib(repr=False)
-    _browserContext: "BrowserContext" = attr.ib()
-    _sessionFactory: Callable[[], Awaitable[SessionType]] = attr.ib(repr=False)
-    _ignoreHTTPSErrors: bool = attr.ib(repr=False)
-    _defaultViewport: Optional[Dict[str, int]] = attr.ib(repr=False)
-    _screenshotTaskQueue: List = attr.ib(repr=False)
-    _loop: Optional[AbstractEventLoop] = attr.ib(converter=Helper.ensure_loop, repr=False)
-    _isolateWorlds: bool = attr.ib(default=True, repr=False)
-    _targetId: str = attr.ib(init=False, default=None)
-    _isInitialized: bool = attr.ib(init=False, default=False)
-    _initializedEvent: Event = attr.ib(init=False, default=None, repr=False)
-    _initializedPromise: Task = attr.ib(init=False, default=None, repr=False)
-    _isClosedPromise: Future = attr.ib(init=False, default=None, repr=False)
-    _pagePromise: Task = attr.ib(init=False, default=None, repr=False)
+    __slots__: SlotsT = [
+        "_targetInfo",
+        "_browserContext",
+        "_sessionFactory",
+        "_ignoreHTTPSErrors",
+        "_defaultViewport",
+        "_screenshotTaskQueue",
+        "_loop",
+        "_targetId",
+        "_isolateWorlds",
+        "_isInitialized",
+        "_initializedEvent",
+        "_initializedPromise",
+        "_isClosedPromise",
+        "_pagePromise",
+    ]
+
+    def __init__(
+        self,
+        targetInfo: TargetInfo,
+        browserContext: "BrowserContext",
+        sessionFactory: Callable[[], Awaitable[SessionType]],
+        ignoreHTTPSErrors: bool,
+        defaultViewport: Optional[Viewport],
+        screenshotTaskQueue: List,
+        loop: OptionalLoop = None,
+    ) -> None:
+        self._targetInfo: TargetInfo = targetInfo
+        self._browserContext: "BrowserContext" = browserContext
+        self._sessionFactory: Callable[[], Awaitable[SessionType]] = sessionFactory
+        self._ignoreHTTPSErrors: bool = ignoreHTTPSErrors
+        self._defaultViewport: Optional[Viewport] = defaultViewport
+        self._screenshotTaskQueue: List = screenshotTaskQueue
+        self._loop: Loop = Helper.ensure_loop(loop)
+        self._targetId: str = self._targetInfo["targetId"]
+        self._isolateWorlds: bool = True
+        self._isInitialized: bool = False
+        self._initializedEvent: Event = Event(loop=self._loop)
+        self._initializedPromise: Task = self._loop.create_task(self._on_initialized())
+        self._isClosedPromise: Future = self._loop.create_future()
+        self._pagePromise: OptionalTask = None
+        if self._targetInfo["type"] != "page" or self._targetInfo["url"] != "":
+            self._isInitialized = True
+            self._initializedEvent.set()
 
     @property
     def target_id(self) -> str:
@@ -134,12 +162,3 @@ class Target:
         popupPage = await self.page()
         opener_page.emit(Events.Page.Popup, popupPage)
         return True
-
-    def __attrs_post_init__(self) -> None:
-        self._initializedEvent = Event(loop=self._loop)
-        self._initializedPromise = self._loop.create_task(self._on_initialized())
-        self._isClosedPromise = self._loop.create_future()
-        self._targetId = self._targetInfo["targetId"]
-        if self._targetInfo["type"] != "page" or self._targetInfo["url"] != "":
-            self._isInitialized = True
-            self._initializedEvent.set()

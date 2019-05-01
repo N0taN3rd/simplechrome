@@ -77,7 +77,7 @@ class RevisionInfo:
 
 
 class BrowserFetcher:
-    __slots__ = ("_downloads_folder", "_download_host", "_platform")
+    __slots__ = ["_downloads_folder", "_download_host", "_platform"]
 
     def __init__(
         self, rootDir: str, options: Optional[Dict] = None, **kwargs: Any

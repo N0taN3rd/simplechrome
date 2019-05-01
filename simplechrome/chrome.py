@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from pyee2 import EventEmitterS
 
+from ._typings import SlotsT
 from .connection import ClientType
 from .errors import BrowserError
 from .events import Events
@@ -16,7 +17,7 @@ __all__ = ["Chrome", "BrowserContext"]
 
 
 class Chrome(EventEmitterS):
-    __slots__: List[str] = [
+    __slots__: SlotsT = [
         "_closeCallback",
         "_connection",
         "_contexts",
@@ -271,7 +272,7 @@ class Chrome(EventEmitterS):
 
 class BrowserContext(EventEmitterS):
 
-    __slots__: List[str] = ["_browser", "_id", "client"]
+    __slots__: SlotsT = ["_browser", "_id", "client"]
 
     def __init__(
         self,

@@ -1,11 +1,13 @@
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
-from ._typings import CDPEvent, JHandleFact, Number
+from ._typings import CDPEvent, Number, SlotsT
 from .execution_context import ExecutionContext
 from .helper import Helper
 from .jsHandle import JSHandle, createJSHandle
 
 __all__ = ["ConsoleMessage"]
+
+JHandleFact = Callable[[Dict], JSHandle]
 
 
 class ConsoleMessage:
@@ -14,7 +16,7 @@ class ConsoleMessage:
     ConsoleMessage objects are dispatched by page via the ``console`` event.
     """
 
-    __slots__: List[str] = ["_args", "_event", "_location", "_text"]
+    __slots__: SlotsT = ["_args", "_event", "_location", "_text"]
 
     def __init__(
         self,
@@ -127,7 +129,7 @@ class ConsoleMessage:
                 if remote_object.get("objectId"):
                     add_tt(handle.toString())
                 else:
-                    add_tt(Helper.valueFromRemoteObject(remote_object))
+                    add_tt(str(Helper.valueFromRemoteObject(remote_object)))
             self._text = " ".join(text_tokens)
 
     def __str__(self) -> str:

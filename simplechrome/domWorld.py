@@ -1,8 +1,9 @@
-from asyncio import AbstractEventLoop, Event, FIRST_COMPLETED, Future, wait
+from asyncio import AbstractEventLoop, Event, Future
 from typing import Any, Awaitable, Dict, List, Optional, Set, TYPE_CHECKING
 
-from aiofiles import open as aio_file_open
+import aiofiles
 
+from ._typings import SlotsT
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle
 from .lifecycle_watcher import LifecycleWatcher
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class DOMWorld:
-    __slots__: List[str] = [
+    __slots__: SlotsT = [
         "__weakref__",
         "_contextResolveCallback",
         "_detached",
@@ -53,6 +54,7 @@ class DOMWorld:
         self._executionContext: Optional["ExecutionContext"] = None
         self._contextResolveCallback: Optional[Future] = None
         self._documentPromise: Optional[Future] = None
+        self._setContext(None)
 
     @property
     def frame(self) -> "Frame":
@@ -65,6 +67,10 @@ class DOMWorld:
     @property
     def loop(self) -> AbstractEventLoop:
         return self._loop
+
+    @property
+    def detached(self) -> bool:
+        return self._detached
 
     async def executionContext(self) -> "ExecutionContext":
         if self._detached:
@@ -169,17 +175,18 @@ class DOMWorld:
         timeout = opts.get("timeout", self._timeoutSettings.timeout)
         waitUnitl = opts.get("waitUntil", ["load"])
         all_frames = opts.get("all_frames", True)
-        await self.evaluate(SET_DOCUMENT_HTML_JS, html)
+        await self.evaluate(
+            "function setContent(html) { document.open(); document.write(html); document.close();} ",
+            html,
+        )
         watcher = LifecycleWatcher(
             self._frameManager, self._frame, waitUnitl, timeout, all_frames, self._loop
         )
-        done, pending = await wait(
-            {
-                watcher.timeoutPromise,
-                watcher.terminationPromise,
-                watcher.lifecyclePromise,
-            },
-            return_when=FIRST_COMPLETED,
+
+        done, pending = await Helper.wait_for_first_done(
+            watcher.timeoutPromise,
+            watcher.terminationPromise,
+            watcher.lifecyclePromise,
             loop=self._loop,
         )
         watcher.dispose()
@@ -203,7 +210,7 @@ class DOMWorld:
 
         path = opts.get("path")
         if path is not None:
-            async with aio_file_open(path, "r") as contents_in:
+            async with (path, "r") as contents_in:
                 contents = await contents_in.read()
             context = await self.executionContext()
             result = await context.evaluateHandle(
@@ -235,7 +242,7 @@ class DOMWorld:
 
         path = opts.get("path")
         if path is not None:
-            async with aio_file_open(path, "r") as contents_in:
+            async with aiofiles.open(path, "r") as contents_in:
                 contents = await contents_in.read()
             context = await self.executionContext()
             result = await context.evaluateHandle(ADD_STYLE_CONTENT_JS, contents, type_)
@@ -396,7 +403,7 @@ class DOMWorld:
             )
 
     def _hasContext(self) -> bool:
-        return self._contextResolveCallback is not None
+        return self._executionContext is not None
 
 
 GET_DOCUMENT_HTML_JS: str = """() => {
@@ -408,12 +415,6 @@ GET_DOCUMENT_HTML_JS: str = """() => {
     result[1] = document.documentElement.outerHTML;
   }
   return result.join('');
-}"""
-
-SET_DOCUMENT_HTML_JS: str = """function (html) {
-  document.open();
-  document.write(html);
-  document.close();
 }"""
 
 ADD_SCRIPT_URL_JS: str = """async function addScriptUrl(url, type) {

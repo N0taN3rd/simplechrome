@@ -1,11 +1,12 @@
 import copy
-import math
 import os
-from asyncio import gather as aio_gather
+from asyncio import gather
 from typing import Any, Awaitable, Dict, List, Optional, TYPE_CHECKING, Union
 
+import math
+
+from ._typings import Number, SlotsT
 from .connection import ClientType
-from .errors import ProtocolError
 from .helper import Helper
 
 if TYPE_CHECKING:
@@ -29,7 +30,11 @@ def createJSHandle(
 
 
 class JSHandle:
-    __slots__: List[str] = ["_context", "_client", "_remoteObject", "_disposed"]
+    __slots__: SlotsT = ["_context", "_client", "_remoteObject", "_disposed"]
+
+    @classmethod
+    def create(cls, context: "ExecutionContext", remoteObject: Dict) -> "JSHandle":
+        return cls(context, context._client, remoteObject)
 
     def __init__(
         self, context: "ExecutionContext", client: ClientType, remoteObject: Dict
@@ -46,16 +51,24 @@ class JSHandle:
 
     def asElement(self) -> Optional["ElementHandle"]:
         """Return either null or the object handle itself."""
+        if isinstance(self, ElementHandle):
+            return self
         return None
 
     def toString(self) -> str:
         """Get string representation."""
         if self._remoteObject.get("objectId"):
-            _type = self._remoteObject.get("subtype") or self._remoteObject.get("type")
+            sub_type = self._remoteObject.get("subtype")
+            if sub_type == "node":
+                _type = f"{self._remoteObject.get('className')}-{self._remoteObject.get('description')}"
+            else:
+                _type = sub_type or self._remoteObject.get("type")
             return f"{self.__class__.__name__}@{_type}"
         return f"{self.__class__.__name__}:{Helper.valueFromRemoteObject(self._remoteObject)}"
 
-    async def getProperty(self, propertyName: str) -> "JSHandle":
+    async def getProperty(
+        self, propertyName: str
+    ) -> Union["JSHandle", "ElementHandle"]:
         """Get property value of ``propertyName``."""
         objectHandle = await self._context.evaluateHandle(
             """(object, propertyName) => {
@@ -71,19 +84,24 @@ class JSHandle:
         await objectHandle.dispose()
         return result
 
-    async def getProperties(self) -> Dict[str, "JSHandle"]:
+    async def getProperties(self) -> Dict[str, Union["JSHandle", "ElementHandle"]]:
         """Get all properties of this handle."""
-        response = await self._client.send(
-            "Runtime.getProperties",
-            {"objectId": self._remoteObject.get("objectId", ""), "ownProperties": True},
-        )
+        properties = await self._properties()
         result = {}
         context = self._context
-        for prop in response["result"]:
+        for prop in properties["result"]:
             if not prop.get("enumerable"):
                 continue
             result[prop.get("name")] = createJSHandle(context, prop.get("value"))
         return result
+
+    async def asArray(self) -> List["JSHandle"]:
+        properties = await self._properties()
+        return await self._handle_list(properties)
+
+    async def asElementArray(self) -> List["ElementHandle"]:
+        properties = await self._properties()
+        return await self._handle_list(properties, True)
 
     async def jsonValue(self) -> Dict:
         """Get Jsonized value of this object."""
@@ -108,6 +126,28 @@ class JSHandle:
         self._disposed = True
         await Helper.releaseObject(self._client, self._remoteObject)
 
+    def _properties(self) -> Awaitable[Dict]:
+        return self._client.send(
+            "Runtime.getProperties",
+            {"objectId": self._remoteObject.get("objectId", ""), "ownProperties": True},
+        )
+
+    async def _handle_list(
+        self, properties: Dict, elements: bool = False
+    ) -> Union[List["JSHandle"], List["ElementHandle"]]:
+        handle_list: Union[List["JSHandle"], List["ElementHandle"]] = []
+        add_handle = handle_list.append
+        context = self._context
+        for prop in properties["result"]:
+            if not prop.get("enumerable"):
+                continue
+            remote_obj = prop.get("value")
+            if elements:
+                add_handle(createJSHandle(context, remote_obj).asElement())
+            else:
+                add_handle(createJSHandle(context, remote_obj))
+        return handle_list
+
     def __str__(self) -> str:
         return self.toString()
 
@@ -116,28 +156,24 @@ class JSHandle:
 
 
 class ElementHandle(JSHandle):
-    __slots__: List[str] = ["_page", "_frameManager"]
+    __slots__: SlotsT = ["_frameManager", "_page"]
 
     def __init__(
         self,
         context: "ExecutionContext",
         client: ClientType,
-        remoteObject: dict,
+        remoteObject: Dict,
         page: "Page",
         frameManager: "FrameManager",
     ) -> None:
         super().__init__(context, client, remoteObject)
-        self._page = page
-        self._frameManager = frameManager
-
-    def asElement(self) -> "ElementHandle":
-        """Return this ElementHandle."""
-        return self
+        self._page: Optional["Page"] = page
+        self._frameManager: "FrameManager" = frameManager
 
     def isIntersectingViewport(self) -> Awaitable[bool]:
         return self.executionContext.evaluate(
             """async element => {
-      const visibleRatio = await new Promise(resolve => {
+        const visibleRatio = await new Promise(resolve => {
         const observer = new IntersectionObserver(entries => {
           resolve(entries[0].intersectionRatio);
           observer.disconnect();
@@ -148,6 +184,42 @@ class ElementHandle(JSHandle):
     }""",
             self,
         )
+
+    def innerText(self, text: Optional[str] = None) -> Awaitable[str]:
+        return self.executionContext.evaluate(
+            """(element, newValue) => {
+          if (newValue) element.innerText = newValue;
+          return element.innerText;
+        }""",
+            self,
+            text,
+        )
+
+    def innerHTML(self, html: Optional[str] = None) -> Awaitable[str]:
+        return self.executionContext.evaluate(
+            """(element, newValue) => {
+          if (newValue) element.innerHTML = newValue;
+          return element.innerHTML;
+        }""",
+            self,
+            html,
+        )
+
+    def outerHTML(self, html: Optional[str] = None) -> Awaitable[str]:
+        return self.executionContext.evaluate(
+            """(element, newValue) => {
+          if (newValue) element.outerHTML = newValue;
+          return element.outerHTML;
+        }""",
+            self,
+            html,
+        )
+
+    def hasChildNodes(self) -> Awaitable[bool]:
+        return self.executionContext.evaluate("elem => elem.hasChildNodes()", self)
+
+    def childElementCount(self) -> Awaitable[Number]:
+        return self.executionContext.evaluate("elem => elem.childElementCount", self)
 
     async def contentFrame(self) -> Optional["Frame"]:
         nodeInfo = await self._client.send(
@@ -244,7 +316,7 @@ class ElementHandle(JSHandle):
         await self.focus()
         await self._page.keyboard.press(key, options)
 
-    async def boundingBox(self) -> Optional[Dict[str, float]]:
+    async def boundingBox(self) -> Optional[Dict[str, Number]]:
         """Return bounding box of this element.
 
         If the element is not visible, return ``None``.
@@ -267,7 +339,9 @@ class ElementHandle(JSHandle):
         height = max(quad[1], quad[3], quad[5], quad[7]) - y
         return {"x": x, "y": y, "width": width, "height": height}
 
-    async def boxModel(self) -> Optional[Dict[str, Union[int, List[Dict[str, float]]]]]:
+    async def boxModel(
+        self
+    ) -> Optional[Dict[str, Union[Number, List[Dict[str, float]]]]]:
         """Return boxes of element.
         Return ``None`` if element is not visivle. Boxes are represented as an
         list of dictionaries, {x, y} for each point, points clock-wise as
@@ -287,10 +361,10 @@ class ElementHandle(JSHandle):
 
         model = result.get("model", {})
         return {
-            "content": self._fromProtocolQuad(model.get("content")),
-            "padding": self._fromProtocolQuad(model.get("padding")),
-            "border": self._fromProtocolQuad(model.get("border")),
-            "margin": self._fromProtocolQuad(model.get("margin")),
+            "content": fromProtocolQuad(model.get("content")),
+            "padding": fromProtocolQuad(model.get("padding")),
+            "border": fromProtocolQuad(model.get("border")),
+            "margin": fromProtocolQuad(model.get("margin")),
             "width": model.get("width"),
             "height": model.get("height"),
         }
@@ -384,19 +458,16 @@ class ElementHandle(JSHandle):
             self,
             selector,
         )
-        properties = await arrayHandle.getProperties()
-        await arrayHandle.dispose()
-        result = []
-        for prop in properties.values():
-            elementHandle = prop.asElement()
-            if elementHandle:
-                result.append(elementHandle)
-        return result
+        return await arrayHandle.asElementArray()
 
     async def querySelectorAllEval(
         self, selector: str, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> List["ElementHandle"]:
-        arrayHandle = await self.querySelectorAll(selector)
+    ) -> List[Any]:
+        arrayHandle = await self.executionContext.evaluateHandle(
+            "(element, selector) => Array.from(element.querySelectorAll(selector))",
+            self,
+            selector,
+        )
         result = await self.executionContext.evaluate(
             pageFunction, arrayHandle, *args, withCliAPI=withCliAPI
         )
@@ -423,14 +494,7 @@ class ElementHandle(JSHandle):
             self,
             expression,
         )
-        properties = await arrayHandle.getProperties()
-        await arrayHandle.dispose()
-        result = []
-        for prop in properties.values():
-            elementHandle = prop.asElement()
-            if elementHandle:
-                result.append(elementHandle)
-        return result
+        return await arrayHandle.asElementArray()
 
     #: alias to :meth:`xpath`
     Jx = xpath
@@ -472,20 +536,9 @@ class ElementHandle(JSHandle):
         if error:
             raise Exception(error)
 
-    def _intersectQuadWithViewport(
-        self,
-        quad: List[Dict[str, Union[int, float]]],
-        width: Union[int, float],
-        height: Union[int, float],
-    ) -> List[Dict[str, Union[int, float]]]:
-        return [
-            {"x": min(max(point["x"], 0), width), "y": min(max(point["y"], 0), height)}
-            for point in quad
-        ]
-
-    async def _clickablePoint(self) -> Dict[str, float]:
+    async def _clickablePoint(self) -> Dict[str, Number]:
         try:
-            result, layoutMetrics = await aio_gather(
+            result, layoutMetrics = await gather(
                 self._client.send(
                     "DOM.getContentQuads",
                     {"objectId": self._remoteObject.get("objectId")},
@@ -502,15 +555,16 @@ class ElementHandle(JSHandle):
         clientWidth = layoutMetrics["layoutViewport"]["clientWidth"]
         clientHeight = layoutMetrics["layoutViewport"]["clientHeight"]
         quads = []
+        add_quad = quads.append
         for pquad in result.get("quads"):
-            quad = self._fromProtocolQuad(pquad)
+            quad = fromProtocolQuad(pquad)
             if (
                 computeQuadArea(
-                    self._intersectQuadWithViewport(quad, clientWidth, clientHeight)
+                    intersectQuadWithViewport(quad, clientWidth, clientHeight)
                 )
                 > 1
             ):
-                quads.append(quad)
+                add_quad(quad)
         if len(quads) == 0:
             raise Exception("Node is either not visible or not an HTMLElement")
         quad = quads[0]
@@ -526,19 +580,11 @@ class ElementHandle(JSHandle):
             result: Optional[Dict] = await self._client.send(
                 "DOM.getBoxModel", {"objectId": self._remoteObject.get("objectId")}
             )
-        except ProtocolError:
+        except Exception:
             result = None
         return result
 
-    def _fromProtocolQuad(self, quad: List[int]) -> List[Dict[str, float]]:
-        return [
-            {"x": quad[0], "y": quad[1]},
-            {"x": quad[2], "y": quad[3]},
-            {"x": quad[4], "y": quad[5]},
-            {"x": quad[6], "y": quad[7]},
-        ]
-
-    async def _visibleCenter(self) -> Dict[str, float]:
+    async def _visibleCenter(self) -> Dict[str, Number]:
         await self._scrollIntoViewIfNeeded()
         box = await self.boundingBox()
         if not box:
@@ -551,8 +597,33 @@ class ElementHandle(JSHandle):
             return boundingBox
         raise Exception("Node is either not visible or not an HTMLElement")
 
+    async def _get_node_description(self) -> None:
+        if self._node is not None:
+            return
+        self._node = await self._client.send(
+            "DOM.describeNode", {"objectId": self._remoteObject.get("objectId")}
+        )
 
-def computeQuadArea(quad: List[Dict[str, float]]) -> float:
+
+def intersectQuadWithViewport(
+    quad: List[Dict[str, Number]], width: Number, height: Number
+) -> List[Dict[str, Number]]:
+    return [
+        {"x": min(max(point["x"], 0), width), "y": min(max(point["y"], 0), height)}
+        for point in quad
+    ]
+
+
+def fromProtocolQuad(quad: List[Number]) -> List[Dict[str, Number]]:
+    return [
+        {"x": quad[0], "y": quad[1]},
+        {"x": quad[2], "y": quad[3]},
+        {"x": quad[4], "y": quad[5]},
+        {"x": quad[6], "y": quad[7]},
+    ]
+
+
+def computeQuadArea(quad: List[Dict[str, Number]]) -> Number:
     area = 0.0
     qlen = len(quad)
     for i in range(0, qlen):
