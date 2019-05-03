@@ -261,7 +261,7 @@ class Launcher:
             return env_exe
         bf = BrowserFetcher(self.projectRoot)
         if opts is None:
-            opts = dict()
+            opts = {}
         revision: Optional[str] = opts.get("chromium_revision")
         if revision is None:
             revision = self.preferredRevision

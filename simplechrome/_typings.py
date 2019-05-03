@@ -12,6 +12,7 @@ from typing import (
 __all__ = [
     "AsyncAny",
     "CDPEvent",
+    "Device",
     "EventType",
     "FutureOrTask",
     "HTTPHeaders",
@@ -33,6 +34,7 @@ Loop = AbstractEventLoop
 FutureOrTask = Union[Future, Task]
 SlotsT = List[str]
 AsyncAny = Awaitable[Any]
+Device = Dict[str, Union[str, Dict[str, Union[Number, bool]]]]
 
 OptionalNumber = Optional[Number]
 OptionalLoop = Optional[Loop]

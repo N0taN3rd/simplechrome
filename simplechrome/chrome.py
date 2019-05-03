@@ -93,7 +93,7 @@ class Chrome(EventEmitterS):
             ..., Any
         ] = closeCallback if closeCallback is not None else Helper.noop
 
-        self._targets: Dict[str, Target] = dict()
+        self._targets: Dict[str, Target] = {}
         self._connection.on(self._connection.Events.Disconnected, self._on_close)
         self._connection.on("Target.targetCreated", self._targetCreated)
         self._connection.on("Target.targetDestroyed", self._targetDestroyed)
@@ -207,7 +207,7 @@ class Chrome(EventEmitterS):
         await self._connection.dispose()
 
     async def _disposeContext(self, contextId: Optional[str]) -> None:
-        params = dict()
+        params = {}
         if contextId is not None:
             params["browserContextId"] = contextId
         await self._connection.send("Target.disposeBrowserContext", params)
@@ -324,7 +324,7 @@ class BrowserContext(EventEmitterS):
         return pages
 
     async def clearPermissionOverrides(self) -> None:
-        opts = dict()
+        opts = {}
         if self._id is not None:
             opts["browserContextId"] = self._id
         await self.client.send("Browser.resetPermissions", opts)

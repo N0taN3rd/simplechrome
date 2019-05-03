@@ -1,7 +1,7 @@
 """Network Manager module."""
 
 import asyncio
-from typing import Awaitable, Dict, List, Optional, Set
+from typing import Awaitable, Dict, List, Optional, Set, Any
 
 from pyee2 import EventEmitterS
 
@@ -78,6 +78,10 @@ class NetworkManager(EventEmitterS):
     @property
     def service_workers_bypassed(self) -> bool:
         return self._sw_bypass
+
+    @property
+    def cache_disabled(self) -> bool:
+        return self._userCacheDisabled
 
     def network_idle_promise(
         self, num_inflight: int = 2, idle_time: int = 2, global_wait: int = 60
@@ -201,6 +205,81 @@ class NetworkManager(EventEmitterS):
         """Enable request interception."""
         self._userRequestInterceptionEnabled = value
         await self._updateProtocolRequestInterception()
+
+    async def setBlockedURLs(self, urls: List[str]) -> None:
+        """Blocks URLs from loading
+
+        :param urls: URL patterns to block. Wildcards ('*') are allowed.
+        """
+        await self._client.send("Network.setBlockedURLs", {"urls": urls})
+
+    async def setCookie(self, cookie: Optional[Dict] = None, **kwargs: Any) -> bool:
+        """Sets a cookie with the given cookie data; may overwrite equivalent cookies if they exist
+        
+        Cookie values are as follows:
+         * name: Cookie name.
+         * value: Cookie value.
+         * url: The request-URI to associate with the setting of the cookie.
+          This value can affect the default domain and path values of the created cookie.
+         * domain: Cookie domain.
+         * path: Cookie path.
+         * secure: True if cookie is secure.
+         * httpOnly: True if cookie is http-only.
+         * sameSite: Cookie SameSite type.
+         * expires: Cookie expiration date, session cookie if not set
+        
+        :param cookie: A dictionary representing the cookie
+        :param kwargs: Values for the cookie
+        :return: True if successfully set cookie
+        """
+        ckie = Helper.merge_dict(cookie, kwargs)
+        result = await self._client.send("Network.setCookie", ckie)
+        return result.get("success")
+
+    async def setCookies(self, cookies: List[Dict]) -> None:
+        await self._client.send("Network.setCookies", {"cookies": cookies})
+
+    async def getAllCookies(self) -> List[Dict]:
+        """Returns all browser cookies.
+
+        Depending on the backend support, will return detailed cookie information
+        in the cookies field.
+
+
+        :return: Array of cookie objects
+        """
+        results = await self._client.send("Network.getAllCookies")
+        return results.get("cookies")
+
+    async def getCookies(self, urls: Optional[List[str]] = None) -> List[Dict]:
+        """Returns all browser cookies for the current URL.
+
+        Depending on the backend support, will return detailed cookie
+        information in the cookies field.
+
+        :param urls: The list of URLs for which applicable cookies will be fetched
+        :return: Array of cookie objects
+        """
+        msg = {}
+        if urls is not None:
+            msg["urls"] = urls
+        results = await self._client.send("Network.getCookies", msg)
+        return results.get("cookies")
+
+    async def deleteCookies(self, cookie: Optional[Dict] = None, **kwargs: Any) -> None:
+        """Deletes browser cookies with matching name and url or domain/path pair
+
+         Cookie values:
+          * name: Name of the cookies to remove.
+          * url: If specified, deletes all the cookies with the given name where domain and path match provided URL.
+          * domain: If specified, deletes only cookies with the exact domain.
+          * path: If specified, deletes only cookies with the exact path.
+        
+        :param cookie: A dictionary representing the cookie
+        :param kwargs: Values for the cookie
+        """
+        ckie = Helper.merge_dict(cookie, kwargs)
+        await self._client.send("Network.deleteCookies", ckie)
 
     async def _updateProtocolRequestInterception(self) -> None:
         enabled = self._userRequestInterceptionEnabled or bool(self._credentials)

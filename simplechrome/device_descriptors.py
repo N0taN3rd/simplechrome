@@ -1,8 +1,10 @@
-from typing import List, Dict
+from typing import Dict, List
+
+from ._typings import Device
 
 __all__ = ["DeviceList", "Devices"]
 
-DeviceList: List[Dict] = [
+DeviceList: List[Device] = [
     {
         "name": "Blackberry PlayBook",
         "userAgent": "Mozilla/5.0 (PlayBook; U; RIM Tablet OS 2.1.0; en-US) AppleWebKit/536.2+ (KHTML like Gecko) Version/7.2.1.0 Safari/536.2+",
@@ -833,4 +835,4 @@ DeviceList: List[Dict] = [
     },
 ]
 
-Devices: Dict[str, Dict] = {device["name"]: device for device in DeviceList}
+Devices: Dict[str, Device] = {device["name"]: device for device in DeviceList}

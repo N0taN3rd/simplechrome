@@ -133,34 +133,34 @@ class DOMWorld:
 
         Details see :meth:`simplechrome.page.Page.querySelector`.
         """
-        document = await self._document()
+        document = await self.document()
         value = await document.querySelector(selector)
         return value
 
     async def querySelectorEval(
         self, selector: str, pageFunction: str, *args: Any, withCliAPI: bool = False
     ) -> Any:
-        document = await self._document()
+        document = await self.document()
         return await document.querySelectorEval(
             selector, pageFunction, *args, withCliAPI=withCliAPI
         )
 
     async def querySelectorAll(self, selector: str) -> List[ElementHandle]:
-        document = await self._document()
+        document = await self.document()
         value = await document.querySelectorAll(selector)
         return value
 
     async def querySelectorAllEval(
         self, selector: str, pageFunction: str, *args: Any, withCliAPI: bool = False
     ) -> List[Any]:
-        document = await self._document()
+        document = await self.document()
         value = await document.querySelectorAllEval(
             selector, pageFunction, *args, withCliAPI
         )
         return value
 
     async def xpath(self, expression: str) -> List[ElementHandle]:
-        document = await self._document()
+        document = await self.document()
         value = await document.xpath(expression)
         return value
 
@@ -347,7 +347,7 @@ class DOMWorld:
     #: alias to :meth:`querySelectorAllEval`
     JJeval = querySelectorAllEval
 
-    async def _document(self) -> ElementHandle:
+    async def document(self) -> ElementHandle:
         if self._documentPromise:
             return await self._documentPromise
         context = await self.executionContext()

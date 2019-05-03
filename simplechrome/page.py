@@ -312,6 +312,15 @@ class Page(EventEmitterS):
         )
 
     async def captureSnapshot(self, format_: str = "mhtml") -> str:
+        """Returns a snapshot of the page as a string. For MHTML format,
+        the serialization includes iframes, shadow DOM, external resources,
+        and element-inline styles.
+        EXPERIMENTAL
+
+
+        :param format_: Format (defaults to mhtml)
+        :return: Serialized page data.
+        """
         result = await self._frameManager.captureSnapshot(format_)
         return result
 
@@ -328,12 +337,7 @@ class Page(EventEmitterS):
 
     async def setJavaScriptEnabled(self, enabled: bool) -> None:
         """Set JavaScript enable/disable."""
-        if self._javascriptEnabled == enabled:
-            return
-        self._javascriptEnabled = enabled
-        await self._client.send(
-            "Emulation.setScriptExecutionDisabled", {"value": not enabled}
-        )
+        await self._emulationManager.setScriptExecutionDisabled(not enabled)
 
     async def setViewport(self, viewport: Viewport) -> None:
         """Set viewport.
@@ -372,7 +376,7 @@ class Page(EventEmitterS):
 
     async def setUserAgent(self, userAgent: str) -> None:
         """Set user agent to use in this page."""
-        return await self._networkManager.setUserAgent(userAgent)
+        await self._networkManager.setUserAgent(userAgent)
 
     async def setContent(self, html: str) -> None:
         """Set content to this page."""
@@ -386,9 +390,7 @@ class Page(EventEmitterS):
 
         By default, caching is enabled.
         """
-        await self._client.send(
-            "Network.setCacheDisabled", {"cacheDisabled": not enabled}
-        )
+        await self._networkManager.setCacheEnabled(enabled)
 
     async def getWindowDescriptor(self) -> Dict:
         return await self._client.send(
@@ -513,14 +515,13 @@ class Page(EventEmitterS):
             raise Exception("no main frame.")
         return frame.xpath(expression)
 
-    async def cookies(self, *urls: str) -> Dict:
+    async def cookies(self, *urls: str) -> List[Dict]:
         """Get cookies."""
         if not urls:
             cookies_for_urls = [self.url]
         else:
             cookies_for_urls = list(urls)
-        resp = await self._client.send("Network.getCookies", {"urls": cookies_for_urls})
-        return resp.get("cookies", {})
+        return await self._networkManager.getCookies(cookies_for_urls)
 
     async def deleteCookie(self, *cookies: Dict) -> None:
         """Delete cookie."""
@@ -529,7 +530,7 @@ class Page(EventEmitterS):
             item = dict(**cookie)
             if not cookie.get("url") and pageURL.startswith("http"):
                 item["url"] = pageURL
-            await self._client.send("Network.deleteCookies", item)
+            await self._networkManager.deleteCookies(item)
 
     async def setCookie(self, *cookies: Dict) -> None:
         """Set cookies."""
@@ -549,7 +550,7 @@ class Page(EventEmitterS):
             items.append(item)
         await self.deleteCookie(*items)
         if items:
-            await self._client.send("Network.setCookies", {"cookies": items})
+            await self._networkManager.setCookies(items)
 
     def addScriptTag(
         self, options: Optional[Dict] = None, **kwargs: Any

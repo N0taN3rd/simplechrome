@@ -97,11 +97,11 @@ class JSHandle:
 
     async def asArray(self) -> List["JSHandle"]:
         properties = await self._properties()
-        return await self._handle_list(properties)
+        return self._handle_list(properties)
 
     async def asElementArray(self) -> List["ElementHandle"]:
         properties = await self._properties()
-        return await self._handle_list(properties, True)
+        return self._handle_list(properties, True)
 
     async def jsonValue(self) -> Dict:
         """Get Jsonized value of this object."""
@@ -132,7 +132,7 @@ class JSHandle:
             {"objectId": self._remoteObject.get("objectId", ""), "ownProperties": True},
         )
 
-    async def _handle_list(
+    def _handle_list(
         self, properties: Dict, elements: bool = False
     ) -> Union[List["JSHandle"], List["ElementHandle"]]:
         handle_list: Union[List["JSHandle"], List["ElementHandle"]] = []

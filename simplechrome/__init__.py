@@ -3,6 +3,7 @@ from .browser_fetcher import BrowserFetcher, RevisionInfo
 from .chrome import BrowserContext, Chrome
 from .connection import CDPSession, ClientType, Connection
 from .console_message import ConsoleMessage
+from .device_descriptors import Devices
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import (
@@ -50,13 +51,14 @@ __all__ = [
     "connect",
     "Connection",
     "ConsoleMessage",
+    "Devices",
     "Dialog",
     "ElementHandle",
     "ElementHandleError",
     "EmulationManager",
     "EvaluationError",
-    "ExecutionContext",
     "Events",
+    "ExecutionContext",
     "Frame",
     "FrameManager",
     "InputError",

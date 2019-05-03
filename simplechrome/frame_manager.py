@@ -157,6 +157,16 @@ class FrameManager(EventEmitterS):
             await self._ensureIsolatedWorld(UTILITY_WORLD_NAME)
 
     async def captureSnapshot(self, format_: str = "mhtml") -> str:
+        """Returns a snapshot of the page as a string. For MHTML format,
+        the serialization includes iframes, shadow DOM, external resources,
+        and element-inline styles.
+
+        EXPERIMENTAL
+
+
+        :param format_: Format (defaults to mhtml)
+        :return: Serialized page data.
+        """
         result = await self._client.send("Page.captureSnapshot", {"format": format_})
         return result.get("data")
 
@@ -704,6 +714,10 @@ class Frame(EventEmitterS):
         Details see :meth:`simplechrome.page.Page.select`.
         """
         return self.domWorld.select(selector, *values)
+
+    async def document(self) -> ElementHandle:
+        dom = await self._mainWorld.document()
+        return dom
 
     async def tap(self, selector: str) -> None:
         """Tap the element which matches the ``selector``.

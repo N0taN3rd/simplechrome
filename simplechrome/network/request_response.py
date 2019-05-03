@@ -402,8 +402,11 @@ class Response:
 
     @property
     def ok(self) -> bool:
-        """Return bool whether this request is successfull (200-299) or not."""
-        return 200 <= self.status <= 299
+        """Return bool whether this request is successfull (200-299)/304 or not."""
+        test = 200 <= self.status <= 299
+        if not test:
+            return self.status == 304
+        return test
 
     @property
     def status(self) -> int:
