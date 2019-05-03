@@ -1,36 +1,39 @@
-from asyncio import sleep as aio_sleep
+from asyncio import sleep
 from pathlib import Path
 
-import uvloop
-from sanic import Sanic
-from sanic.response import HTTPResponse, json, text
+import uvicorn
+from fastapi import FastAPI
+from starlette.responses import PlainTextResponse, RedirectResponse, UJSONResponse
+from starlette.staticfiles import StaticFiles
 
-uvloop.install()
-
-
-app = Sanic(name="simplechrome-test-server")
-app.static("/static", str(Path(__file__).parent / "static"))
-
-
-@app.route("/alive")
-async def alive(request) -> HTTPResponse:
-    return json({"yes": ":)"})
+app = FastAPI()
+app.mount(
+    "/static",
+    StaticFiles(directory=str(Path(__file__).parent / "static")),
+    name="static",
+)
 
 
-@app.route("/never-loads")
-async def never_load(request) -> HTTPResponse:
-    await aio_sleep(6)
-    return request.redirect("should-never-get-here")
+@app.get("/alive")
+async def alive(*args, **kwargs) -> UJSONResponse:
+    return UJSONResponse({"yes": ":)"})
 
 
-@app.route("/should-never-get-here")
-async def never_load(request) -> HTTPResponse:
-    return text(
-        "If you are simplechrome controlled browser why are you here? Otherwise welcome friend!",
-        status=404
+@app.get("/never-loads")
+async def never_load(*args, **kwargs) -> RedirectResponse:
+    await sleep(6)
+    return RedirectResponse(url="/should-never-get-here")
+
+
+@app.get("/should-never-get-here")
+async def never_load(*args, **kwargs) -> PlainTextResponse:
+    return PlainTextResponse(
+        "If you are simplechrome controlled browser why are you here? Otherwise welcome friend!"
     )
 
 
 if __name__ == "__main__":
     print("alive")
-    app.run(host="0.0.0.0", port=8888, workers=1, debug=True)
+    uvicorn.run(app, host="0.0.0.0", port=8888, loop="uvloop")
+    # app.setup()
+    # app.run(host="0.0.0.0", port=8888, workers=1, debug=True)

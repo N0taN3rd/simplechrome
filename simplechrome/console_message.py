@@ -16,7 +16,7 @@ class ConsoleMessage:
     ConsoleMessage objects are dispatched by page via the ``console`` event.
     """
 
-    __slots__: SlotsT = ["_args", "_event", "_location", "_text"]
+    __slots__: SlotsT = ["__weakref__", "_args", "_event", "_location", "_text"]
 
     def __init__(
         self,

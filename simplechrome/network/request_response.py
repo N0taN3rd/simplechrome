@@ -1,6 +1,6 @@
 import base64
 from asyncio import AbstractEventLoop, Event, Future
-from typing import AnyStr, Awaitable, Dict, List, Optional, Union
+from typing import Awaitable, Dict, List, Optional, Union
 
 from ujson import loads
 
@@ -13,11 +13,7 @@ from .security_details import SecurityDetails
 __all__ = ["Response", "Request"]
 
 
-def headers_array(
-    headers: Union[Dict[str, str], List[Dict[str, str]]]
-) -> List[Dict[str, str]]:
-    if not isinstance(headers, dict):
-        return headers
+def headers_array(headers: HTTPHeaders) -> List[Dict[str, str]]:
     return [{"name": name, "value": value} for name, value in headers.items()]
 
 
@@ -241,7 +237,9 @@ class Request:
             raise Exception("Request interception is not enabled.")
         if self._interceptionHandled:
             raise Exception("Request is already handled.")
-        overrides = {"interceptionId": self._interceptionId}
+        overrides: Dict[str, Union[str, List[Dict[str, str]]]] = {
+            "interceptionId": self._interceptionId
+        }
         if isinstance(url, str):
             overrides["url"] = url
         if isinstance(method, str):
@@ -261,7 +259,7 @@ class Request:
         status: int = 200,
         headers: Optional[HTTPHeaders] = None,
         contentType: Optional[str] = None,
-        body: Optional[AnyStr] = None,
+        body: Optional[Union[str, bytes]] = None,
     ) -> None:
         """Fulfills request with given response.
 
@@ -285,12 +283,15 @@ class Request:
             raise Exception("Request is already handled.")
         self._interceptionHandled = True
 
-        response = {"requestId": self._interceptionId, "responseCode": status}
+        response: Dict[str, Union[List[Dict[str, str]], bytes, int, str]] = {
+            "requestId": self._interceptionId,
+            "responseCode": status,
+        }
         if body is not None:
-            response["body"] = base64.b64encode(
-                body.encode("utf-8") if Helper.is_string(body) else body
-            )
-        response_headers = headers_array(headers) if isinstance(headers, dict) else {}
+            if isinstance(body, str):
+                body = body.encode("utf-8")
+            response["body"] = base64.b64encode(body)
+        response_headers: Dict[str, str] = headers or {}
         if contentType is not None:
             response_headers["responseHeaders"] = contentType
         if body is not None and not (
@@ -299,7 +300,7 @@ class Request:
         ):
             response_headers["Content-Length"] = str(len(response["body"]))
 
-        response["responseHeaders"] = response_headers
+        response["responseHeaders"] = headers_array(response_headers)
         try:
             await self._client.send("Fetch.fulfillRequest", response)
         except Exception:

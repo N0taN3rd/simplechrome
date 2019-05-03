@@ -97,8 +97,8 @@ class Helper:
         """Remove listeners from emitter."""
         for listener in listeners:
             emitter: EEType = listener["emitter"]
-            eventName: str = listener["eventName"]
-            handler: Callable = listener["handler"]
+            eventName: str = listener["eventName"]  # type: ignore
+            handler: Callable = listener["handler"]  # type: ignore
             emitter.remove_listener(eventName, handler)
         listeners.clear()
 
@@ -213,7 +213,7 @@ class Helper:
         finally:
             if cb is not None:
                 try:
-                    result = cb()
+                    cb()
                 except Exception:
                     pass
 
@@ -240,7 +240,9 @@ class Helper:
                 Helper.waitWithTimeout(done_promise, to, eventName, loop=loop)
             )
         )
-        promise.add_done_callback(lambda _: emitter.remove_listener(eventName, listener))
+        promise.add_done_callback(
+            lambda _: emitter.remove_listener(eventName, listener)
+        )
         return done_promise
 
     @staticmethod

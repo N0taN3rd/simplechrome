@@ -1,6 +1,7 @@
-from asyncio import AbstractEventLoop, Future, Task, sleep as aio_sleep
-from typing import Any, Awaitable, Generator, List, Optional, Union, TYPE_CHECKING
+from asyncio import AbstractEventLoop, Future, Task, sleep
+from typing import Any, Awaitable, Generator, Optional, Set, TYPE_CHECKING
 
+from ._typings import Number, NumberOrStr, SlotsT
 from .errors import WaitTimeoutError
 from .helper import Helper
 from .jsHandle import JSHandle
@@ -10,25 +11,42 @@ if TYPE_CHECKING:
 
 __all__ = ["WaitTask"]
 
-ACCEPTABLE_POLLING_STRINGS: List[str] = ["raf", "mutation"]
+ACCEPTABLE_POLLING_STRINGS: Set[str] = {"raf", "mutation"}
 
 
 class WaitTask:
+    __slots__: SlotsT = [
+        "__weakref__",
+        "_args",
+        "_domWorld",
+        "_js_timeout",
+        "_loop",
+        "_polling",
+        "_predicateBody",
+        "_promise",
+        "_runCount",
+        "_terminated",
+        "_timeout",
+        "_timeoutError",
+        "_timeoutTimer",
+        "_title",
+    ]
+
     def __init__(
         self,
         domWorld: "DOMWorld",
         predicateBody: str,
         title: str,
-        polling: Union[str, int, float],
-        timeout: Union[float, int],
-        js_timeout: Union[float, int],
+        polling: NumberOrStr,
+        timeout: Number,
+        js_timeout: Number,
         *args: Any,
     ) -> None:
         if Helper.is_string(polling):
             if polling not in ACCEPTABLE_POLLING_STRINGS:
                 raise ValueError(f"Unknown polling: {polling}")
         elif Helper.is_number(polling):
-            if polling < 0:
+            if polling < 0:  # type: ignore
                 raise ValueError(f"Cannot poll with non-positive interval: {polling}")
         else:
             raise ValueError(f"Unknown polling option: {polling}")
@@ -36,9 +54,9 @@ class WaitTask:
         self._domWorld: "DOMWorld" = domWorld
         self._title: str = title
         self._loop: AbstractEventLoop = self._domWorld.loop
-        self._polling: Union[str, int, float] = polling
-        self._timeout: Union[float, int] = timeout
-        self._js_timeout: Union[float, int] = js_timeout
+        self._polling: NumberOrStr = polling
+        self._timeout: Number = timeout
+        self._js_timeout: Number = js_timeout
         self._predicateBody: str = f"return ({predicateBody})(...args);" if Helper.is_jsfunc(
             predicateBody
         ) else f"return {predicateBody}"
@@ -136,8 +154,8 @@ class WaitTask:
             self._timeoutTimer.cancel()
         self._domWorld.remove_wait_task(self)
 
-    async def _timeout_timer(self, to: Union[int, float]) -> None:
-        await aio_sleep(to, loop=self._loop)
+    async def _timeout_timer(self, to: Number) -> None:
+        await sleep(to, loop=self._loop)
         self._timeoutError = True
         self.terminate(
             WaitTimeoutError(

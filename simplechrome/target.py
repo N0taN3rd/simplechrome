@@ -15,6 +15,7 @@ __all__ = ["Target"]
 
 class Target:
     __slots__: SlotsT = [
+        "__weakref__",
         "_targetInfo",
         "_browserContext",
         "_sessionFactory",
@@ -37,8 +38,8 @@ class Target:
         browserContext: "BrowserContext",
         sessionFactory: Callable[[], Awaitable[SessionType]],
         ignoreHTTPSErrors: bool,
-        defaultViewport: Optional[Viewport],
-        screenshotTaskQueue: List,
+        defaultViewport: Optional[Viewport] = None,
+        screenshotTaskQueue: Optional[List] = None,
         loop: OptionalLoop = None,
     ) -> None:
         self._targetInfo: TargetInfo = targetInfo
@@ -46,7 +47,7 @@ class Target:
         self._sessionFactory: Callable[[], Awaitable[SessionType]] = sessionFactory
         self._ignoreHTTPSErrors: bool = ignoreHTTPSErrors
         self._defaultViewport: Optional[Viewport] = defaultViewport
-        self._screenshotTaskQueue: List = screenshotTaskQueue
+        self._screenshotTaskQueue: List = screenshotTaskQueue or []
         self._loop: Loop = Helper.ensure_loop(loop)
         self._targetId: str = self._targetInfo["targetId"]
         self._isolateWorlds: bool = True

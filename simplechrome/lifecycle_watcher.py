@@ -1,15 +1,17 @@
-from asyncio import AbstractEventLoop, Future, Task, TimeoutError
+from asyncio import Future, Task, TimeoutError
 from typing import Any, Dict, Iterable, List, Optional, TYPE_CHECKING, Union
 
 from async_timeout import timeout
 
+from ._typings import Loop, OptionalLoop, OptionalNumber
 from .errors import NavigationError
 from .events import Events
 from .helper import EEListener, Helper
 
 if TYPE_CHECKING:
     from .frame_manager import FrameManager, Frame  # noqa: F401
-    from .network import NetworkManager, Request, Response  # noqa: F401
+    from .network import Request, Response  # noqa: F401
+    from .network_manager import NetworkManager  # noqa: F401
 
 
 __all__ = ["LifecycleWatcher"]
@@ -24,6 +26,7 @@ WaitToProtocolLifecycle: Dict[str, str] = {
 
 class LifecycleWatcher:
     __slots__ = [
+        "__weakref__",
         "_all_frames",
         "_eventListeners",
         "_expectedLifecycle",
@@ -48,16 +51,16 @@ class LifecycleWatcher:
         frameManager: "FrameManager",
         frame: "Frame",
         waitUntil: Union[Iterable[str], str],
-        to: Optional[Union[int, float]],
-        all_frames: bool,
-        loop: Optional[AbstractEventLoop] = None,
+        to: OptionalNumber = None,
+        all_frames: bool = True,
+        loop: OptionalLoop = None,
     ) -> None:
         self._frameManager: "FrameManager" = frameManager
         self._frame: "Frame" = frame
         self._waitUntil: Union[Iterable[str], str] = waitUntil
-        self._timeout: Optional[Union[int, float]] = to
+        self._timeout: OptionalNumber = to
         self._all_frames: bool = all_frames
-        self._loop: AbstractEventLoop = Helper.ensure_loop(loop)
+        self._loop: Loop = Helper.ensure_loop(loop)
         self._networkManager: Optional[
             "NetworkManager"
         ] = self._frameManager._networkManager

@@ -1,5 +1,8 @@
-import asyncio
-from asyncio import AbstractEventLoop, get_event_loop as aio_get_event_loop, sleep as aio_sleep
+from asyncio import (
+    AbstractEventLoop,
+    get_event_loop as aio_get_event_loop,
+    sleep as aio_sleep,
+)
 from contextvars import ContextVar
 from pathlib import Path
 

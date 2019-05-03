@@ -27,13 +27,8 @@ from .jsHandle import ElementHandle, JSHandle
 from .launcher import Launcher, connect, launch
 from .lifecycle_watcher import LifecycleWatcher
 from .log import Log, LogEntry
-from .network import (
-    NetworkIdleMonitor,
-    NetworkManager,
-    Request,
-    Response,
-    SecurityDetails,
-)
+from .network import Cookie, NetworkIdleMonitor, Request, Response, SecurityDetails
+from .network_manager import NetworkManager
 from .page import Page
 from .target import Target
 from .us_keyboard_layout import keyDefinitions
@@ -51,6 +46,7 @@ __all__ = [
     "connect",
     "Connection",
     "ConsoleMessage",
+    "Cookie",
     "Devices",
     "Dialog",
     "ElementHandle",
@@ -69,9 +65,12 @@ __all__ = [
     "Launcher",
     "LauncherError",
     "LifecycleWatcher",
+    "Log",
+    "LogEntry",
     "Mouse",
     "NavigationError",
     "NetworkError",
+    "NetworkIdleMonitor",
     "NetworkManager",
     "Page",
     "PageError",

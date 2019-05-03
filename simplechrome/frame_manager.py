@@ -29,7 +29,8 @@ from .timeoutSettings import TimeoutSettings
 
 if TYPE_CHECKING:
     from .page import Page  # noqa: F401
-    from .network import NetworkManager, Response  # noqa: F401
+    from .network import Response  # noqa: F401
+    from .network_manager import NetworkManager  # noqa: F401
 
 __all__ = ["FrameManager", "Frame"]
 
@@ -227,7 +228,11 @@ class FrameManager(EventEmitterS):
         return watcher.navigationResponse
 
     async def __navigate(
-        self, ensureNewDocumentNavigation: Dict[str, bool], nav_args, url, watcher
+        self,
+        ensureNewDocumentNavigation: Dict[str, bool],
+        nav_args: Dict[str, Any],
+        url: str,
+        watcher: LifecycleWatcher,
     ) -> Optional[NavigationError]:
         try:
             response = await self._client.send("Page.navigate", nav_args)
@@ -686,13 +691,17 @@ class Frame(EventEmitterS):
         return self._mainWorld.addStyleTag(options, **kwargs)
 
     def click(
-        self, selector: str, options: Optional[Dict] = None, **kwargs: Any
+        self,
+        selector: str,
+        button: str = "left",
+        clickCount: int = 1,
+        delay: Number = 0,
     ) -> AsyncAny:
         """Click element which matches ``selector``.
 
         Details see :meth:`simplechrome.page.Page.click`.
         """
-        return self.domWorld.click(selector, options, **kwargs)
+        return self.domWorld.click(selector, button, clickCount, delay)
 
     def focus(self, selector: str) -> Awaitable[None]:
         """Fucus element which matches ``selector``.
@@ -726,14 +735,12 @@ class Frame(EventEmitterS):
         """
         await self.domWorld.tap(selector)
 
-    async def type(
-        self, selector: str, text: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> None:
+    async def type(self, selector: str, text: str, delay: Number = 0) -> None:
         """Type ``text`` on the element which matches ``selector``.
 
         Details see :meth:`simplechrome.page.Page.type`.
         """
-        await self._mainWorld.type(selector, text, options, **kwargs)
+        await self._mainWorld.type(selector, text, delay)
 
     def waitFor(
         self,
@@ -760,10 +767,10 @@ class Frame(EventEmitterS):
 
         if Helper.is_number(selectorOrFunctionOrTimeout):
             fut = self._loop.create_task(
-                sleep(selectorOrFunctionOrTimeout, loop=self._loop)
+                sleep(selectorOrFunctionOrTimeout, loop=self._loop)  # type: ignore
             )
             return fut
-        if args or Helper.is_jsfunc(selectorOrFunctionOrTimeout):
+        if args or Helper.is_jsfunc(selectorOrFunctionOrTimeout):  # type: ignore
             return self.waitForFunction(
                 selectorOrFunctionOrTimeout, options, *args, **kwargs
             )

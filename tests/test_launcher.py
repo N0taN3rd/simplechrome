@@ -9,7 +9,7 @@ from simplechrome.errors import NetworkError
 from simplechrome.launcher import Launcher, launch
 
 
-class TestLauncher(object):
+class TestLauncher:
     def test_create_argless_no_throw(self):
         Launcher | should.do_not.raise_error(Exception)
 

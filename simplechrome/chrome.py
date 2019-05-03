@@ -1,11 +1,11 @@
-from asyncio import AbstractEventLoop, Future
+from asyncio import Future
 from inspect import isawaitable
 from subprocess import Popen
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from pyee2 import EventEmitterS
 
-from ._typings import SlotsT
+from ._typings import CDPEvent, Number, OptionalLoop, SlotsT
 from .connection import ClientType
 from .errors import BrowserError
 from .events import Events
@@ -18,6 +18,7 @@ __all__ = ["Chrome", "BrowserContext"]
 
 class Chrome(EventEmitterS):
     __slots__: SlotsT = [
+        "__weakref__",
         "_closeCallback",
         "_connection",
         "_contexts",
@@ -40,7 +41,7 @@ class Chrome(EventEmitterS):
         process: Optional[Popen] = None,
         closeCallback: Optional[Callable[[], Any]] = None,
         targetInfo: Optional[Dict] = None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> "Chrome":
         browser = Chrome(
             connection,
@@ -64,7 +65,7 @@ class Chrome(EventEmitterS):
         process: Optional[Popen] = None,
         closeCallback: Optional[Callable[[], Any]] = None,
         targetInfo: Optional[Dict] = None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> None:
         super().__init__(loop=Helper.ensure_loop(loop))
         self._ignoreHTTPSErrors: bool = ignoreHTTPSErrors
@@ -74,7 +75,6 @@ class Chrome(EventEmitterS):
         self._connection: ClientType = connection
         self._targetInfo: Optional[Dict] = targetInfo
         self._page: Optional[Page] = None
-        # self.on("error", lambda e: print("Chrome error", e))
 
         browserContextId = None
         if self._targetInfo is not None:
@@ -89,9 +89,10 @@ class Chrome(EventEmitterS):
                 connection, self, contextId, self._loop
             )
 
-        self._closeCallback: Callable[
-            ..., Any
-        ] = closeCallback if closeCallback is not None else Helper.noop
+        if callable(closeCallback):
+            self._closeCallback: Callable[[], Any] = closeCallback
+        else:
+            self._closeCallback = Helper.noop
 
         self._targets: Dict[str, Target] = {}
         self._connection.on(self._connection.Events.Disconnected, self._on_close)
@@ -136,9 +137,7 @@ class Chrome(EventEmitterS):
         return await self._defaultContext.newPage()
 
     async def waitForTarget(
-        self,
-        predicate: Callable[[Target], bool],
-        timeout: Optional[Union[int, float]] = 30,
+        self, predicate: Callable[[Target], bool], timeout: Number = 30
     ) -> Optional[Target]:
         existingTarget = None
         for target in self._targets.values():
@@ -179,7 +178,7 @@ class Chrome(EventEmitterS):
         return pages
 
     async def createPageInContext(self, contextId: Optional[str]) -> Page:
-        args = dict(url="about:blank")
+        args = {"url": "about:blank"}
         if contextId is not None:
             args["browserContextId"] = contextId
         createdTarget = await self._connection.send("Target.createTarget", args)
@@ -206,14 +205,14 @@ class Chrome(EventEmitterS):
     async def disconnect(self) -> None:
         await self._connection.dispose()
 
-    async def _disposeContext(self, contextId: Optional[str]) -> None:
+    async def _disposeContext(self, contextId: Optional[str] = None) -> None:
         params = {}
         if contextId is not None:
             params["browserContextId"] = contextId
         await self._connection.send("Target.disposeBrowserContext", params)
         self._contexts.pop(contextId, None)
 
-    async def _targetCreated(self, event: Dict) -> None:
+    async def _targetCreated(self, event: CDPEvent) -> None:
         tinfo = event["targetInfo"]
         browserContextId = tinfo.get("browserContextId")
         if browserContextId is not None and browserContextId in self._contexts:
@@ -237,7 +236,7 @@ class Chrome(EventEmitterS):
             self.emit(Events.Chrome.TargetCreated, target)
             context.emit(Events.BrowserContext.TargetCreated, target)
 
-    async def _targetDestroyed(self, event: Dict) -> None:
+    async def _targetDestroyed(self, event: CDPEvent) -> None:
         target = self._targets[event["targetId"]]
         target._initializedCallback(False)
         self._targets.pop(event["targetId"], None)
@@ -246,7 +245,7 @@ class Chrome(EventEmitterS):
             self.emit(Events.Chrome.TargetDestroyed, target)
             target.browserContext.emit(Events.BrowserContext.TargetDestroyed, target)
 
-    async def _targetInfoChanged(self, event: Dict) -> None:
+    async def _targetInfoChanged(self, event: CDPEvent) -> None:
         target = self._targets.get(event["targetInfo"]["targetId"])
         if not target:
             raise BrowserError("target should exist before targetInfoChanged")
@@ -272,14 +271,14 @@ class Chrome(EventEmitterS):
 
 class BrowserContext(EventEmitterS):
 
-    __slots__: SlotsT = ["_browser", "_id", "client"]
+    __slots__: SlotsT = ["__weakref__", "_browser", "_id", "client"]
 
     def __init__(
         self,
         client: ClientType,
         browser: Chrome,
         contextId: Optional[str] = None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> None:
         super().__init__(loop=Helper.ensure_loop(loop))
         self.client: ClientType = client
@@ -306,9 +305,7 @@ class BrowserContext(EventEmitterS):
         return self._browser
 
     def waitForTarget(
-        self,
-        predicate: Callable[["Target"], bool],
-        timeout: Optional[Union[int, float]],
+        self, predicate: Callable[["Target"], bool], timeout: Number = 30
     ) -> Awaitable[Optional["Target"]]:
         return self._browser.waitForTarget(
             lambda target: target.browserContext is self and predicate(target), timeout
@@ -355,7 +352,7 @@ class BrowserContext(EventEmitterS):
             if protocolPermission is None:
                 raise Exception(f"Unknown permission {permission}")
             protocolPermissions.append(protocolPermission)
-        opts = dict(origin=origin, permissions=protocolPermissions)
+        opts = {"origin": origin, "permissions": protocolPermissions}
         if self._id is not None:
             opts["browserContextId"] = self._id
         await self.client.send("Browser.resetPermissions", opts)

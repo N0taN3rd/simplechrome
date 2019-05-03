@@ -16,6 +16,7 @@ class NetworkIdleMonitor(EventEmitterS):
     network idle happens"""
 
     __slots__: SlotsT = [
+        "__weakref__",
         "_client",
         "_global_wait",
         "_idle_future",
@@ -142,7 +143,6 @@ class NetworkIdleMonitor(EventEmitterS):
 
         :param info: The request info supplied by the CDP
         """
-        # print(f'req_started {info["requestId"]}, {self.requestIds}')
         self._requestIds.add(info["requestId"])
         if len(self._requestIds) > self._num_inflight and self._to:
             self._to.cancel()
@@ -158,7 +158,6 @@ class NetworkIdleMonitor(EventEmitterS):
         :param info: The request info supplied by the CDP
         """
         rid = info["requestId"]
-        # print(f'req_finished {info["requestId"]}, {self.requestIds}')
         if rid in self._requestIds:
             self._requestIds.remove(rid)
         if len(self._requestIds) <= self._num_inflight and self._to is None:

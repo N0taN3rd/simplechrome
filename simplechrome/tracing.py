@@ -1,4 +1,4 @@
-import base64
+from base64 import b64decode
 from typing import Any, Dict, List, Optional
 
 import aiofiles
@@ -11,7 +11,7 @@ __all__ = ["Tracing"]
 
 
 class Tracing:
-    __slots__: SlotsT = ["_loop", "_path", "_recording", "client"]
+    __slots__: SlotsT = ["__weakref__", "_loop", "_path", "_recording", "client"]
 
     def __init__(self, client: ClientType, loop: OptionalLoop = None) -> None:
         self.client: ClientType = client
@@ -49,7 +49,9 @@ class Tracing:
 
     async def stop(self) -> bytes:
         contentPromise = self._loop.create_future()
-        self.client.once("Tracing.tracingComplete", lambda event: contentPromise.set_result(event))
+        self.client.once(
+            "Tracing.tracingComplete", lambda event: contentPromise.set_result(event)
+        )
         await self.client.send("Tracing.end", {})
         self._recording = False
         complete_event = await contentPromise
@@ -59,20 +61,20 @@ class Tracing:
                 return await self._readStream(stream, out)
         return await self._readStream(stream)
 
-    async def _readStream(self, handle: str, fh: Optional = None) -> bytes:
+    async def _readStream(self, handle: str, fh: Optional[Any] = None) -> bytes:
         eof = False
         content = bytearray()
-        handle_args = {'handle': handle}
+        handle_args = {"handle": handle}
         while not eof:
             response = await self.client.send("IO.read", handle_args)
             eof = response.get("eof")
             if response.get("base64Encoded", False):
-                data = base64.b64decode(response.get("data"))
+                data = b64decode(response.get("data"))
             else:
                 data = response.get("data").encode("utf-8")
             content += data
             if fh is not None:
                 await fh.write(data)
 
-        await self.client.send("IO.close", {'handle': handle})
+        await self.client.send("IO.close", handle_args)
         return bytes(content)

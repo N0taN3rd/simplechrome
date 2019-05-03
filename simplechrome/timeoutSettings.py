@@ -8,6 +8,7 @@ DEFAULT_JS_TIMEOUT: int = 30000
 
 class TimeoutSettings:
     __slots__: SlotsT = [
+        "__weakref__",
         "_defaultJSTimeout",
         "_defaultNavigationTimeout",
         "_defaultTimeout",
@@ -24,22 +25,36 @@ class TimeoutSettings:
         self._defaultTimeout: OptionalNumber = defaultTimeout
 
     def setDefaultJSTimeout(self, timeout: Number) -> None:
+        """Set the default timeout used for JS waits
+
+        :param timeout: The timeout value in milliseconds
+        """
         self._defaultTimeout = timeout
 
     def setDefaultNavigationTimeout(self, timeout: Number) -> None:
+        """Set the default timeout used for navigation
+
+        :param timeout: The timeout value in seconds
+        """
         self._defaultNavigationTimeout = timeout
 
     def setDefaultTimeout(self, timeout: Number) -> None:
+        """Set the default timeout used
+
+        :param timeout: The timeout value in seconds
+        """
         self._defaultTimeout = timeout
 
     @property
     def js_timeout(self) -> Number:
+        """Returns the configured or default JS timeout value"""
         if self._defaultJSTimeout is not None:
             return self._defaultJSTimeout
         return DEFAULT_JS_TIMEOUT
 
     @property
     def navigationTimeout(self) -> Number:
+        """Returns the configured or default navigation timeout value"""
         if self._defaultNavigationTimeout is not None:
             return self._defaultNavigationTimeout
         if self._defaultTimeout is not None:
@@ -48,6 +63,7 @@ class TimeoutSettings:
 
     @property
     def timeout(self) -> Number:
+        """Returns the configured or default timeout value"""
         if self._defaultTimeout is not None:
             return self._defaultTimeout
         return DEFAULT_TIMEOUT

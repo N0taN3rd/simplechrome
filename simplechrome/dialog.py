@@ -20,7 +20,7 @@ class Dialog:
     Dialog objects are dispatched by page via the ``dialog`` event.
     """
 
-    __slots__: SlotsT = ["_client", "_dialog_event", "_handled"]
+    __slots__: SlotsT = ["__weakref__", "_client", "_dialog_event", "_handled"]
 
     def __init__(self, client: ClientType, event: CDPEvent) -> None:
         """Initialize a new Dialog instance

@@ -12,6 +12,7 @@ class EmulationManager:
     """This domain emulates different environments for the page"""
 
     __slots__: SlotsT = [
+        "__weakref__",
         "_client",
         "_emulatingMedia",
         "_emulatingMobile",
@@ -85,9 +86,7 @@ class EmulationManager:
         """
         if not Helper.is_number(hidden):
             raise Exception(f"The hidden argument must be a string got {type(hidden)}")
-        await self._client.send(
-            "Emulation.setScrollbarsHidden", {"hidden": hidden}
-        )
+        await self._client.send("Emulation.setScrollbarsHidden", {"hidden": hidden})
 
     async def setDocumentCookieDisabled(self, disabled: bool) -> None:
         """Experimental
@@ -95,7 +94,9 @@ class EmulationManager:
         :param disabled: Whether document.coookie API should be disabled.
         """
         if not Helper.is_number(disabled):
-            raise Exception(f"The disabled argument must be a string got {type(disabled)}")
+            raise Exception(
+                f"The disabled argument must be a string got {type(disabled)}"
+            )
         await self._client.send(
             "Emulation.setDocumentCookieDisabled", {"disabled": disabled}
         )
@@ -219,7 +220,7 @@ class EmulationManager:
         return reloadNeeded
 
     async def emulateViewport(
-        self, viewport: Optional[Dict] = None, **kwargs: Any
+        self, viewport: Optional[Dict[str, Any]] = None, **kwargs: Any
     ) -> bool:
         """Evaluate viewport.
         :param viewport: Viewport emulation options supplied as a dict

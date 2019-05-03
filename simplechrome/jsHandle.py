@@ -10,7 +10,7 @@ from .connection import ClientType
 from .helper import Helper
 
 if TYPE_CHECKING:
-    from .execution_context import ExecutionContext
+    from .execution_context import ExecutionContext  # noqa: F401
     from .frame_manager import FrameManager, Frame  # noqa: F401
     from .page import Page  # noqa: F401
 
@@ -30,7 +30,13 @@ def createJSHandle(
 
 
 class JSHandle:
-    __slots__: SlotsT = ["_context", "_client", "_remoteObject", "_disposed"]
+    __slots__: SlotsT = [
+        "__weakref__",
+        "_context",
+        "_client",
+        "_remoteObject",
+        "_disposed",
+    ]
 
     @classmethod
     def create(cls, context: "ExecutionContext", remoteObject: Dict) -> "JSHandle":
@@ -101,9 +107,9 @@ class JSHandle:
 
     async def asElementArray(self) -> List["ElementHandle"]:
         properties = await self._properties()
-        return self._handle_list(properties, True)
+        return self._element_list(properties)
 
-    async def jsonValue(self) -> Dict:
+    async def jsonValue(self) -> Any:
         """Get Jsonized value of this object."""
         objectId = self._remoteObject.get("objectId")
         if objectId:
@@ -132,20 +138,26 @@ class JSHandle:
             {"objectId": self._remoteObject.get("objectId", ""), "ownProperties": True},
         )
 
-    def _handle_list(
-        self, properties: Dict, elements: bool = False
-    ) -> Union[List["JSHandle"], List["ElementHandle"]]:
-        handle_list: Union[List["JSHandle"], List["ElementHandle"]] = []
+    def _handle_list(self, properties: Dict) -> List["JSHandle"]:
+        handle_list: List[JSHandle] = []
         add_handle = handle_list.append
         context = self._context
         for prop in properties["result"]:
             if not prop.get("enumerable"):
                 continue
             remote_obj = prop.get("value")
-            if elements:
-                add_handle(createJSHandle(context, remote_obj).asElement())
-            else:
-                add_handle(createJSHandle(context, remote_obj))
+            add_handle(createJSHandle(context, remote_obj))
+        return handle_list
+
+    def _element_list(self, properties: Dict) -> List["ElementHandle"]:
+        handle_list: List[ElementHandle] = []
+        add_handle = handle_list.append
+        context = self._context
+        for prop in properties["result"]:
+            if not prop.get("enumerable"):
+                continue
+            remote_obj = prop.get("value")
+            add_handle(createJSHandle(context, remote_obj).asElement())
         return handle_list
 
     def __str__(self) -> str:
@@ -221,6 +233,11 @@ class ElementHandle(JSHandle):
     def childElementCount(self) -> Awaitable[Number]:
         return self.executionContext.evaluate("elem => elem.childElementCount", self)
 
+    def getAttribute(self, attr: str) -> Awaitable[Any]:
+        return self.executionContext.evaluate(
+            """(element, attr) => element.getAttribute(attr)""", self, attr
+        )
+
     async def contentFrame(self) -> Optional["Frame"]:
         nodeInfo = await self._client.send(
             "DOM.describeNode", {"objectId": self._remoteObject.get("objectId")}
@@ -242,26 +259,23 @@ class ElementHandle(JSHandle):
         y = obj.get("y", 0)
         await self._page.mouse.move(x, y)
 
-    async def click(self, options: dict = None, **kwargs: Any) -> None:
+    async def click(
+        self, button: str = "left", clickCount: int = 1, delay: Number = 0
+    ) -> None:
         """Click the center of this element.
 
         If needed, this method scrolls element into view. If the element is
         detached from DOM, the method raises ``ElementHandleError``.
 
-        ``options`` can contain the following fields:
-
-        * ``button`` (str): ``left``, ``right``, of ``middle``, defaults to
-          ``left``.
-        * ``clickCount`` (int): Defaults to 1.
-        * ``delay`` (int|float): Time to wait between ``mousedown`` and
-          ``mouseup`` in milliseconds. Defaults to 0.
+        :param button: ``left``, ``right``, or ``middle``, defaults to ``left``
+        :param clickCount: defaults to 1
+        :param delay: Time to wait between ``mousedown`` and ``mouseup`` in milliseconds. Defaults to 0.
         """
-        options = Helper.merge_dict(options, kwargs)
         await self._scrollIntoViewIfNeeded()
         obj = await self._clickablePoint()
         x = obj.get("x", 0)
         y = obj.get("y", 0)
-        await self._page.mouse.click(x, y, options)
+        await self._page.mouse.click(x, y, button, clickCount, delay)
 
     async def uploadFile(self, *filePaths: str) -> None:
         """Upload files."""
@@ -287,34 +301,38 @@ class ElementHandle(JSHandle):
         """Focus on this element."""
         await self.executionContext.evaluate("element => element.focus()", self)
 
-    async def type(self, text: str, options: Dict = None, **kwargs: Any) -> None:
-        """Focus the element and then type text.
+    async def type(self, text: str, delay: Number = 0) -> None:
+        """Type characters.
 
-        Details see :meth:`simplechrome.input.Keyboard.type` method.
+        This method sends ``keydown``, ``keypress``/``input``, and ``keyup``
+        event for each character in the ``text``.
+
+        To press a special key, like ``Control`` or ``ArrowDown``, use
+        :meth:`press` method.
+
+        :param text: Text to type into this element.
+        :param delay: Optional amount of ``delay`` that specifies the amount
+         of time to wait between key presses in seconds. Defaults to 0.
         """
-        options = Helper.merge_dict(options, kwargs)
         await self.focus()
-        await self._page.keyboard.type(text, options)
+        await self._page.keyboard.type(text, delay)
 
-    async def press(self, key: str, options: Dict = None, **kwargs: Any) -> None:
-        """Press ``key`` onto the element.
+    async def press(
+        self, key: str, text: Optional[str] = None, delay: Number = 0
+    ) -> None:
+        """Press ``key``.
 
-        This method focuses the element, and then uses
-        :meth:`simplechrome.input.keyboard.down` and
-        :meth:`simplechrome.input.keyboard.up`.
+        If ``key`` is a single character and no modifier keys besides
+        ``Shift`` are being held down, a ``keypress``/``input`` event will also
+        generated. The ``text`` option can be specified to force an input event
+        to be generated.
 
-        :arg str key: Name of key to press, such as ``ArrowLeft``.
-
-        This method accepts the following options:
-
-        * ``text`` (str): If specified, generates an input event with this
-          text.
-        * ``delay`` (int|float): Time to wait between ``keydown`` and
-          ``keyup``. Defaults to 0.
+        :param key: Name of key to press, such as ``ArrowLeft``
+        :param text: If specified, generates an input event with this text
+        :param delay: Time to wait between ``keydown`` and ``keyup``. Defaults to 0
         """
-        options = Helper.merge_dict(options, kwargs)
         await self.focus()
-        await self._page.keyboard.press(key, options)
+        await self._page.keyboard.press(key, text, delay)
 
     async def boundingBox(self) -> Optional[Dict[str, Number]]:
         """Return bounding box of this element.
@@ -554,7 +572,7 @@ class ElementHandle(JSHandle):
 
         clientWidth = layoutMetrics["layoutViewport"]["clientWidth"]
         clientHeight = layoutMetrics["layoutViewport"]["clientHeight"]
-        quads = []
+        quads: List[List[Dict[str, Number]]] = []
         add_quad = quads.append
         for pquad in result.get("quads"):
             quad = fromProtocolQuad(pquad)
@@ -591,18 +609,11 @@ class ElementHandle(JSHandle):
             raise Exception("Node is not visible.")
         return {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
 
-    async def _assertBoundingBox(self) -> Dict:
+    async def _assertBoundingBox(self) -> Dict[str, Number]:
         boundingBox = await self.boundingBox()
-        if boundingBox:
+        if boundingBox is not None:
             return boundingBox
         raise Exception("Node is either not visible or not an HTMLElement")
-
-    async def _get_node_description(self) -> None:
-        if self._node is not None:
-            return
-        self._node = await self._client.send(
-            "DOM.describeNode", {"objectId": self._remoteObject.get("objectId")}
-        )
 
 
 def intersectQuadWithViewport(

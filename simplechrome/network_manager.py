@@ -10,8 +10,7 @@ from simplechrome.connection import ClientType
 from simplechrome.events import Events
 from simplechrome.frame_manager import FrameManager
 from simplechrome.helper import Helper
-from .network_idle_monitor import NetworkIdleMonitor
-from .request_response import Request, Response
+from .network import Cookie, NetworkIdleMonitor, Response, Request
 
 __all__ = ["NetworkManager"]
 
@@ -239,19 +238,20 @@ class NetworkManager(EventEmitterS):
     async def setCookies(self, cookies: List[Dict]) -> None:
         await self._client.send("Network.setCookies", {"cookies": cookies})
 
-    async def getAllCookies(self) -> List[Dict]:
+    async def getAllCookies(self) -> List[Cookie]:
         """Returns all browser cookies.
 
         Depending on the backend support, will return detailed cookie information
         in the cookies field.
 
 
-        :return: Array of cookie objects
+        :return: List of cookies
         """
-        results = await self._client.send("Network.getAllCookies")
-        return results.get("cookies")
+        client = self._client
+        results = await client.send("Network.getAllCookies", {})
+        return [Cookie(client, cdp_cookie) for cdp_cookie in results.get("cookies", [])]
 
-    async def getCookies(self, urls: Optional[List[str]] = None) -> List[Dict]:
+    async def getCookies(self, urls: Optional[List[str]] = None) -> List[Cookie]:
         """Returns all browser cookies for the current URL.
 
         Depending on the backend support, will return detailed cookie
@@ -263,8 +263,9 @@ class NetworkManager(EventEmitterS):
         msg = {}
         if urls is not None:
             msg["urls"] = urls
-        results = await self._client.send("Network.getCookies", msg)
-        return results.get("cookies")
+        client = self._client
+        results = await client.send("Network.getCookies", msg)
+        return [Cookie(client, cdp_cookie) for cdp_cookie in results.get("cookies", [])]
 
     async def deleteCookies(self, cookie: Optional[Dict] = None, **kwargs: Any) -> None:
         """Deletes browser cookies with matching name and url or domain/path pair

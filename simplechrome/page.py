@@ -39,7 +39,8 @@ from .execution_context import ElementHandle, JSHandle, createJSHandle
 from .frame_manager import Frame, FrameManager
 from .helper import Helper
 from .input import Keyboard, Mouse, Touchscreen
-from .network import NetworkManager, Request, Response
+from .network import Cookie, Request, Response
+from .network_manager import NetworkManager
 from .timeoutSettings import TimeoutSettings
 from .tracing import Tracing
 from .log import Log, LogEntry
@@ -54,6 +55,7 @@ __all__ = ["Page"]
 
 class Page(EventEmitterS):
     __slots__: SlotsT = [
+        "__weakref__",
         "_client",
         "_closed",
         "_emulationManager",
@@ -150,7 +152,7 @@ class Page(EventEmitterS):
         self._tracing: Tracing = Tracing(client)
         self._javascriptEnabled: bool = True
         self._lifecycle_emitting: bool = False
-        self._viewport: Optional[Dict[str, Union[str, float, bool, int]]] = None
+        self._viewport: Optional[Dict[str, Any]] = None
 
         if screenshotTaskQueue is None:
             screenshotTaskQueue = []
@@ -311,6 +313,379 @@ class Page(EventEmitterS):
             Events.FrameManager.LifecycleEvent, self._on_lifecycle
         )
 
+    def tap(self, selector: str) -> Awaitable[None]:
+        """Tap the element which matches the ``selector``.
+
+        :param selector: A selector to search element to touch.
+        """
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("no main frame")
+        return frame.tap(selector)
+
+    def querySelectorEval(
+        self, selector: str, pageFunction: str, *args: Any
+    ) -> Awaitable[Any]:
+        """Execute function with an element which matches ``selector``.
+
+        :arg str selector: A selector to query page for.
+        :arg str pageFunction: String of JavaScript function to be evaluated on
+                               browser. This function takes an element which
+                               matches the selector as a first argument.
+        :arg Any args: Arguments to pass to ``pageFunction``.
+
+        This method raises error if no element matched the ``selector``.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.querySelectorEval(selector, pageFunction, *args)
+
+    def querySelectorAllEval(
+        self, selector: str, pageFunction: str, *args: Any
+    ) -> Awaitable[Any]:
+        """Execute function with all elements which matches ``selector``.
+
+        :arg str selector: A selector to query page for.
+        :arg str pageFunction: String of JavaScript function to be evaluated on
+                               browser. This function takes Array of the
+                               matched elements as the first argument.
+        :arg Any args: Arguments to pass to ``pageFunction``.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.querySelectorAllEval(selector, pageFunction, *args)
+
+    def querySelectorAll(self, selector: str) -> Awaitable[List["ElementHandle"]]:
+        """Get all element which matches `selector` as a list.
+
+        :arg str selector: A selector to search element.
+        :return List[ElementHandle]: List of
+            :class:`~simplechrome.element_handle.ElementHandle` which matches the
+            ``selector``. If no element is matched to the ``selector``, return
+            empty list.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.querySelectorAll(selector)
+
+    def querySelector(self, selector: str) -> Awaitable[Optional["ElementHandle"]]:
+        """Get an Element which matches ``selector``.
+
+        :param selector: A selector to search element.
+        :return Optional[ElementHandle]: If element which matches the
+            ``selector`` is found, return its
+            :class:`~simplechrome.element_handle.ElementHandle`. If not found,
+            returns ``None``.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.querySelector(selector)
+
+    def xpath(self, expression: str) -> Awaitable[List[ElementHandle]]:
+        """Evaluate XPath expression.
+
+        If there is no such element in this page, return None.
+
+        :arg str expression: XPath string to be evaluated.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise Exception("no main frame.")
+        return frame.xpath(expression)
+
+    def evaluateHandle(
+        self, pageFunction: str, *args: Any, withCliAPI: bool = False
+    ) -> Awaitable[JSHandle]:
+        """Execute function on this page.
+
+        Difference between :meth:`~simplechrome.page.Page.evaluate` and
+        :meth:`~simplechrome.page.Page.evaluateHandle` is that
+        ``evaluateHandle`` returns JSHandle object (not value).
+
+        :arg str pageFunction: JavaScript function to be executed.
+        """
+        if not self.mainFrame:
+            raise PageError("no main frame.")
+        return self.mainFrame.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
+
+    def addScriptTag(
+        self, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[ElementHandle]:
+        """Add script tag to this page.
+
+        One of ``url``, ``path`` or ``content`` option is necessary.
+            * ``url`` (string): URL of a script to add.
+            * ``path`` (string): Path to the local JavaScript file to add.
+            * ``content`` (string): JavaScript string to add.
+
+        :return ElementHandle: :class:`~simplechrome.element_handle.ElementHandle`
+                               of added tag.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.addScriptTag(options, **kwargs)
+
+    def addStyleTag(
+        self, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[ElementHandle]:
+        """Add style or link tag to this page.
+
+        One of ``url``, ``path`` or ``content`` option is necessary.
+            * ``url`` (string): URL of the link tag to add.
+            * ``path`` (string): Path to the local CSS file to add.
+            * ``content`` (string): CSS string to add.
+
+        :return ElementHandle: :class:`~simplechrome.element_handle.ElementHandle`
+                               of added tag.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.addStyleTag(options, **kwargs)
+
+    def content(self) -> Awaitable[str]:
+        """Get the whole HTML contents of the page."""
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("No main frame.")
+        return frame.content()
+
+    def title(self) -> Awaitable[str]:
+        """Get page title."""
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.title()
+
+    def click(
+        self,
+        selector: str,
+        button: str = "left",
+        clickCount: int = 1,
+        delay: Number = 0,
+    ) -> Awaitable[None]:
+        """Click element which matches ``selector``
+
+        :param selector: The query selector to be used
+        :param button: ``left``, ``right``, or ``middle``, defaults to ``left``
+        :param clickCount: defaults to 1
+        :param delay: Time to wait between ``mousedown`` and ``mouseup`` in milliseconds. Defaults to 0.
+        """
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("No main frame.")
+        return frame.click(selector, button, clickCount, delay)
+
+    def hover(self, selector: str) -> Awaitable[None]:
+        """Mouse hover the element which matches ``selector``.
+
+        If no element matched the ``selector``, raise ``PageError``.
+        """
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("No main frame.")
+        return frame.hover(selector)
+
+    def focus(self, selector: str) -> Awaitable[None]:
+        """Focus the element which matches ``selector``.
+
+        If no element matched the ``selector``, raise ``PageError``.
+        """
+        frame = self.mainFrame
+        if frame is None:
+            raise PageError("No main frame.")
+        return frame.focus(selector)
+
+    def select(self, selector: str, *values: str) -> Awaitable[List[str]]:
+        """Select options and return selected values.
+
+        If no element matched the ``selector``, raise ``ElementHandleError``.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.select(selector, *values)
+
+    def type(self, selector: str, text: str, delay: Number = 0) -> Awaitable[None]:
+        """Type characters.
+
+        This method sends ``keydown``, ``keypress``/``input``, and ``keyup``
+        event for each character in the ``text``.
+
+        To press a special key, like ``Control`` or ``ArrowDown``, use
+        :meth:`press` method.
+
+        :param selector: The query selector to be used
+        :param text: Text to type into this element.
+        :param delay: Optional amount of ``delay`` that specifies the amount
+         of time to wait between key presses in seconds. Defaults to 0.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.type(selector, text, delay)
+
+    def waitFor(
+        self,
+        selectorOrFunctionOrTimeout: Union[str, Number],
+        options: Optional[Dict] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Awaitable[Optional[JSHandle]]:
+        """Wait for function, timeout, or element which matches on page.
+
+        This method behaves differently with respect to the first argument:
+
+        * If ``selectorOrFunctionOrTimeout`` is number (int or float), then it
+          is treated as a timeout in milliseconds and this returns future which
+          will be done after the timeout.
+        * If ``selectorOrFunctionOrTimeout`` is a string of JavaScript
+          function, this method is a shortcut to :meth:`waitForFunction`.
+        * If ``selectorOrFunctionOrTimeout`` is a selector string or xpath
+          string, this method is a shortcut to :meth:`waitForSelector` or
+          :meth:`waitForXPath`. If the string starts with ``//``, the string is
+          treated as xpath.
+
+        simplechrome tries to automatically detect function or selector, but
+        sometimes miss-detects. If not work as you expected, use
+        :meth:`waitForFunction` or :meth:`waitForSelector` dilectly.
+
+        :arg selectorOrFunctionOrTimeout: A selector, xpath, or function
+                                          string, or timeout (milliseconds).
+        :arg Any args: Arguments to pass the function.
+        :return: Return awaitable object which resolves to a JSHandle of the
+                 success value.
+
+        Available options: see :meth:`waitForFunction` or
+        :meth:`waitForSelector`
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.waitFor(selectorOrFunctionOrTimeout, options, *args, **kwargs)
+
+    def waitForSelector(
+        self, selector: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[Optional[ElementHandle]]:
+        """Wait until element which matches ``selector`` appears on page.
+
+        Wait for the ``selector`` to appear in page. If at the moment of
+        callingthe method the ``selector`` already exists, the method will
+        return immediately. If the selector doesn't appear after the
+        ``timeout`` milliseconds of waiting, the function will raise error.
+
+        :arg str selector: A selector of an element to wait for.
+        :return: Return awaitable object which resolves when element specified
+                 by selector string is added to DOM.
+
+        This method accepts the following options:
+
+        * ``visible`` (bool): Wait for element to be present in DOM and to be
+          visible; i.e. to not have ``display: none`` or ``visibility: hidden``
+          CSS properties. Defaults to ``False``.
+        * ``hidden`` (bool): Wait for eleemnt to not be found in the DOM or to
+          be hidden, i.e. have ``display: none`` or ``visibility: hidden`` CSS
+          properties. Defaults to ``False``.
+        * ``timeout`` (int|float): Maximum time to wait for in milliseconds.
+          Defaults to 30000 (30 seconds).
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.waitForSelector(selector, options, **kwargs)
+
+    def waitForXPath(
+        self, xpath: str, options: Optional[Dict] = None, **kwargs: Any
+    ) -> Awaitable[Optional[ElementHandle]]:
+        """Wait until eleemnt which matches ``xpath`` appears on page.
+
+        Wait for the ``xpath`` to appear in page. If the moment of calling the
+        method the ``xpath`` already exists, the method will return
+        immediately. If the xpath doesn't appear after ``timeout`` millisecons
+        of waiting, the function will raise exception.
+
+
+        :arg str xpath: A [xpath] of an element to wait for.
+        :return: Return awaitable object which resolves when element specified
+                 by xpath string is added to DOM.
+
+        Avalaible options are:
+
+        * ``visible`` (bool): wait for element to be present in DOM and to be
+          visible, i.e. to not have ``display: none`` or ``visibility: hidden``
+          CSS properties. Defaults to ``False``.
+        * ``hidden`` (bool): wait for element to not be found in the DOM or to
+          be hidden, i.e. have ``display: none`` or ``visibility: hidden`` CSS
+          properties. Defaults to ``False``.
+        * ``timeout`` (int|float): maximum time to wait for in milliseconds.
+          Defaults to 30000 (30 seconds).
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.waitForXPath(xpath, options, **kwargs)
+
+    def waitForFunction(
+        self, pageFunction: str, options: Dict = None, *args: Any, **kwargs: Any
+    ) -> Awaitable[Optional[JSHandle]]:
+        """Wait until the function completes and returns a truethy value.
+
+        :arg Any args: Arguments to pass to ``pageFunction``.
+        :return: Return awaitable object which resolves when the
+                 ``pageFunction`` returns a truethy value. It resolves to a
+                 :class:`~simplechrome.execution_context.JSHandle` of the truethy
+                 value.
+
+        This method accepts the following options:
+
+        * ``polling`` (str|number): An interval at which the ``pageFunction``
+          is executed, defaults to ``raf``. If ``polling`` is a number, then
+          it is treated as an interval in milliseconds at which the function
+          would be executed. If ``polling`` is a string, then it can be one of
+          the following values:
+
+          * ``raf``: to constantly execute ``pageFunction`` in
+            ``requestAnimationFrame`` callback. This is the tightest polling
+            mode which is suitable to observe styling changes.
+          * ``mutation``: to execute ``pageFunction`` on every DOM mutation.
+
+        * ``timeout`` (int|float): maximum time to wait for in milliseconds.
+        """
+        frame = self.mainFrame
+        if not frame:
+            raise PageError("no main frame.")
+        return frame.waitForFunction(pageFunction, options, *args, **kwargs)
+
+    def enableNetworkCache(self) -> Awaitable[None]:
+        return self._networkManager.enableNetworkCache()
+
+    def disableNetworkCache(self) -> Awaitable[None]:
+        return self._networkManager.disableNetworkCache()
+
+    def cookies(self, *urls: str) -> Awaitable[List[Cookie]]:
+        """Get all cookies that are for the supplied URLs
+
+        Defaults to the current pages URL
+        :return: A list of the cookies that match if any
+        """
+        if not urls:
+            cookies_for_urls = [self.url]
+        else:
+            cookies_for_urls = list(urls)
+        return self._networkManager.getCookies(cookies_for_urls)
+
+    def getAllCookies(self) -> Awaitable[List[Cookie]]:
+        """Get all cookies
+
+        :return: A list of the pages cookies if any
+        """
+        return self._networkManager.getAllCookies()
+
     async def captureSnapshot(self, format_: str = "mhtml") -> str:
         """Returns a snapshot of the page as a string. For MHTML format,
         the serialization includes iframes, shadow DOM, external resources,
@@ -349,6 +724,7 @@ class Page(EventEmitterS):
             * ``isMobile`` (bool): Default to ``False``.
             * ``hasTouch`` (bool): Default to ``False``.
             * ``isLandscape`` (bool): Default to ``False``.
+        :param viewport: The viewport definition to be used
         """
         needsReload = await self._emulationManager.emulateViewport(viewport)
         self._viewport = viewport
@@ -401,47 +777,8 @@ class Page(EventEmitterS):
         windowDescriptor = await self.getWindowDescriptor()
         return windowDescriptor.get("bounds")
 
-    def tap(self, selector: str) -> Awaitable[None]:
-        """Tap the element which matches the ``selector``.
-
-        :arg str selector: A selector to search element to touch.
-        """
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("no main frame")
-        return frame.tap(selector)
-
     async def stopLoading(self) -> None:
         await self._client.send("Page.stopLoading")
-
-    def querySelector(self, selector: str) -> Awaitable[Optional["ElementHandle"]]:
-        """Get an Element which matches ``selector``.
-
-        :arg str selector: A selector to search element.
-        :return Optional[ElementHandle]: If element which matches the
-            ``selector`` is found, return its
-            :class:`~simplechrome.element_handle.ElementHandle`. If not found,
-            returns ``None``.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.querySelector(selector)
-
-    def evaluateHandle(
-        self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> Awaitable[JSHandle]:
-        """Execute function on this page.
-
-        Difference between :meth:`~simplechrome.page.Page.evaluate` and
-        :meth:`~simplechrome.page.Page.evaluateHandle` is that
-        ``evaluateHandle`` returns JSHandle object (not value).
-
-        :arg str pageFunction: JavaScript function to be executed.
-        """
-        if not self.mainFrame:
-            raise PageError("no main frame.")
-        return self.mainFrame.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
 
     async def queryObjects(self, prototypeHandle: JSHandle) -> JSHandle:
         """Iterate js heap and finds all the objects with the handle.
@@ -454,74 +791,6 @@ class Page(EventEmitterS):
         if not context:
             raise PageError("No context.")
         return await context.queryObjects(prototypeHandle)
-
-    def querySelectorEval(
-        self, selector: str, pageFunction: str, *args: Any
-    ) -> Awaitable[Any]:
-        """Execute function with an element which matches ``selector``.
-
-        :arg str selector: A selector to query page for.
-        :arg str pageFunction: String of JavaScript function to be evaluated on
-                               browser. This function takes an element which
-                               matches the selector as a first argument.
-        :arg Any args: Arguments to pass to ``pageFunction``.
-
-        This method raises error if no element matched the ``selector``.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.querySelectorEval(selector, pageFunction, *args)
-
-    def querySelectorAllEval(
-        self, selector: str, pageFunction: str, *args: Any
-    ) -> Awaitable[Any]:
-        """Execute function with all elements which matches ``selector``.
-
-        :arg str selector: A selector to query page for.
-        :arg str pageFunction: String of JavaScript function to be evaluated on
-                               browser. This function takes Array of the
-                               matched elements as the first argument.
-        :arg Any args: Arguments to pass to ``pageFunction``.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.querySelectorAllEval(selector, pageFunction, *args)
-
-    def querySelectorAll(self, selector: str) -> Awaitable[List["ElementHandle"]]:
-        """Get all element which matches `selector` as a list.
-
-        :arg str selector: A selector to search element.
-        :return List[ElementHandle]: List of
-            :class:`~simplechrome.element_handle.ElementHandle` which matches the
-            ``selector``. If no element is matched to the ``selector``, return
-            empty list.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.querySelectorAll(selector)
-
-    def xpath(self, expression: str) -> Awaitable[List[ElementHandle]]:
-        """Evaluate XPath expression.
-
-        If there is no such element in this page, return None.
-
-        :arg str expression: XPath string to be evaluated.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise Exception("no main frame.")
-        return frame.xpath(expression)
-
-    async def cookies(self, *urls: str) -> List[Dict]:
-        """Get cookies."""
-        if not urls:
-            cookies_for_urls = [self.url]
-        else:
-            cookies_for_urls = list(urls)
-        return await self._networkManager.getCookies(cookies_for_urls)
 
     async def deleteCookie(self, *cookies: Dict) -> None:
         """Delete cookie."""
@@ -552,42 +821,6 @@ class Page(EventEmitterS):
         if items:
             await self._networkManager.setCookies(items)
 
-    def addScriptTag(
-        self, options: Optional[Dict] = None, **kwargs: Any
-    ) -> Awaitable[ElementHandle]:
-        """Add script tag to this page.
-
-        One of ``url``, ``path`` or ``content`` option is necessary.
-            * ``url`` (string): URL of a script to add.
-            * ``path`` (string): Path to the local JavaScript file to add.
-            * ``content`` (string): JavaScript string to add.
-
-        :return ElementHandle: :class:`~simplechrome.element_handle.ElementHandle`
-                               of added tag.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.addScriptTag(options, **kwargs)
-
-    def addStyleTag(
-        self, options: Optional[Dict] = None, **kwargs: Any
-    ) -> Awaitable[ElementHandle]:
-        """Add style or link tag to this page.
-
-        One of ``url``, ``path`` or ``content`` option is necessary.
-            * ``url`` (string): URL of the link tag to add.
-            * ``path`` (string): Path to the local CSS file to add.
-            * ``content`` (string): CSS string to add.
-
-        :return ElementHandle: :class:`~simplechrome.element_handle.ElementHandle`
-                               of added tag.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.addStyleTag(options, **kwargs)
-
     async def authenticate(self, credentials: Dict[str, str]) -> Any:
         """Provide credentials for http authentication.
 
@@ -600,13 +833,6 @@ class Page(EventEmitterS):
         """Get metrics."""
         response = await self._client.send("Performance.getMetrics")
         return self._buildMetricsObject(response["metrics"])
-
-    def content(self) -> Awaitable[str]:
-        """Get the whole HTML contents of the page."""
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("No main frame.")
-        return frame.content()
 
     async def goto(
         self,
@@ -634,7 +860,7 @@ class Page(EventEmitterS):
           * ``documentloaded``: when the ``DOMContentLoaded`` event is fired.
           * ``networkidle0``: when there are no more than 0 network connections
             for at least 500 ms.
-          * ``networkidle2``: when there are no more than 2 network connections
+          * ``networkidle0``: when there are no more than 2 network connections
             for at least 500 ms.
 
         * ``all_frames`` (bool): should all frames or only the top frame be checked
@@ -731,23 +957,6 @@ class Page(EventEmitterS):
         """
         options = Helper.merge_dict(options, kwargs)
         return await self._go(+1, options)
-
-    async def _go(self, delta: int, options: Dict) -> Optional[Response]:
-        history = await self._client.send("Page.getNavigationHistory")
-        _count = history.get("currentIndex", 0) + delta
-        entries = history.get("entries", [])
-        if len(entries) <= _count:
-            return None
-        entry = entries[_count]
-        response = (
-            await asyncio.gather(
-                self.waitForNavigation(options),
-                self._client.send(
-                    "Page.navigateToHistoryEntry", {"entryId": entry.get("id")}
-                ),
-            )
-        )[0]
-        return response
 
     async def bringToFront(self) -> None:
         """Bring page to front (activate tab)."""
@@ -1014,13 +1223,6 @@ class Page(EventEmitterS):
             raise PageError("No main frame.")
         return await frame.evaluate_expression(expression, withCliAPI=withCliAPI)
 
-    def title(self) -> Awaitable[str]:
-        """Get page title."""
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.title()
-
     async def close(self) -> None:
         """Close connection."""
         conn = Connection.from_session(self._client)
@@ -1032,219 +1234,23 @@ class Page(EventEmitterS):
             )
         await conn.send("Target.closeTarget", {"targetId": self._target._targetId})
 
-    def click(
-        self, selector: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> Awaitable[None]:
-        """Click element which matches ``selector``.
-
-        This method fetches an element with ``selector``, scrolls it into view
-        if needed, and then uses :attr:`mouse` to click in the center of the
-        element. If there's no element matching ``selector``, the method raises
-        ``PageError``.
-
-        Available options are:
-
-        * ``button`` (str): ``left``, ``right``, or ``middle``, defaults to
-          ``left``.
-        * ``clickCount`` (int): defaults to 1.
-        * ``delay`` (int|float): Time to wait between ``mousedown`` and
-          ``mouseup`` in milliseconds. defaults to 0.
-
-        .. note:: If this method triggers a navigation event and there's a
-            separate :meth:`waitForNavigation`, you may end up with a race
-            condition that yields unexpected results. The correct pattern for
-            click and wait for navigation is the following::
-
-                await asyncio.gather(
-                    page.waitForNavigation(waitOptions),
-                    page.click(selector, clickOptions),
-                )
-        """
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("No main frame.")
-        return frame.click(selector, options, **kwargs)
-
-    def hover(self, selector: str) -> Awaitable[None]:
-        """Mouse hover the element which matches ``selector``.
-
-        If no element matched the ``selector``, raise ``PageError``.
-        """
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("No main frame.")
-        return frame.hover(selector)
-
-    def focus(self, selector: str) -> Awaitable[None]:
-        """Focus the element which matches ``selector``.
-
-        If no element matched the ``selector``, raise ``PageError``.
-        """
-        frame = self.mainFrame
-        if frame is None:
-            raise PageError("No main frame.")
-        return frame.focus(selector)
-
-    def select(self, selector: str, *values: str) -> Awaitable[List[str]]:
-        """Select options and return selected values.
-
-        If no element matched the ``selector``, raise ``ElementHandleError``.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.select(selector, *values)
-
-    def type(
-        self, selector: str, text: str, options: Dict = None, **kwargs: Any
-    ) -> Awaitable[None]:
-        """Type ``text`` on the element which matches ``selector``.
-
-        If no element matched the ``selector``, raise ``PageError``.
-
-        Details see :meth:`simplechrome.input.Keyboard.type`.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.type(selector, text, options, **kwargs)
-
-    def waitFor(
-        self,
-        selectorOrFunctionOrTimeout: Union[str, Number],
-        options: Optional[Dict] = None,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Awaitable[Optional[JSHandle]]:
-        """Wait for function, timeout, or element which matches on page.
-
-        This method behaves differently with respect to the first argument:
-
-        * If ``selectorOrFunctionOrTimeout`` is number (int or float), then it
-          is treated as a timeout in milliseconds and this returns future which
-          will be done after the timeout.
-        * If ``selectorOrFunctionOrTimeout`` is a string of JavaScript
-          function, this method is a shortcut to :meth:`waitForFunction`.
-        * If ``selectorOrFunctionOrTimeout`` is a selector string or xpath
-          string, this method is a shortcut to :meth:`waitForSelector` or
-          :meth:`waitForXPath`. If the string starts with ``//``, the string is
-          treated as xpath.
-
-        simplechrome tries to automatically detect function or selector, but
-        sometimes miss-detects. If not work as you expected, use
-        :meth:`waitForFunction` or :meth:`waitForSelector` dilectly.
-
-        :arg selectorOrFunctionOrTimeout: A selector, xpath, or function
-                                          string, or timeout (milliseconds).
-        :arg Any args: Arguments to pass the function.
-        :return: Return awaitable object which resolves to a JSHandle of the
-                 success value.
-
-        Available options: see :meth:`waitForFunction` or
-        :meth:`waitForSelector`
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.waitFor(selectorOrFunctionOrTimeout, options, *args, **kwargs)
-
-    def waitForSelector(
-        self, selector: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> Awaitable[Optional[ElementHandle]]:
-        """Wait until element which matches ``selector`` appears on page.
-
-        Wait for the ``selector`` to appear in page. If at the moment of
-        callingthe method the ``selector`` already exists, the method will
-        return immediately. If the selector doesn't appear after the
-        ``timeout`` milliseconds of waiting, the function will raise error.
-
-        :arg str selector: A selector of an element to wait for.
-        :return: Return awaitable object which resolves when element specified
-                 by selector string is added to DOM.
-
-        This method accepts the following options:
-
-        * ``visible`` (bool): Wait for element to be present in DOM and to be
-          visible; i.e. to not have ``display: none`` or ``visibility: hidden``
-          CSS properties. Defaults to ``False``.
-        * ``hidden`` (bool): Wait for eleemnt to not be found in the DOM or to
-          be hidden, i.e. have ``display: none`` or ``visibility: hidden`` CSS
-          properties. Defaults to ``False``.
-        * ``timeout`` (int|float): Maximum time to wait for in milliseconds.
-          Defaults to 30000 (30 seconds).
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.waitForSelector(selector, options, **kwargs)
-
-    def waitForXPath(
-        self, xpath: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> Awaitable[Optional[ElementHandle]]:
-        """Wait until eleemnt which matches ``xpath`` appears on page.
-
-        Wait for the ``xpath`` to appear in page. If the moment of calling the
-        method the ``xpath`` already exists, the method will return
-        immediately. If the xpath doesn't appear after ``timeout`` millisecons
-        of waiting, the function will raise exception.
-
-
-        :arg str xpath: A [xpath] of an element to wait for.
-        :return: Return awaitable object which resolves when element specified
-                 by xpath string is added to DOM.
-
-        Avalaible options are:
-
-        * ``visible`` (bool): wait for element to be present in DOM and to be
-          visible, i.e. to not have ``display: none`` or ``visibility: hidden``
-          CSS properties. Defaults to ``False``.
-        * ``hidden`` (bool): wait for element to not be found in the DOM or to
-          be hidden, i.e. have ``display: none`` or ``visibility: hidden`` CSS
-          properties. Defaults to ``False``.
-        * ``timeout`` (int|float): maximum time to wait for in milliseconds.
-          Defaults to 30000 (30 seconds).
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.waitForXPath(xpath, options, **kwargs)
-
-    def waitForFunction(
-        self, pageFunction: str, options: Dict = None, *args: Any, **kwargs: Any
-    ) -> Awaitable[Optional[JSHandle]]:
-        """Wait until the function completes and returns a truethy value.
-
-        :arg Any args: Arguments to pass to ``pageFunction``.
-        :return: Return awaitable object which resolves when the
-                 ``pageFunction`` returns a truethy value. It resolves to a
-                 :class:`~simplechrome.execution_context.JSHandle` of the truethy
-                 value.
-
-        This method accepts the following options:
-
-        * ``polling`` (str|number): An interval at which the ``pageFunction``
-          is executed, defaults to ``raf``. If ``polling`` is a number, then
-          it is treated as an interval in milliseconds at which the function
-          would be executed. If ``polling`` is a string, then it can be one of
-          the following values:
-
-          * ``raf``: to constantly execute ``pageFunction`` in
-            ``requestAnimationFrame`` callback. This is the tightest polling
-            mode which is suitable to observe styling changes.
-          * ``mutation``: to execute ``pageFunction`` on every DOM mutation.
-
-        * ``timeout`` (int|float): maximum time to wait for in milliseconds.
-        """
-        frame = self.mainFrame
-        if not frame:
-            raise PageError("no main frame.")
-        return frame.waitForFunction(pageFunction, options, *args, **kwargs)
-
-    def enableNetworkCache(self) -> Awaitable[None]:
-        return self._networkManager.enableNetworkCache()
-
-    def disableNetworkCache(self) -> Awaitable[None]:
-        return self._networkManager.disableNetworkCache()
+    async def _go(self, delta: int, options: Dict) -> Optional[Response]:
+        history = await self._client.send("Page.getNavigationHistory")
+        _count = history.get("currentIndex", 0) + delta
+        entries = history.get("entries", [])
+        if len(entries) <= _count:
+            return None
+        entry = entries[_count]
+        response = (
+            await asyncio.gather(
+                self.waitForNavigation(options),
+                self._client.send(
+                    "Page.navigateToHistoryEntry", {"entryId": entry.get("id")}
+                ),
+                loop=self._loop,
+            )
+        )[0]
+        return response
 
     async def _screenshotTask(
         self, format_: str, options: Dict
@@ -1328,9 +1334,9 @@ class Page(EventEmitterS):
             deviceScaleFactor = self._viewport.get("deviceScaleFactor", 1)
             landscape = self._viewport.get("isLandscape", False)
             if landscape:
-                screenOrientation = dict(angle=90, type="landscapePrimary")
+                screenOrientation = {"angle": 90, "type": "landscapePrimary"}
             else:
-                screenOrientation = dict(angle=0, type="portraitPrimary")
+                screenOrientation = {"angle": 0, "type": "portraitPrimary"}
             await self._client.send(
                 "Emulation.setDeviceMetricsOverride",
                 {

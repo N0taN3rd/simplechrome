@@ -3,7 +3,6 @@ aiofiles
 aiohttp
 appdirs
 async-timeout
-attrs
 cchardet
 pyee2
 tqdm

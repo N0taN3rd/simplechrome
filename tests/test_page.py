@@ -241,10 +241,11 @@ class TestPage(BaseChromeTest):
         await self.goto_empty()
         loop = asyncio.get_event_loop()
         promise = loop.create_future()
+
         def log(message) -> None:
-            print(message)
             if not promise.done():
                 promise.set_result(message)
+
         self.page.once(Events.Page.Console, log)
         await self.page.evaluate('() => console.log("hello", 5, {foo: "bar"})')
         msg = await promise
@@ -451,7 +452,6 @@ console.log(Promise.resolve('should not wait until resolved!'));
     @pytest.mark.asyncio
     async def test_goto_time_out(self):
         with pytest.raises(
-            NavigationError,
-            match="Navigation Timeout Exceeded: 3 seconds exceeded",
+            NavigationError, match="Navigation Timeout Exceeded: 3 seconds exceeded"
         ):
             await self.goto_never_loads(waitUntil="load", timeout=3)

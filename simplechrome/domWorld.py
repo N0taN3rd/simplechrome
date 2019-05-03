@@ -3,7 +3,7 @@ from typing import Any, Awaitable, Dict, List, Optional, Set, TYPE_CHECKING
 
 import aiofiles
 
-from ._typings import SlotsT
+from ._typings import Number, SlotsT
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle
 from .lifecycle_watcher import LifecycleWatcher
@@ -210,7 +210,7 @@ class DOMWorld:
 
         path = opts.get("path")
         if path is not None:
-            async with (path, "r") as contents_in:
+            async with aiofiles.open(path, "r") as contents_in:
                 contents = await contents_in.read()
             context = await self.executionContext()
             result = await context.evaluateHandle(
@@ -256,12 +256,24 @@ class DOMWorld:
 
         raise Exception("Provide an object with a `url`, `path` or `content` property")
 
-    async def click(self, selector: str, options: dict = None, **kwargs: Any) -> None:
-        options = Helper.merge_dict(options, kwargs)
+    async def click(
+        self,
+        selector: str,
+        button: str = "left",
+        clickCount: int = 1,
+        delay: Number = 0,
+    ) -> None:
+        """Click element which matches ``selector``
+
+        :param selector: The query selector to be used
+        :param button: ``left``, ``right``, or ``middle``, defaults to ``left``
+        :param clickCount: defaults to 1
+        :param delay: Time to wait between ``mousedown`` and ``mouseup`` in milliseconds. Defaults to 0.
+        """
         handle = await self.querySelector(selector)
         if not handle:
             raise Exception("No node found for selector: " + selector)
-        await handle.click(options)
+        await handle.click(button, clickCount, delay)
         await handle.dispose()
 
     async def focus(self, selector: str) -> None:
@@ -293,14 +305,24 @@ class DOMWorld:
         await handle.tap()
         await handle.dispose()
 
-    async def type(
-        self, selector: str, text: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> None:
-        options = Helper.merge_dict(options, kwargs)
+    async def type(self, selector: str, text: str, delay: Number = 0) -> None:
+        """Type characters.
+
+        This method sends ``keydown``, ``keypress``/``input``, and ``keyup``
+        event for each character in the ``text``.
+
+        To press a special key, like ``Control`` or ``ArrowDown``, use
+        :meth:`press` method.
+
+        :param selector: The query selector to be used
+        :param text: Text to type into this element.
+        :param delay: Optional amount of ``delay`` that specifies the amount
+        of time to wait between key presses in seconds. Defaults to 0.
+        """
         handle = await self.querySelector(selector)
         if handle is None:
             raise Exception("Cannot find {} on this page".format(selector))
-        await handle.type(text, options)
+        await handle.type(text, delay)
         await handle.dispose()
 
     async def title(self) -> str:
@@ -379,7 +401,7 @@ class DOMWorld:
         )
         handle = await wait_task.promise
         element_handle = handle.asElement()
-        if not element_handle:
+        if element_handle is None:
             await handle.dispose()
             return None
         return element_handle
@@ -500,24 +522,50 @@ SELECT_JS: str = """function selectOptions (element, values) {
 }"""
 
 WAIT_FOR_SELECTOR_OR_XPATH_JS: str = """function predicate(selectorOrXPath, isXPath, waitForVisible, waitForHidden) {
-  const node = isXPath
-    ? document.evaluate(selectorOrXPath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
-    : document.querySelector(selectorOrXPath);
-  if (!node)
-    return waitForHidden;
-  if (!waitForVisible && !waitForHidden)
-    return node;
-  const element = /** @type {Element} */ (node.nodeType === Node.TEXT_NODE ? node.parentElement : node);
+  if (!waitForVisible) {
+    const node = isXPath
+      ? document.evaluate(selectorOrXPath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+      : document.querySelector(selectorOrXPath);
 
-  const style = window.getComputedStyle(element);
-  const isVisible = style && style.visibility !== 'hidden' && hasVisibleBoundingBox();
-  const success = (waitForVisible === isVisible || waitForHidden === !isVisible);
-  return success ? node : null;
+    if (!node) return waitForHidden;
+    if (!waitForHidden) return node;
+  }
+
+  // We need to loop over all matching nodes, and test each one, returning the first successful one... or null
+  if (isXPath) {
+    const nodeIterator = document.evaluate(selectorOrXPath, document, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
+    let node = nodeIterator.iterateNext();
+    while (node) {
+      if (testNode(node)) return node;
+      node = nodeIterator.iterateNext();
+    }
+  } else {
+    const nodes = Array.from(document.querySelectorAll(selectorOrXPath));
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (testNode(node)) return node;
+    }
+  }
+
+  return null;
 
   /**
+   * tests if node passes visible/hidden test
+   * @param {Node} node
+   */
+  function testNode(node) {
+    const element = /** @type {Element} */ (node.nodeType === Node.TEXT_NODE ? node.parentElement : node);
+    const style = window.getComputedStyle(element);
+    const isVisible = style && style.visibility !== 'hidden' && hasVisibleBoundingBox(element);
+    const success = (waitForVisible === isVisible || waitForHidden === !isVisible);
+    return success ? node : null;
+  }
+
+  /**
+   * @param {Element} element
    * @return {boolean}
    */
-  function hasVisibleBoundingBox() {
+  function hasVisibleBoundingBox(element) {
     const rect = element.getBoundingClientRect();
     return !!(rect.top || rect.bottom || rect.width || rect.height);
   }

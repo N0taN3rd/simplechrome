@@ -16,7 +16,12 @@ ViolationSetting = Dict[str, Union[str, Number]]
 class Log(EventEmitterS):
     """Provides access to log entries"""
 
-    __slots__: List[str] = ["_client", "_enabled", "_reporting_violations"]
+    __slots__: List[str] = [
+        "__weakref__",
+        "_client",
+        "_enabled",
+        "_reporting_violations",
+    ]
 
     def __init__(
         self, client: ClientType, loop: Optional[AbstractEventLoop] = None

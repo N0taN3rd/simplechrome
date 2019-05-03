@@ -25,6 +25,7 @@ suffix = f"//# sourceURL={EVALUATION_SCRIPT_URL}"
 
 class ExecutionContext:
     __slots__: SlotsT = [
+        "__weakref__",
         "_client",
         "_contextPayload",
         "_world",

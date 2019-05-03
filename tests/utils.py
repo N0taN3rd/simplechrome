@@ -2,7 +2,6 @@ from asyncio import AbstractEventLoop, Future, get_event_loop as aio_get_event_l
 from collections import defaultdict
 from typing import Any, Callable, DefaultDict, List, Optional, Tuple
 
-import attr
 from pyee2 import EventEmitter
 
 from simplechrome.frame_manager import Frame
@@ -16,9 +15,11 @@ def dummy_predicate(*args: Any, **kwargs: Any) -> bool:
     return True
 
 
-@attr.dataclass(slots=True)
 class PageCrashState:
-    _crashed: bool = attr.ib(default=False)
+    __slots__ = ["_crashed"]
+
+    def __init__(self, crashed: bool = False) -> None:
+        self._crashed: bool = crashed
 
     @property
     def crashed(self) -> bool:
@@ -31,9 +32,11 @@ class PageCrashState:
         self._crashed = False
 
 
-@attr.dataclass(slots=True)
 class EEHandler:
-    listeners: List[EEListener] = attr.ib(factory=list)
+    __slots__ = ["listeners"]
+
+    def __init__(self) -> None:
+        self.listeners: List[EEListener] = []
 
     def addEventListener(
         self, emitter: EventEmitter, eventName: str, handler: Callable

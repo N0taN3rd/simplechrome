@@ -1,13 +1,5 @@
 from asyncio import AbstractEventLoop, Future, Task
-from typing import (
-    Any,
-    Awaitable,
-    ClassVar,
-    Dict,
-    List,
-    Optional,
-    Union,
-)
+from typing import Any, Awaitable, ClassVar, Dict, List, Optional, Union
 
 __all__ = [
     "AsyncAny",
@@ -18,9 +10,11 @@ __all__ = [
     "HTTPHeaders",
     "Loop",
     "Number",
+    "NumberOrStr",
     "OptionalFuture",
     "OptionalLoop",
     "OptionalNumber",
+    "OptionalStr",
     "OptionalTask",
     "OptionalViewport",
     "SlotsT",
@@ -30,6 +24,7 @@ __all__ = [
 
 
 Number = Union[float, int]
+NumberOrStr = Union[str, Number]
 Loop = AbstractEventLoop
 FutureOrTask = Union[Future, Task]
 SlotsT = List[str]
@@ -37,13 +32,14 @@ AsyncAny = Awaitable[Any]
 Device = Dict[str, Union[str, Dict[str, Union[Number, bool]]]]
 
 OptionalNumber = Optional[Number]
+OptionalStr = Optional[str]
 OptionalLoop = Optional[Loop]
 OptionalTask = Optional[Task]
 OptionalFuture = Optional[Future]
 
 HTTPHeaders = Dict[str, str]
 EventType = ClassVar[str]
-CDPEvent = Dict
+CDPEvent = Dict[str, Any]
 Viewport = Dict[str, int]
 OptionalViewport = Optional[Viewport]
 TargetInfo = Dict[str, str]
