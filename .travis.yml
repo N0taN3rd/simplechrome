@@ -9,6 +9,6 @@ addons:
 before_install:
   - "sysctl kernel.unprivileged_userns_clone=1"
 install:
-  - pip install --upgrade pytest pytest-asyncio psutil grappa sanic
+  - pip install --upgrade -r dev-requirements.txt
   - pip install --upgrade -r requirements.txt
 script: INTRAVIS=TRUE pytest
