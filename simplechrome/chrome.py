@@ -1,10 +1,11 @@
-from asyncio import AbstractEventLoop, Future
+from asyncio import Future
 from inspect import isawaitable
 from subprocess import Popen
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from pyee2 import EventEmitter
+from pyee2 import EventEmitterS
 
+from ._typings import CDPEvent, Number, OptionalLoop, SlotsT
 from .connection import ClientType
 from .errors import BrowserError
 from .events import Events
@@ -15,7 +16,22 @@ from .target import Target
 __all__ = ["Chrome", "BrowserContext"]
 
 
-class Chrome(EventEmitter):
+class Chrome(EventEmitterS):
+    __slots__: SlotsT = [
+        "__weakref__",
+        "_closeCallback",
+        "_connection",
+        "_contexts",
+        "_defaultContext",
+        "_defaultViewport",
+        "_ignoreHTTPSErrors",
+        "_page",
+        "_process",
+        "_screenshotTaskQueue",
+        "_targetInfo",
+        "_targets",
+    ]
+
     @staticmethod
     async def create(
         connection: ClientType,
@@ -25,7 +41,7 @@ class Chrome(EventEmitter):
         process: Optional[Popen] = None,
         closeCallback: Optional[Callable[[], Any]] = None,
         targetInfo: Optional[Dict] = None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> "Chrome":
         browser = Chrome(
             connection,
@@ -49,7 +65,7 @@ class Chrome(EventEmitter):
         process: Optional[Popen] = None,
         closeCallback: Optional[Callable[[], Any]] = None,
         targetInfo: Optional[Dict] = None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> None:
         super().__init__(loop=Helper.ensure_loop(loop))
         self._ignoreHTTPSErrors: bool = ignoreHTTPSErrors
@@ -59,7 +75,6 @@ class Chrome(EventEmitter):
         self._connection: ClientType = connection
         self._targetInfo: Optional[Dict] = targetInfo
         self._page: Optional[Page] = None
-        # self.on("error", lambda e: print("Chrome error", e))
 
         browserContextId = None
         if self._targetInfo is not None:
@@ -68,17 +83,18 @@ class Chrome(EventEmitter):
             connection, self, browserContextId
         )
 
-        self._contexts: Dict[str, BrowserContext] = dict()
+        self._contexts: Dict[str, BrowserContext] = {}
         for contextId in contextIds:
             self._contexts[contextId] = BrowserContext(
                 connection, self, contextId, self._loop
             )
 
-        self._closeCallback: Callable[
-            ..., Any
-        ] = closeCallback if closeCallback is not None else Helper.noop
+        if callable(closeCallback):
+            self._closeCallback: Callable[[], Any] = closeCallback
+        else:
+            self._closeCallback = Helper.noop
 
-        self._targets: Dict[str, Target] = dict()
+        self._targets: Dict[str, Target] = {}
         self._connection.on(self._connection.Events.Disconnected, self._on_close)
         self._connection.on("Target.targetCreated", self._targetCreated)
         self._connection.on("Target.targetDestroyed", self._targetDestroyed)
@@ -121,9 +137,7 @@ class Chrome(EventEmitter):
         return await self._defaultContext.newPage()
 
     async def waitForTarget(
-        self,
-        predicate: Callable[[Target], bool],
-        timeout: Optional[Union[int, float]] = 30,
+        self, predicate: Callable[[Target], bool], timeout: Number = 30
     ) -> Optional[Target]:
         existingTarget = None
         for target in self._targets.values():
@@ -164,7 +178,7 @@ class Chrome(EventEmitter):
         return pages
 
     async def createPageInContext(self, contextId: Optional[str]) -> Page:
-        args = dict(url="about:blank")
+        args = {"url": "about:blank"}
         if contextId is not None:
             args["browserContextId"] = contextId
         createdTarget = await self._connection.send("Target.createTarget", args)
@@ -191,14 +205,14 @@ class Chrome(EventEmitter):
     async def disconnect(self) -> None:
         await self._connection.dispose()
 
-    async def _disposeContext(self, contextId: Optional[str]) -> None:
-        params = dict()
+    async def _disposeContext(self, contextId: Optional[str] = None) -> None:
+        params = {}
         if contextId is not None:
             params["browserContextId"] = contextId
         await self._connection.send("Target.disposeBrowserContext", params)
         self._contexts.pop(contextId, None)
 
-    async def _targetCreated(self, event: Dict) -> None:
+    async def _targetCreated(self, event: CDPEvent) -> None:
         tinfo = event["targetInfo"]
         browserContextId = tinfo.get("browserContextId")
         if browserContextId is not None and browserContextId in self._contexts:
@@ -222,7 +236,7 @@ class Chrome(EventEmitter):
             self.emit(Events.Chrome.TargetCreated, target)
             context.emit(Events.BrowserContext.TargetCreated, target)
 
-    async def _targetDestroyed(self, event: Dict) -> None:
+    async def _targetDestroyed(self, event: CDPEvent) -> None:
         target = self._targets[event["targetId"]]
         target._initializedCallback(False)
         self._targets.pop(event["targetId"], None)
@@ -231,7 +245,7 @@ class Chrome(EventEmitter):
             self.emit(Events.Chrome.TargetDestroyed, target)
             target.browserContext.emit(Events.BrowserContext.TargetDestroyed, target)
 
-    async def _targetInfoChanged(self, event: Dict) -> None:
+    async def _targetInfoChanged(self, event: CDPEvent) -> None:
         target = self._targets.get(event["targetInfo"]["targetId"])
         if not target:
             raise BrowserError("target should exist before targetInfoChanged")
@@ -248,14 +262,23 @@ class Chrome(EventEmitter):
     def _on_close(self) -> None:
         self.emit(Events.Chrome.Disconnected, None)
 
+    def __str__(self) -> str:
+        return f"Chrome(targetInfo={self._targetInfo})"
 
-class BrowserContext(EventEmitter):
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
+class BrowserContext(EventEmitterS):
+
+    __slots__: SlotsT = ["__weakref__", "_browser", "_id", "client"]
+
     def __init__(
         self,
         client: ClientType,
         browser: Chrome,
         contextId: Optional[str] = None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> None:
         super().__init__(loop=Helper.ensure_loop(loop))
         self.client: ClientType = client
@@ -282,9 +305,7 @@ class BrowserContext(EventEmitter):
         return self._browser
 
     def waitForTarget(
-        self,
-        predicate: Callable[["Target"], bool],
-        timeout: Optional[Union[int, float]],
+        self, predicate: Callable[["Target"], bool], timeout: Number = 30
     ) -> Awaitable[Optional["Target"]]:
         return self._browser.waitForTarget(
             lambda target: target.browserContext is self and predicate(target), timeout
@@ -300,7 +321,7 @@ class BrowserContext(EventEmitter):
         return pages
 
     async def clearPermissionOverrides(self) -> None:
-        opts = dict()
+        opts = {}
         if self._id is not None:
             opts["browserContextId"] = self._id
         await self.client.send("Browser.resetPermissions", opts)
@@ -331,7 +352,7 @@ class BrowserContext(EventEmitter):
             if protocolPermission is None:
                 raise Exception(f"Unknown permission {permission}")
             protocolPermissions.append(protocolPermission)
-        opts = dict(origin=origin, permissions=protocolPermissions)
+        opts = {"origin": origin, "permissions": protocolPermissions}
         if self._id is not None:
             opts["browserContextId"] = self._id
         await self.client.send("Browser.resetPermissions", opts)
@@ -339,3 +360,9 @@ class BrowserContext(EventEmitter):
     async def close(self) -> None:
         if self._id is not None:
             await self._browser._disposeContext(self._id)
+
+    def __str__(self) -> str:
+        return f"BrowserContext(id={self._id})"
+
+    def __repr__(self) -> str:
+        return self.__str__()

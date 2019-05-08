@@ -238,15 +238,17 @@ class TestPage(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_console_event(self, ee_helper):
-        messages = []
-        ee_helper.addEventListener(
-            self.page, Events.Page.Console, lambda m: messages.append(m)
-        )
-        await self.page.evaluate('() => console.log("hello", 5, {foo: "bar"})')
-        await asyncio.sleep(0.01)
-        len(messages) | should.be.equal.to(1)
+        await self.goto_empty()
+        loop = asyncio.get_event_loop()
+        promise = loop.create_future()
 
-        msg = messages[0]
+        def log(message) -> None:
+            if not promise.done():
+                promise.set_result(message)
+
+        self.page.once(Events.Page.Console, log)
+        await self.page.evaluate('() => console.log("hello", 5, {foo: "bar"})')
+        msg = await promise
         msg.type | should.be.equal.to("log")
         msg.text | should.be.equal.to("hello 5 JSHandle@object")
         await msg.args[0].jsonValue() | should.be.equal.to("hello")
@@ -450,7 +452,6 @@ console.log(Promise.resolve('should not wait until resolved!'));
     @pytest.mark.asyncio
     async def test_goto_time_out(self):
         with pytest.raises(
-            NavigationError,
-            match="Navigation Timeout Exceeded: 3 seconds exceeded",
+            NavigationError, match="Navigation Timeout Exceeded: 3 seconds exceeded"
         ):
             await self.goto_never_loads(waitUntil="load", timeout=3)

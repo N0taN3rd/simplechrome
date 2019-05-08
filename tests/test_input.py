@@ -237,6 +237,7 @@ class TestClick(BaseChromeTest):
 
     @pytest.mark.asyncio
     async def test_click_link(self, ee_helper):
+        await self.goto_empty()
         results = []
         ee_helper.addEventListener(
             self.page, Events.Page.FrameNavigated, lambda x: results.append(True)

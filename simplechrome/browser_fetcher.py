@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zipfile import ZipFile
 
-import attr
 from tqdm import tqdm
 
 from .errors import BrowserFetcherError
@@ -20,12 +19,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DOWNLOAD_HOST: str = "https://storage.googleapis.com"
 DOWNLOAD_HOST: str = os.getenv("CHROMIUM_DOWNLOAD_HOST", DEFAULT_DOWNLOAD_HOST)
-DOWNLOAD_URLS: Dict[str, str] = dict(
-    linux="%s/chromium-browser-snapshots/Linux_x64/%s/%s.zip",
-    mac="%s/chromium-browser-snapshots/Mac/%s/%s.zip",
-    win32="%s/chromium-browser-snapshots/Win/%s/%s.zip",
-    win64="%s/chromium-browser-snapshots/Win_x64/%s/%s.zip",
-)
+DOWNLOAD_URLS: Dict[str, str] = {
+    "linux": "%s/chromium-browser-snapshots/Linux_x64/%s/%s.zip",
+    "mac": "%s/chromium-browser-snapshots/Mac/%s/%s.zip",
+    "win32": "%s/chromium-browser-snapshots/Win/%s/%s.zip",
+    "win64": "%s/chromium-browser-snapshots/Win_x64/%s/%s.zip",
+}
 SUPPORTED_PLATFORMS = ["mac", "linux", "win32", "win64"]
 
 NO_PROGRESS_BAR: bool = False
@@ -67,17 +66,26 @@ def download_url(platform: str, host: str, revision: str) -> str:
     return DOWNLOAD_URLS[platform] % (host, revision, archive_name(platform, revision))
 
 
-@attr.dataclass(slots=True)
 class RevisionInfo:
-    revision: str = attr.ib()
-    url: str = attr.ib()
-    executablePath: Path = attr.ib()
-    folderPath: Path = attr.ib()
-    local: bool = attr.ib()
+    __slots__ = ["revision", "url", "executablePath", "folderPath", "local"]
+
+    def __init__(
+        self,
+        revision: str,
+        url: str,
+        executablePath: Path,
+        folderPath: Path,
+        local: bool,
+    ) -> None:
+        self.revision: str = revision
+        self.url: str = url
+        self.executablePath: Path = executablePath
+        self.folderPath: Path = folderPath
+        self.local: bool = local
 
 
 class BrowserFetcher:
-    __slots__ = ("_downloads_folder", "_download_host", "_platform")
+    __slots__ = ["_downloads_folder", "_download_host", "_platform"]
 
     def __init__(
         self, rootDir: str, options: Optional[Dict] = None, **kwargs: Any

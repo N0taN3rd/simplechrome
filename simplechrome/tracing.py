@@ -1,21 +1,23 @@
-import asyncio
-import base64
-from typing import Any, Awaitable, Dict, List, Optional
+from base64 import b64decode
+from typing import Any, Dict, List, Optional
 
 import aiofiles
-import attr
 
+from ._typings import Loop, OptionalLoop, SlotsT
 from .connection import ClientType
 from .helper import Helper
 
 __all__ = ["Tracing"]
 
 
-@attr.dataclass(slots=True)
-class Tracing(object):
-    client: ClientType = attr.ib()
-    _recording: bool = attr.ib(init=False, default=False)
-    _path: Optional[str] = attr.ib(init=False, default="")
+class Tracing:
+    __slots__: SlotsT = ["__weakref__", "_loop", "_path", "_recording", "client"]
+
+    def __init__(self, client: ClientType, loop: OptionalLoop = None) -> None:
+        self.client: ClientType = client
+        self._loop: Loop = Helper.ensure_loop(loop)
+        self._recording: bool = False
+        self._path: Optional[str] = ""
 
     async def start(self, options: Optional[Dict], **kwargs: Any) -> None:
         opts = Helper.merge_dict(options, kwargs)
@@ -42,50 +44,37 @@ class Tracing(object):
         self._recording = True
         await self.client.send(
             "Tracing.start",
-            dict(transferMode="ReturnAsStream", categories=",".join(categories)),
+            {"transferMode": "ReturnAsStream", "categories": ",".join(categories)},
         )
 
-    async def stop(self) -> Awaitable[bytes]:
-        contentPromise = asyncio.get_event_loop().create_future()
+    async def stop(self) -> bytes:
+        contentPromise = self._loop.create_future()
+        self.client.once(
+            "Tracing.tracingComplete", lambda event: contentPromise.set_result(event)
+        )
+        await self.client.send("Tracing.end", {})
+        self._recording = False
+        complete_event = await contentPromise
+        stream: str = complete_event.get("stream")
+        if self._path:
+            async with aiofiles.open(self._path, "wb") as out:
+                return await self._readStream(stream, out)
+        return await self._readStream(stream)
 
-        @self.client.once("Tracing.tracingComplete")
-        async def done(event: Dict) -> None:
-            stream: str = event.get("stream")
-            if self._path:
-                content: bytes = await self._serialize_stream_to_file(
-                    stream, self._path
-                )
-            else:
-                content = await self._readStream(stream)
-            contentPromise.set_result(content)
-
-        return contentPromise
-
-    async def _readStream(self, handle: str) -> bytes:
+    async def _readStream(self, handle: str, fh: Optional[Any] = None) -> bytes:
         eof = False
         content = bytearray()
+        handle_args = {"handle": handle}
         while not eof:
-            response = await self.client.send("IO.read", dict(handle=handle))
+            response = await self.client.send("IO.read", handle_args)
             eof = response.get("eof")
             if response.get("base64Encoded", False):
-                content += base64.b64decode(response.get("data"))
+                data = b64decode(response.get("data"))
             else:
-                content += response.get("data").encode("utf-8")
+                data = response.get("data").encode("utf-8")
+            content += data
+            if fh is not None:
+                await fh.write(data)
 
-        await self.client.send("IO.close", dict(handle=handle))
-        return bytes(content)
-
-    async def _serialize_stream_to_file(self, handle: str, path: str) -> bytes:
-        eof = False
-        content = bytearray()
-        async with aiofiles.open(path, "wb") as out:
-            while not eof:
-                response = await self.client.send("IO.read", dict(handle=handle))
-                eof = response.get("eof")
-                if response.get("base64Encoded", False):
-                    data = base64.b64decode(response.get("data"))
-                else:
-                    data = response.get("data").encode("utf-8")
-                content += data
-                await out.write(data)
+        await self.client.send("IO.close", handle_args)
         return bytes(content)

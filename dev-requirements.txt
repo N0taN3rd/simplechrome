@@ -4,6 +4,9 @@ psutil
 flake8
 flake8-mypy
 flake8-bugbear
+flake8-awesome
 mypy
 grappa
-sanic
+fastapi
+uvicorn
+

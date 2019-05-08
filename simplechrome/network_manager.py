@@ -1,48 +1,70 @@
 """Network Manager module."""
 
 import asyncio
-import base64
-from ujson import dumps as ujson_dumps, loads as ujson_loads
-from asyncio import AbstractEventLoop, Event, Future
-from collections import OrderedDict
-from typing import Awaitable, Dict, List, Optional, Set, Union
-from urllib.parse import unquote
+from typing import Any, Awaitable, Dict, List, Optional, Set
 
-import attr
-from pyee2 import EventEmitter
+from pyee2 import EventEmitterS
 
+from ._typings import CDPEvent, HTTPHeaders, OptionalLoop, SlotsT
 from .connection import ClientType
-from .errors import NetworkError
+from .cookie import Cookie
 from .events import Events
-from .frame_manager import Frame, FrameManager
+from .frame_manager import FrameManager
 from .helper import Helper
-from .multimap import Multimap
 from .network_idle_monitor import NetworkIdleMonitor
+from .request_response import Request, Response
 
-__all__ = ["NetworkManager", "Request", "Response", "SecurityDetails"]
+__all__ = ["NetworkManager"]
 
 
-class NetworkManager(EventEmitter):
+class NetworkManager(EventEmitterS):
     """NetworkManager class."""
 
+    __slots__: SlotsT = [
+        "__weakref__",
+        "_client",
+        "_frameManager",
+        "_requestIdToRequest",
+        "_interceptionIdToRequest",
+        "_requestIdToRequestWillBeSentEvent",
+        "_extraHTTPHeaders",
+        "_offline",
+        "_credentials",
+        "_offline",
+        "_attemptedAuthentications",
+        "_userRequestInterceptionEnabled",
+        "_protocolRequestInterceptionEnabled",
+        "_requestIdToInterceptionId",
+        "_userCacheDisabled",
+        "_sw_bypass",
+        "_userAgent",
+        "_ignoreHTTPSErrors",
+    ]
+
     def __init__(
-        self, client: ClientType, loop: Optional[AbstractEventLoop] = None
+        self,
+        client: ClientType,
+        ignoreHTTPSErrors: bool = False,
+        loop: OptionalLoop = None,
     ) -> None:
         """Make new NetworkManager."""
         super().__init__(loop=Helper.ensure_loop(loop))
         self._client: ClientType = client
         self._frameManager: Optional["FrameManager"] = None
-        self._requestIdToRequest: Dict[str, Request] = dict()
-        self._interceptionIdToRequest: Dict[str, Request] = dict()
-        self._requestIdToRequestWillBeSentEvent: Dict[str, Dict] = dict()
-        self._extraHTTPHeaders: OrderedDict[str, str] = OrderedDict()
         self._offline: bool = False
-        self._credentials: Optional[Dict[str, str]] = None
-        self._attemptedAuthentications: Set[str] = set()
+        self._userCacheDisabled: bool = False
         self._userRequestInterceptionEnabled: bool = False
         self._protocolRequestInterceptionEnabled: bool = False
-        self._requestHashToRequestIds: Multimap = Multimap()
-        self._requestHashToInterceptionIds: Multimap = Multimap()
+        self._requestIdToRequest: Dict[str, Request] = {}
+        self._interceptionIdToRequest: Dict[str, Request] = {}
+        self._extraHTTPHeaders: HTTPHeaders = {}
+        self._credentials: Optional[Dict[str, str]] = None
+        self._attemptedAuthentications: Set[str] = set()
+        self._requestIdToRequestWillBeSentEvent: Dict[str, Dict] = {}
+        self._requestIdToInterceptionId: Dict[str, str] = {}
+        self._userAgent: Optional[str] = None
+        self._sw_bypass: bool = False
+        self._ignoreHTTPSErrors: bool = ignoreHTTPSErrors
 
         self._client.on("Network.requestWillBeSent", self._onRequestWillBeSent)
         self._client.on(
@@ -51,7 +73,16 @@ class NetworkManager(EventEmitter):
         self._client.on("Network.responseReceived", self._onResponseReceived)
         self._client.on("Network.loadingFinished", self._onLoadingFinished)
         self._client.on("Network.loadingFailed", self._onLoadingFailed)
-        self._client.on("Network.requestIntercepted", self._onRequestIntercepted)
+        self._client.on("Fetch.requestPaused", self._onRequestPaused)
+        self._client.on("Fetch.authRequired", self._onAuthRequired)
+
+    @property
+    def service_workers_bypassed(self) -> bool:
+        return self._sw_bypass
+
+    @property
+    def cache_disabled(self) -> bool:
+        return self._userCacheDisabled
 
     def network_idle_promise(
         self, num_inflight: int = 2, idle_time: int = 2, global_wait: int = 60
@@ -67,32 +98,63 @@ class NetworkManager(EventEmitter):
     def setFrameManager(self, frameManager: "FrameManager") -> None:
         self._frameManager = frameManager
 
-    def extraHTTPHeaders(self) -> Dict[str, str]:
+    def extraHTTPHeaders(self) -> HTTPHeaders:
         """Get extra http headers."""
         return dict(**self._extraHTTPHeaders)
 
+    async def initialize(self) -> None:
+        await self._client.send("Network.enable")
+        if self._ignoreHTTPSErrors:
+            await self._client.send(
+                "Security.setIgnoreCertificateErrors",
+                {"ignore": self._ignoreHTTPSErrors},
+            )
+
     async def enableNetworkCache(self) -> None:
-        await self._client.send("Network.setCacheDisabled", {"cacheDisabled": False})
+        """Sets the network cache enabled state to true"""
+        await self.setCacheEnabled(True)
 
     async def disableNetworkCache(self) -> None:
-        await self._client.send("Network.setCacheDisabled", {"cacheDisabled": True})
+        """Sets the network cache enabled state to false"""
+        await self.setCacheEnabled(False)
 
     async def authenticate(self, credentials: Dict[str, str]) -> None:
         """Provide credentials for http auth."""
         self._credentials = credentials
         await self._updateProtocolRequestInterception()
 
-    async def setExtraHTTPHeaders(self, extraHTTPHeaders: Dict[str, str]) -> None:
+    async def clearBrowserCache(self) -> None:
+        """Clears browser cache"""
+        await self._client.send("Network.clearBrowserCache", {})
+
+    async def clearBrowserCookies(self) -> None:
+        """Clears browser cookies"""
+        await self._client.send("Network.clearBrowserCookies", {})
+
+    async def setBypassServiceWorker(self, bypass: bool) -> None:
+        """Toggles ignoring of service worker for each request. Experimental
+
+        :param bypass: Should service workers be bypassed
+        """
+        if self._sw_bypass == bypass:
+            return
+        self._sw_bypass = bypass
+        await self._client.send("Network.setBypassServiceWorker", {"bypass": bypass})
+
+    async def setCacheEnabled(self, enabled: bool) -> None:
+        """Sets the enabled state of the network cache"""
+        self._userCacheDisabled = not enabled
+        await self._updateProtocolCacheDisabled()
+
+    async def setExtraHTTPHeaders(self, extraHTTPHeaders: HTTPHeaders) -> None:
         """Set extra http headers."""
-        self._extraHTTPHeaders = OrderedDict()
+        self._extraHTTPHeaders = {}
         for k, v in extraHTTPHeaders.items():
             if not isinstance(v, str):
-                em = (
-                    f'Expected value of header "{k}" to be string, '
-                    + "but {} is found.".format(type(v))
+                raise TypeError(
+                    f'Expected value of header "{k}" to be string, but "{type(v)}" is found.'
                 )
-                raise TypeError(em)
-            self._extraHTTPHeaders[k.lower()] = v
+            self._extraHTTPHeaders[k] = v
         await self._client.send(
             "Network.setExtraHTTPHeaders", {"headers": self._extraHTTPHeaders}
         )
@@ -112,93 +174,156 @@ class NetworkManager(EventEmitter):
             },
         )
 
+    async def setAcceptLanguage(self, language: str) -> None:
+        if self._userAgent is None:
+            version = await self._client.send("Browser.getVersion", {})
+            self._userAgent = version["userAgent"]
+        await self._client.send(
+            "Network.setUserAgentOverride",
+            {"userAgent": self._userAgent, "acceptLanguage": language},
+        )
+
+    async def setNavigatorPlatform(self, platform: str) -> None:
+        if self._userAgent is None:
+            version = await self._client.send("Browser.getVersion", {})
+            self._userAgent = version["userAgent"]
+        await self._client.send(
+            "Network.setUserAgentOverride",
+            {"userAgent": self._userAgent, "platform": platform},
+        )
+
     async def setUserAgent(self, userAgent: str) -> None:
-        """Set user agent."""
+        if not Helper.is_string(userAgent):
+            raise Exception(
+                f"The userAgent is required to be string, got {type(userAgent)}"
+            )
+        self._userAgent = userAgent
         await self._client.send(
             "Network.setUserAgentOverride", {"userAgent": userAgent}
         )
 
     async def setRequestInterception(self, value: bool) -> None:
-        """Enable request intercetion."""
+        """Enable request interception."""
         self._userRequestInterceptionEnabled = value
         await self._updateProtocolRequestInterception()
+
+    async def setBlockedURLs(self, urls: List[str]) -> None:
+        """Blocks URLs from loading
+
+        :param urls: URL patterns to block. Wildcards ('*') are allowed.
+        """
+        await self._client.send("Network.setBlockedURLs", {"urls": urls})
+
+    async def setCookie(self, cookie: Optional[Dict] = None, **kwargs: Any) -> bool:
+        """Sets a cookie with the given cookie data; may overwrite equivalent cookies if they exist
+        
+        Cookie values are as follows:
+         * name: Cookie name.
+         * value: Cookie value.
+         * url: The request-URI to associate with the setting of the cookie.
+          This value can affect the default domain and path values of the created cookie.
+         * domain: Cookie domain.
+         * path: Cookie path.
+         * secure: True if cookie is secure.
+         * httpOnly: True if cookie is http-only.
+         * sameSite: Cookie SameSite type.
+         * expires: Cookie expiration date, session cookie if not set
+        
+        :param cookie: A dictionary representing the cookie
+        :param kwargs: Values for the cookie
+        :return: True if successfully set cookie
+        """
+        ckie = Helper.merge_dict(cookie, kwargs)
+        result = await self._client.send("Network.setCookie", ckie)
+        return result.get("success")
+
+    async def setCookies(self, cookies: List[Dict]) -> None:
+        await self._client.send("Network.setCookies", {"cookies": cookies})
+
+    async def getAllCookies(self) -> List[Cookie]:
+        """Returns all browser cookies.
+
+        Depending on the backend support, will return detailed cookie information
+        in the cookies field.
+
+
+        :return: List of cookies
+        """
+        client = self._client
+        results = await client.send("Network.getAllCookies", {})
+        return [Cookie(client, cdp_cookie) for cdp_cookie in results.get("cookies", [])]
+
+    async def getCookies(self, urls: Optional[List[str]] = None) -> List[Cookie]:
+        """Returns all browser cookies for the current URL.
+
+        Depending on the backend support, will return detailed cookie
+        information in the cookies field.
+
+        :param urls: The list of URLs for which applicable cookies will be fetched
+        :return: Array of cookie objects
+        """
+        msg = {}
+        if urls is not None:
+            msg["urls"] = urls
+        client = self._client
+        results = await client.send("Network.getCookies", msg)
+        return [Cookie(client, cdp_cookie) for cdp_cookie in results.get("cookies", [])]
+
+    async def deleteCookies(self, cookie: Optional[Dict] = None, **kwargs: Any) -> None:
+        """Deletes browser cookies with matching name and url or domain/path pair
+
+         Cookie values:
+          * name: Name of the cookies to remove.
+          * url: If specified, deletes all the cookies with the given name where domain and path match provided URL.
+          * domain: If specified, deletes only cookies with the exact domain.
+          * path: If specified, deletes only cookies with the exact path.
+        
+        :param cookie: A dictionary representing the cookie
+        :param kwargs: Values for the cookie
+        """
+        ckie = Helper.merge_dict(cookie, kwargs)
+        await self._client.send("Network.deleteCookies", ckie)
 
     async def _updateProtocolRequestInterception(self) -> None:
         enabled = self._userRequestInterceptionEnabled or bool(self._credentials)
         if enabled == self._protocolRequestInterceptionEnabled:
             return
         self._protocolRequestInterceptionEnabled = enabled
-        patterns = [{"urlPattern": "*"}] if enabled else []
-        await asyncio.gather(
-            self._client.send("Network.setCacheDisabled", {"cacheDisabled": enabled}),
-            self._client.send("Network.setRequestInterception", {"patterns": patterns}),
+        if enabled:
+            patterns = [{"urlPattern": "*"}] if enabled else []
+            await asyncio.gather(
+                self._updateProtocolCacheDisabled(),
+                self._client.send("Fetch.enable", {"patterns": patterns}),
+            )
+        else:
+            await asyncio.gather(
+                self._updateProtocolCacheDisabled(), self._client.send("Fetch.disable")
+            )
+
+    async def _updateProtocolCacheDisabled(self) -> None:
+        await self._client.send(
+            "Network.setCacheDisabled",
+            {
+                "cacheDisabled": self._userCacheDisabled
+                or self._protocolRequestInterceptionEnabled
+            },
         )
 
-    def _onRequestWillBeSent(self, event: Dict) -> None:
-        if self._protocolRequestInterceptionEnabled and not event.get('url', '').startswith('data:'):
-            requestHash = generateRequestHash(event["request"])
-            interceptionId = self._requestHashToInterceptionIds.firstValue(requestHash)
+    def _onRequestWillBeSent(self, event: CDPEvent) -> None:
+        if self._protocolRequestInterceptionEnabled and not event["request"].get(
+            "url", ""
+        ).startswith("data:"):
+            requestId = event.get("requestId")
+            interceptionId = self._requestIdToInterceptionId.get(requestId)
             if interceptionId:
                 self._onRequest(event, interceptionId)
-                self._requestHashToInterceptionIds.delete(requestHash, interceptionId)
+                self._requestIdToInterceptionId.pop(requestId, None)
             else:
-                self._requestHashToRequestIds.set(requestHash, event["requestId"])
-                self._requestIdToRequestWillBeSentEvent[event["requestId"]] = event
+                self._requestIdToRequestWillBeSentEvent[requestId] = event
             return
         self._onRequest(event, None)
 
-    def _onRequestIntercepted(self, event: Dict) -> None:  # noqa: C901
-        if event.get("authChallenge"):
-            response = "Default"
-            if event["interceptionId"] in self._attemptedAuthentications:
-                response = "CancelAuth"
-            elif self._credentials:
-                response = "ProvideCredentials"
-                self._attemptedAuthentications.add(event["interceptionId"])
-            username = None
-            password = None
-            if self._credentials is not None:
-                username = self._credentials.get("username")
-                password = self._credentials.get("password")
-            self._loop.create_task(
-                self._client.send(
-                    "Network.continueInterceptedRequest",
-                    {
-                        "interceptionId": event["interceptionId"],
-                        "authChallengeResponse": {
-                            "response": response,
-                            "username": username,
-                            "password": password,
-                        },
-                    },
-                )
-            )
-            return
-
-        if (
-            not self._userRequestInterceptionEnabled
-            and self._protocolRequestInterceptionEnabled
-        ):
-            self._loop.create_task(
-                self._client.send(
-                    "Network.continueInterceptedRequest",
-                    {"interceptionId": event["interceptionId"]},
-                )
-            )
-
-        requestHash = generateRequestHash(event["request"])
-        requestId = self._requestHashToRequestIds.firstValue(requestHash)
-        if requestId is not None:
-            requestWillBeSentEvent = self._requestIdToRequestWillBeSentEvent.get(
-                requestId
-            )
-            self._onRequest(requestWillBeSentEvent, event.get("interceptionId"))
-            self._requestHashToRequestIds.delete(requestHash, requestId)
-            self._requestIdToRequestWillBeSentEvent.pop(requestId, None)
-        else:
-            self._requestHashToInterceptionIds.set(requestHash, event["interceptionId"])
-
-    def _onRequest(self, event: Dict, interceptionId: Optional[str] = None) -> None:
+    def _onRequest(self, event: CDPEvent, interceptionId: Optional[str] = None) -> None:
         redirectChain: List[Request] = []
         requestId = event.get("requestId")
         if event.get("redirectResponse") is not None:
@@ -212,21 +337,21 @@ class NetworkManager(EventEmitter):
             frame = self._frameManager.frame(event.get("frameId"))
         request = Request(
             self._client,
+            event,
             frame,
             interceptionId,
             self._userRequestInterceptionEnabled,
-            event,
             redirectChain,
         )
         self._requestIdToRequest[requestId] = request
         self.emit(Events.NetworkManager.Request, request)
 
-    def _onRequestSeveredFromCache(self, event: Dict) -> None:
+    def _onRequestSeveredFromCache(self, event: CDPEvent) -> None:
         request = self._requestIdToRequest.get(event.get("requestId"))
         if request is not None:
             request._fromMemoryCache = True
 
-    def _handleRequestRedirect(self, request: "Request", event: Dict) -> None:
+    def _handleRequestRedirect(self, request: Request, event: CDPEvent) -> None:
         newEvent: Dict = dict(**event)
         newEvent["response"] = event.get("redirectResponse")
         newEvent.pop("redirectResponse", None)
@@ -239,7 +364,7 @@ class NetworkManager(EventEmitter):
         self.emit(Events.NetworkManager.Response, response)
         self.emit(Events.NetworkManager.RequestFinished, request)
 
-    def _onResponseReceived(self, event: Dict) -> None:
+    def _onResponseReceived(self, event: CDPEvent) -> None:
         request = self._requestIdToRequest.get(event["requestId"])
         # FileUpload sends a response without a matching request.
         if request is None:
@@ -248,7 +373,7 @@ class NetworkManager(EventEmitter):
         request._response = response
         self.emit(Events.NetworkManager.Response, response)
 
-    def _onLoadingFinished(self, event: Dict) -> None:
+    def _onLoadingFinished(self, event: CDPEvent) -> None:
         request = self._requestIdToRequest.get(event.get("requestId", ""))
         # For certain requestIds we never receive requestWillBeSent event.
         # @see https://crbug.com/750469
@@ -263,7 +388,7 @@ class NetworkManager(EventEmitter):
         self._attemptedAuthentications.discard(request._interceptionId)
         self.emit(Events.NetworkManager.RequestFinished, request)
 
-    def _onLoadingFailed(self, event: Dict) -> None:
+    def _onLoadingFailed(self, event: CDPEvent) -> None:
         request = self._requestIdToRequest.get(event["requestId"])
         # For certain requestIds we never receive requestWillBeSent event.
         # @see https://crbug.com/750469
@@ -280,595 +405,45 @@ class NetworkManager(EventEmitter):
         self._attemptedAuthentications.discard(request._interceptionId)
         self.emit(Events.NetworkManager.RequestFailed, request)
 
-
-@attr.dataclass(slots=True, str=False, cmp=False, hash=False)
-class Request:
-    _client: ClientType = attr.ib()
-    _frame: Optional[Frame] = attr.ib()
-    _interceptionId: Optional[str] = attr.ib()
-    _allowInterception: bool = attr.ib()
-    _requestInfo: Dict = attr.ib()
-    _redirectChain: List["Request"] = attr.ib()
-    _response: Optional["Response"] = attr.ib(init=False, default=None)
-    _preq: Dict = attr.ib(init=False, default=None)
-    _type: str = attr.ib(init=False, default="")
-    _failureText: str = attr.ib(init=False, default="")
-    _fromMemoryCache: bool = attr.ib(init=False, default=False)
-    _wasCanceled: bool = attr.ib(init=False, default=False)
-    _interceptionHandled: bool = attr.ib(init=False, default=False)
-    _blockedReason: Optional[str] = attr.ib(init=False, default=None)
-
-    @property
-    def wasCanceled(self) -> bool:
-        return self._wasCanceled
-
-    @property
-    def blockedReason(self) -> Optional[str]:
-        return self._blockedReason
-
-    @property
-    def url(self) -> str:
-        return self._preq.get("url")
-
-    @property
-    def method(self) -> str:
-        return self._preq.get("method")
-
-    @property
-    def postData(self) -> Optional[str]:
-        return self._preq.get("postData")
-
-    @property
-    def headers(self) -> Dict[str, str]:
-        return self._preq.get("headers")
-
-    @property
-    def urlFragment(self) -> Optional[str]:
-        return self._preq.get("urlFragment")
-
-    @property
-    def hasPostData(self) -> Optional[bool]:
-        return self._preq.get("hasPostData")
-
-    @property
-    def requestId(self) -> str:
-        return self._requestInfo.get("requestId")
-
-    @property
-    def loaderId(self) -> str:
-        return self._requestInfo.get("loaderId")
-
-    @property
-    def timeStamp(self) -> int:
-        return self._requestInfo.get("timeStamp")
-
-    @property
-    def wallTime(self) -> float:
-        return self._requestInfo.get("wallTime")
-
-    @property
-    def initiator(self) -> str:
-        return self._requestInfo.get("initiator")
-
-    @property
-    def resourceType(self) -> Optional[str]:
-        return self._type
-
-    @property
-    def frameId(self) -> Optional[str]:
-        return self._requestInfo.get("frameId")
-
-    @property
-    def frame(self) -> Optional[Frame]:
-        return self._frame
-
-    @property
-    def hasUserGesture(self) -> Optional[bool]:
-        return self._requestInfo.get("hasUserGesture")
-
-    @property
-    def documentURL(self) -> str:
-        return self._requestInfo.get("documentURL")
-
-    @property
-    def isNavigationRequest(self) -> bool:
-        return self.requestId == self.loaderId and self.resourceType == "Document"
-
-    @property
-    def initialPriority(self) -> str:
-        return self._preq.get("initialPriority")
-
-    @property
-    def referrerPolicy(self) -> str:
-        return self._preq.get("referrerPolicy")
-
-    @property
-    def isLinkPreload(self) -> Optional[bool]:
-        return self._preq.get("isLinkPreload")
-
-    @property
-    def mixedContentType(self) -> Optional[str]:
-        return self._preq.get("mixedContentType")
-
-    @property
-    def response(self) -> Optional["Response"]:
-        """Return matching :class:`Response` object, or ``None``.
-
-        If the response has not been recieved, return ``None``.
-        """
-        return self._response
-
-    @property
-    def redirectChain(self) -> List["Request"]:
-        return self._redirectChain
-
-    @property
-    def failureText(self) -> Optional[str]:
-        return self._failureText
-
-    @property
-    def failure(self) -> Optional[Dict]:
-        """Return error text.
-
-        Return ``None`` unless this request was failed, as reported by
-        ``requestfailed`` event.
-
-        When request failed, this method return dictionary which has a
-        ``errorText`` field, which contains human-readable error message, e.g.
-        ``'net::ERR_RAILED'``.
-        """
-        if not self.failureText:
-            return None
-        return {"errorText": self.failureText}
-
-    async def get_post_data(self) -> Optional[str]:
-        if not self.hasPostData:
-            return None
-        raw_pd = await self._client.send(
-            "Network.getRequestPostData", dict(requestId=self.requestId)
+    def _onAuthRequired(self, event: CDPEvent) -> None:
+        requestId = event.get("requestId")
+        response = "Default"
+        if requestId in self._attemptedAuthentications:
+            response = "CancelAuth"
+        elif self._credentials:
+            response = "ProvideCredentials"
+            self._attemptedAuthentications.add(requestId)
+        authChallengeResponse = {"response": response}
+        if self._credentials:
+            authChallengeResponse["username"] = self._credentials["username"]
+            authChallengeResponse["password"] = self._credentials["password"]
+        self._loop.create_task(
+            self._client.send(
+                "Fetch.continueWithAuth",
+                {
+                    "requestId": requestId,
+                    "authChallengeResponse": authChallengeResponse,
+                },
+            )
         )
-        decoded = base64.b64decode(raw_pd.get("post_data", b"")).decode("utf8")
-        self._preq["postData"] = decoded
-        return decoded
 
-    async def continue_(self, overrides: Dict = None) -> None:
-        """Continue request with optional request overrides.
-
-        To use this method, request interception should be enabled by
-        :meth:`simplechrome.page.Page.setRequestInterception`. If request
-        interception is not enabled, raise ``NetworkError``.
-
-        ``overrides`` can have the following fields:
-
-        * ``url`` (str): If set, the request url will be changed.
-        * ``method`` (str): If set, change the request method (e.g. ``GET``).
-        * ``postData`` (str): If set, change the post data or request.
-        * ``headers`` (dict): If set, change the request HTTP header.
-        """
-        if overrides is None:
-            overrides = {}
-
-        if not self._allowInterception:
-            raise NetworkError("Request interception is not enabled.")
-        if self._interceptionHandled:
-            raise NetworkError("Request is already handled.")
-
-        self._interceptionHandled = True
-        opt = {"interceptionId": self._interceptionId}
-        opt.update(overrides)
-        await self._client.send("Network.continueInterceptedRequest", opt)
-
-    async def respond(self, response: Dict) -> None:  # noqa: C901
-        """Fulfills request with given response.
-
-        To use this, request interception shuold by enabled by
-        :meth:`simplechrome.page.Page.setRequestInterception`. Requst interception
-        is not enabled, raise ``NetworkError``.
-
-        ``response`` is a dictinary which can have the following fields:
-
-        * ``status`` (int): Response status code, defaults to 200.
-        * ``headers`` (dict): Optional response headers.
-        * ``contentType`` (str): If set, euqals to setting ``Content-Type``
-          response header.
-        * ``body`` (str|bytes): Optional response body.
-        """
-        if self.url.startswith("data:"):
+    def _onRequestPaused(self, event: CDPEvent) -> None:
+        if (
+            not self._userRequestInterceptionEnabled
+            and self._protocolRequestInterceptionEnabled
+        ):
+            self._loop.create_task(
+                self._client.send(
+                    "Fetch.continueRequest", {"requestId": event.get("requestId")}
+                )
+            )
             return
-        if not self._allowInterception:
-            raise NetworkError("Request interception is not enabled.")
-        if self._interceptionHandled:
-            raise NetworkError("Request is already handled.")
-        self._interceptionHandled = True
-
-        if response.get("body") and isinstance(response["body"], str):
-            responseBody: Optional[bytes] = response["body"].encode("utf-8")
-        else:
-            responseBody = response.get("body")
-
-        responseHeaders = {}
-        if response.get("headers"):
-            for header in response["headers"]:
-                responseHeaders[header.lower()] = response["headers"][header]
-        if response.get("contentType"):
-            responseHeaders["content-type"] = response["contentType"]
-        if responseBody and "content-length" not in responseHeaders:
-            responseHeaders["content-length"] = len(responseBody)
-
-        statusCode = response.get("status", 200)
-        statusText = statusTexts.get(statusCode, "")
-        statusLine = f"HTTP/1.1 {statusCode} {statusText}"
-
-        CRLF = "\r\n"
-        text = statusLine + CRLF
-        for header in responseHeaders:
-            text = f"{text}{header}: {responseHeaders[header]}{CRLF}"
-        text = text + CRLF
-        responseBuffer = text.encode("utf-8")
-        if responseBody:
-            responseBuffer = responseBuffer + responseBody
-
-        rawResponse = base64.b64encode(responseBuffer).decode("ascii")
-        await self._client.send(
-            "Network.continueInterceptedRequest",
-            {"interceptionId": self._interceptionId, "rawResponse": rawResponse},
-        )
-
-    async def abort(self, errorCode: str = "failed") -> None:
-        """Abort request.
-
-        To use this, request interception should be enabled by
-        :meth:`simplechrome.page.Page.setRequestInterception`.
-        If request interception is not enabled, raise ``NetworkError``.
-
-        ``errorCode`` is an optional error code string. Defaults to ``failed``,
-        could be one of the following: ``aborted``, ``accesdenied``,
-        ``addressunreachable``, ``connectionaborted``, ``connectionclosed``,
-        ``connectionfailed``, ``connnectionrefused``, ``connectionreset``,
-        ``internetdisconnected``, ``namenotresolved``, ``timedout``, ``failed``
-        """
-        errorReason = errorReasons[errorCode]
-        if not errorReason:
-            raise NetworkError("Unknown error code: {}".format(errorCode))
-        if not self._allowInterception:
-            raise NetworkError("Request interception is not enabled.")
-        if self._interceptionHandled:
-            raise NetworkError("Request is already handled.")
-        self._interceptionHandled = True
-        await self._client.send(
-            "Network.continueInterceptedRequest",
-            dict(interceptionId=self._interceptionId, errorReason=errorReason),
-        )
-
-    def to_dict(self) -> Dict:
-        return self._requestInfo
-
-    def __attrs_post_init__(self) -> None:
-        self._preq = self._requestInfo.get("request")
-        self._type = self._requestInfo.get("type")
-
-    def __str__(self) -> str:
-        return f"Request(url={self.url}, method={self.method}, headers={self.headers})"
-
-
-errorReasons = {
-    "aborted": "Aborted",
-    "accessdenied": "AccessDenied",
-    "addressunreachable": "AddressUnreachable",
-    "blockedbyclient": "BlockedByClient",
-    "blockedbyresponse": "BlockedByResponse",
-    "connectionaborted": "ConnectionAborted",
-    "connectionclosed": "ConnectionClosed",
-    "connectionfailed": "ConnectionFailed",
-    "connectionrefused": "ConnectionRefused",
-    "connectionreset": "ConnectionReset",
-    "internetdisconnected": "InternetDisconnected",
-    "namenotresolved": "NameNotResolved",
-    "timedout": "TimedOut",
-    "failed": "Failed",
-}
-
-
-@attr.dataclass(slots=True, str=False, cmp=False, hash=False)
-class Response:
-    _client: ClientType = attr.ib()
-    _request: Request = attr.ib()
-    _responseInfo: Dict = attr.ib()
-    _loop: Optional[AbstractEventLoop] = attr.ib(default=None, converter=Helper.ensure_loop)
-    _contentPromise: Optional[Future] = attr.ib(init=False, default=None)
-    _bodyLoadedPromise: Event = attr.ib(init=False, default=None)
-    _pres: Dict = attr.ib(init=False, default=None)
-    _protocol: str = attr.ib(init=False, default="")
-    _encodedDataLength: float = attr.ib(init=False, default=0.0)
-    _securityDetails: Optional["SecurityDetails"] = attr.ib(init=False, default=None)
-
-    @property
-    def frame(self) -> Optional[Frame]:
-        return self._request.frame
-
-    @property
-    def url(self) -> str:
-        """URL of the response."""
-        return self._pres.get("url")
-
-    @property
-    def protocol(self) -> str:
-        return self._protocol
-
-    @property
-    def mimeType(self) -> Optional[str]:
-        return self._pres.get("mimeType")
-
-    @property
-    def ok(self) -> bool:
-        """Return bool whether this request is successfull (200-299) or not."""
-        return 200 <= self.status <= 299
-
-    @property
-    def status(self) -> int:
-        """Status code of the response."""
-        return self._pres.get("status")
-
-    @property
-    def headers(self) -> Dict[str, str]:
-        """Return dictionary of HTTP headers of this response."""
-        return self._pres.get("headers")
-
-    @property
-    def headersText(self) -> Optional[str]:
-        return self._pres.get("headersText")
-
-    @property
-    def requestHeaders(self) -> Dict[str, str]:
-        """Return dictionary of HTTP headers of this response."""
-        return self._pres.get("requestHeaders")
-
-    @property
-    def requestHeadersText(self) -> Optional[str]:
-        return self._pres.get("requestHeadersText")
-
-    @property
-    def remoteIPAddress(self) -> Optional[str]:
-        return self._pres.get("remoteIPAddress")
-
-    @property
-    def remotePort(self) -> Optional[int]:
-        return self._pres.get("remotePort")
-
-    @property
-    def requestId(self) -> str:
-        return self._responseInfo.get("requestId")
-
-    @property
-    def loaderId(self) -> str:
-        return self._responseInfo.get("loaderId")
-
-    @property
-    def resourceType(self) -> str:
-        return self._responseInfo.get("resourceType")
-
-    @property
-    def frameId(self) -> Optional[str]:
-        return self._responseInfo.get("frameId")
-
-    @property
-    def timestamp(self) -> int:
-        return self._responseInfo.get("timestamp")
-
-    @property
-    def request(self) -> Request:
-        """Get matching :class:`Request` object."""
-        return self._request
-
-    @property
-    def fromCache(self) -> bool:
-        """Return ``True`` if the response was served from cache.
-
-        Here `cache` is either the browser's disk cache or memory cache.
-        """
-        return self._pres.get("fromDiskCache") or self._request._fromMemoryCache
-
-    @property
-    def fromServiceWorker(self) -> bool:
-        """Return ``True`` if the response was served by a service worker."""
-        return self._pres.get("fromServiceWorker")
-
-    @property
-    def encodedDataLength(self) -> float:
-        return self._encodedDataLength
-
-    @property
-    def securityDetails(self) -> Optional["SecurityDetails"]:
-        """Return security details associated with this response.
-
-        Security details if the response was received over the secure
-        connection, or `None` otherwise.
-        """
-        return self._securityDetails
-
-    @property
-    def securityState(self) -> str:
-        return self._pres.get("securityState")
-
-    async def _bufread(self) -> Union[bytes, str]:
-        await self._bodyLoadedPromise.wait()
-        response = await self._client.send(
-            "Network.getResponseBody", {"requestId": self._request.requestId}
-        )
-        body = response.get("body", b"")
-        if response.get("base64Encoded", False):
-            return base64.b64decode(body)
-        return body
-
-    def buffer(self) -> Awaitable[bytes]:
-        """Return awaitable which resolves to bytes with response body."""
-        if self._contentPromise is None:
-            self._contentPromise = self._loop.create_task(self._bufread())
-        return self._contentPromise
-
-    async def text(self) -> str:
-        """Get text representation of response body."""
-        content = await self.buffer()
-        if isinstance(content, str):
-            return content
-        else:
-            return content.decode("utf-8")
-
-    async def json(self) -> Dict:
-        """Get JSON representation of response body."""
-        content = await self.text()
-        return ujson_loads(content)
-
-    def to_dict(self) -> Dict:
-        return self._responseInfo
-
-    def __attrs_post_init__(self) -> None:
-        self._bodyLoadedPromise = Event(loop=self._loop)
-        self._pres = self._responseInfo.get("response")
-        sdetails = None
-        if self._pres.get("securityDetails") is not None:
-            sdetails = SecurityDetails(self._pres.get("securityDetails"))
-        self._securityDetails: Optional[SecurityDetails] = sdetails
-        self._protocol = self._pres.get("protocol")
-        self._encodedDataLength = self._pres.get("encodedDataLength")
-
-    def __str__(self) -> str:
-        repr_args = []
-        if self.url is not None:
-            repr_args.append("url={!r}".format(self.url))
-        if self.protocol is not None:
-            repr_args.append("protocol={!r}".format(self.protocol))
-        if self.mimeType is not None:
-            repr_args.append("mimeType={!r}".format(self.mimeType))
-        if self.status is not None:
-            repr_args.append("status={!r}".format(self.status))
-        return f"Response({', '.join(repr_args)})"
-
-
-def generateRequestHash(request: Dict) -> str:
-    """Generate request hash."""
-    normalizedURL: str = request.get("url", "")
-    try:
-        normalizedURL = unquote(normalizedURL)
-    except Exception:
-        pass
-
-    _hash: Dict[str, Union[str, Dict[str, str]]] = {
-        "url": normalizedURL,
-        "method": request.get("method"),
-        "postData": request.get("postData"),
-    }
-
-    _new_headers: Dict[str, str] = dict()
-
-    if not normalizedURL.startswith("data:"):
-        headers: List[str] = list(request["headers"].keys())
-        headers.sort()
-        for header in headers:
-            headerValue: str = request["headers"][header]
-            header = header.lower()
-            if (
-                header == "accept"
-                or header == "referer"
-                or header == "x-devtools-emulate-network-conditions-client-id"
-            ):  # noqa: E501
-                continue
-            _new_headers[header] = headerValue
-        _hash["headers"] = _new_headers
-    return ujson_dumps(_hash, ensure_ascii=False)
-
-
-@attr.dataclass(slots=True, cmp=False, hash=False)
-class SecurityDetails:
-    """Class represents responses which are received by page."""
-
-    _details: Dict[str, Union[str, int, List[int], List[str]]] = attr.ib()
-
-    @property
-    def subjectName(self) -> str:
-        """Return the subject to which the certificate was issued to."""
-        return self._details.get("subjectName")
-
-    @property
-    def issuer(self) -> str:
-        """Return a string with the name of issuer of the certificate."""
-        return self._details.get("issuer")
-
-    @property
-    def validFrom(self) -> int:
-        """Return UnixTime of the start of validity of the certificate."""
-        return self._details.get("validFrom")
-
-    @property
-    def validTo(self) -> int:
-        """Return UnixTime of the end of validity of the certificate."""
-        return self._details.get("validTo")
-
-    @property
-    def protocol(self) -> str:
-        """Return string of with the security protocol, e.g. "TLS1.2"."""
-        return self._details.get("protocol")
-
-
-statusTexts: Dict[str, str] = {
-    "100": "Continue",
-    "101": "Switching Protocols",
-    "102": "Processing",
-    "200": "OK",
-    "201": "Created",
-    "202": "Accepted",
-    "203": "Non-Authoritative Information",
-    "204": "No Content",
-    "206": "Partial Content",
-    "207": "Multi-Status",
-    "208": "Already Reported",
-    "209": "IM Used",
-    "300": "Multiple Choices",
-    "301": "Moved Permanently",
-    "302": "Found",
-    "303": "See Other",
-    "304": "Not Modified",
-    "305": "Use Proxy",
-    "306": "Switch Proxy",
-    "307": "Temporary Redirect",
-    "308": "Permanent Redirect",
-    "400": "Bad Request",
-    "401": "Unauthorized",
-    "402": "Payment Required",
-    "403": "Forbidden",
-    "404": "Not Found",
-    "405": "Method Not Allowed",
-    "406": "Not Acceptable",
-    "407": "Proxy Authentication Required",
-    "408": "Request Timeout",
-    "409": "Conflict",
-    "410": "Gone",
-    "411": "Length Required",
-    "412": "Precondition Failed",
-    "413": "Payload Too Large",
-    "414": "URI Too Long",
-    "415": "Unsupported Media Type",
-    "416": "Range Not Satisfiable",
-    "417": "Expectation Failed",
-    "418": "I'm a teapot",
-    "421": "Misdirected Request",
-    "422": "Unprocessable Entity",
-    "423": "Locked",
-    "424": "Failed Dependency",
-    "426": "Upgrade Required",
-    "428": "Precondition Required",
-    "429": "Too Many Requests",
-    "431": "Request Header Fields Too Large",
-    "451": "Unavailable For Legal Reasons",
-    "500": "Internal Server Error",
-    "501": "Not Implemented",
-    "502": "Bad Gateway",
-    "503": "Service Unavailable",
-    "504": "Gateway Timeout",
-    "505": "HTTP Version Not Supported",
-    "506": "Variant Also Negotiates",
-    "507": "Insufficient Storage",
-    "508": "Loop Detected",
-    "510": "Not Extended",
-    "511": "Network Authentication Required",
-}
+        requestId = event.get("networkId")
+        interceptionId = event.get("requestId")
+        if requestId and requestId in self._requestIdToRequestWillBeSentEvent:
+            requestWillBeSentEvent = self._requestIdToRequestWillBeSentEvent.pop(
+                requestId, None
+            )
+            self._onRequest(requestWillBeSentEvent, interceptionId)
+            return
+        self._requestIdToInterceptionId[requestId] = interceptionId

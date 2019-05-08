@@ -1,13 +1,13 @@
 """ExecutionContext Context Module."""
-import math
 import re
 from typing import Any, Dict, Optional, Pattern, TYPE_CHECKING
 
-import attr
+import math
 
+from ._typings import SlotsT
 from .connection import ClientType
 from .domWorld import DOMWorld
-from .errors import ElementHandleError, EvaluationError, ProtocolError
+from .errors import EvaluationError, ProtocolError
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle, createJSHandle
 
@@ -23,13 +23,26 @@ SOURCE_URL_REGEX: Pattern = re.compile(
 suffix = f"//# sourceURL={EVALUATION_SCRIPT_URL}"
 
 
-@attr.dataclass(slots=True, str=False, cmp=False)
 class ExecutionContext:
-    _client: ClientType = attr.ib()
-    _contextPayload: Dict = attr.ib()
-    _world: Optional[DOMWorld] = attr.ib()
-    _contextId: str = attr.ib(init=False)
-    _isDefault: bool = attr.ib(init=False)
+    __slots__: SlotsT = [
+        "__weakref__",
+        "_client",
+        "_contextPayload",
+        "_world",
+        "_contextId",
+        "_isDefault",
+    ]
+
+    def __init__(
+        self, client: ClientType, contextPayload: Dict, world: Optional[DOMWorld] = None
+    ) -> None:
+        self._client: ClientType = client
+        self._contextPayload: Dict = contextPayload
+        self._world: Optional[DOMWorld] = world
+        self._contextId: str = self._contextPayload.get("id")
+        self._isDefault: bool = self._contextPayload.get("auxData", {}).get(
+            "isDefault", False
+        )
 
     @property
     def default(self) -> bool:
@@ -146,9 +159,9 @@ class ExecutionContext:
         Details see :meth:`simplechrome.page.Page.queryObjects`.
         """
         if prototypeHandle._disposed:
-            raise ElementHandleError("Prototype JSHandle is disposed!")
+            raise Exception("Prototype JSHandle is disposed!")
         if not prototypeHandle._remoteObject.get("objectId"):
-            raise ElementHandleError(
+            raise Exception(
                 "Prototype JSHandle must not be referencing primitive value"
             )
         response = await self._client.send(
@@ -205,8 +218,5 @@ class ExecutionContext:
         frame_id = f"frameId={self.frame.id}, " if self.frame else ""
         return f"ExecutionContext(contextId={self._contextId}, {frame_id}isDefault={self._isDefault})"
 
-    def __attrs_post_init__(self) -> None:
-        self._contextId = self._contextPayload.get("id")
-        self._isDefault = self._contextPayload.get("auxData", {}).get(
-            "isDefault", False
-        )
+    def __repr__(self) -> str:
+        return self.__str__()

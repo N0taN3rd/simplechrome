@@ -7,7 +7,7 @@ from simplechrome.launcher import connect
 from .base_test import BaseChromeTest
 
 
-class TestConnection(object):
+class TestConnection:
     @pytest.mark.asyncio
     async def test_connect(self, one_off_chrome: Chrome):
         browser2 = None

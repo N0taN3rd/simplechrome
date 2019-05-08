@@ -1,7 +1,7 @@
 import pytest
 from typing import Any, Awaitable, Dict, Union, Optional
 
-from simplechrome.network_manager import Response
+from simplechrome.request_response import Response
 from simplechrome.page import Page
 from .utils import PageCrashState
 

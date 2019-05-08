@@ -1,19 +1,12 @@
-from asyncio import (
-    AbstractEventLoop,
-    Event,
-    Future,
-    wait as aio_wait,
-    FIRST_COMPLETED as aio_wait_until_first_completed,
-)
+from asyncio import AbstractEventLoop, Event, Future
 from typing import Any, Awaitable, Dict, List, Optional, Set, TYPE_CHECKING
 
-from aiofiles import open as aio_file_open
-import attr
+import aiofiles
 
-
-from .lifecycle_watcher import LifecycleWatcher
+from ._typings import Number, SlotsT
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle
+from .lifecycle_watcher import LifecycleWatcher
 from .timeoutSettings import TimeoutSettings
 from .waitTask import WaitTask
 
@@ -22,20 +15,46 @@ if TYPE_CHECKING:
     from .frame_manager import FrameManager, Frame
 
 
-@attr.dataclass(slots=True, cmp=False)
 class DOMWorld:
-    _frameManager: "FrameManager" = attr.ib()
-    _frame: "Frame" = attr.ib()
-    _timeoutSettings: TimeoutSettings = attr.ib()
-    _loop: Optional[AbstractEventLoop] = attr.ib(
-        default=None, converter=Helper.ensure_loop
-    )
-    _documentPromise: Future = attr.ib(init=False, default=None, repr=False)
-    _executionContext: "ExecutionContext" = attr.ib(init=False, default=None)
-    _hasContextEvent: Event = attr.ib(init=False, default=None, repr=False)
-    _contextResolveCallback: Future = attr.ib(init=False, default=None, repr=False)
-    _waitTasks: Set[WaitTask] = attr.ib(init=False, factory=set, repr=False)
-    _detached: bool = attr.ib(init=False, default=False)
+    __slots__: SlotsT = [
+        "__weakref__",
+        "_contextResolveCallback",
+        "_detached",
+        "_documentPromise",
+        "_executionContext",
+        "_frame",
+        "_frameManager",
+        "_hasContextEvent",
+        "_loop",
+        "_timeoutSettings",
+        "_waitTasks",
+    ]
+
+    def __init__(
+        self,
+        frameManager: "FrameManager",
+        frame: "Frame",
+        timeoutSettings: TimeoutSettings,
+        loop: Optional[AbstractEventLoop] = None,
+    ) -> None:
+        """Initialize a new instance of DOMWorld
+
+        :param frameManager: The frame manager for the page
+        :param frame: The frame this DOMWorld is associated with
+        :param timeoutSettings: The global timeout settings
+        :param loop:
+        """
+        self._frameManager: "FrameManager" = frameManager
+        self._frame: "Frame" = frame
+        self._timeoutSettings: TimeoutSettings = timeoutSettings
+        self._loop: AbstractEventLoop = Helper.ensure_loop(loop)
+        self._waitTasks: Set[WaitTask] = set()
+        self._hasContextEvent: Event = Event(loop=self._loop)
+        self._detached: bool = False
+        self._executionContext: Optional["ExecutionContext"] = None
+        self._contextResolveCallback: Optional[Future] = None
+        self._documentPromise: Optional[Future] = None
+        self._setContext(None)
 
     @property
     def frame(self) -> "Frame":
@@ -48,6 +67,10 @@ class DOMWorld:
     @property
     def loop(self) -> AbstractEventLoop:
         return self._loop
+
+    @property
+    def detached(self) -> bool:
+        return self._detached
 
     async def executionContext(self) -> "ExecutionContext":
         if self._detached:
@@ -110,34 +133,34 @@ class DOMWorld:
 
         Details see :meth:`simplechrome.page.Page.querySelector`.
         """
-        document = await self._document()
+        document = await self.document()
         value = await document.querySelector(selector)
         return value
 
     async def querySelectorEval(
         self, selector: str, pageFunction: str, *args: Any, withCliAPI: bool = False
     ) -> Any:
-        document = await self._document()
+        document = await self.document()
         return await document.querySelectorEval(
             selector, pageFunction, *args, withCliAPI=withCliAPI
         )
 
     async def querySelectorAll(self, selector: str) -> List[ElementHandle]:
-        document = await self._document()
+        document = await self.document()
         value = await document.querySelectorAll(selector)
         return value
 
     async def querySelectorAllEval(
         self, selector: str, pageFunction: str, *args: Any, withCliAPI: bool = False
     ) -> List[Any]:
-        document = await self._document()
+        document = await self.document()
         value = await document.querySelectorAllEval(
             selector, pageFunction, *args, withCliAPI
         )
         return value
 
     async def xpath(self, expression: str) -> List[ElementHandle]:
-        document = await self._document()
+        document = await self.document()
         value = await document.xpath(expression)
         return value
 
@@ -152,17 +175,18 @@ class DOMWorld:
         timeout = opts.get("timeout", self._timeoutSettings.timeout)
         waitUnitl = opts.get("waitUntil", ["load"])
         all_frames = opts.get("all_frames", True)
-        await self.evaluate(SET_DOCUMENT_HTML_JS, html)
+        await self.evaluate(
+            "function setContent(html) { document.open(); document.write(html); document.close();} ",
+            html,
+        )
         watcher = LifecycleWatcher(
             self._frameManager, self._frame, waitUnitl, timeout, all_frames, self._loop
         )
-        done, pending = await aio_wait(
-            {
-                watcher.timeoutPromise,
-                watcher.terminationPromise,
-                watcher.lifecyclePromise,
-            },
-            return_when=aio_wait_until_first_completed,
+
+        done, pending = await Helper.wait_for_first_done(
+            watcher.timeoutPromise,
+            watcher.terminationPromise,
+            watcher.lifecyclePromise,
             loop=self._loop,
         )
         watcher.dispose()
@@ -186,7 +210,7 @@ class DOMWorld:
 
         path = opts.get("path")
         if path is not None:
-            async with aio_file_open(path, "r") as contents_in:
+            async with aiofiles.open(path, "r") as contents_in:
                 contents = await contents_in.read()
             context = await self.executionContext()
             result = await context.evaluateHandle(
@@ -218,7 +242,7 @@ class DOMWorld:
 
         path = opts.get("path")
         if path is not None:
-            async with aio_file_open(path, "r") as contents_in:
+            async with aiofiles.open(path, "r") as contents_in:
                 contents = await contents_in.read()
             context = await self.executionContext()
             result = await context.evaluateHandle(ADD_STYLE_CONTENT_JS, contents, type_)
@@ -232,12 +256,24 @@ class DOMWorld:
 
         raise Exception("Provide an object with a `url`, `path` or `content` property")
 
-    async def click(self, selector: str, options: dict = None, **kwargs: Any) -> None:
-        options = Helper.merge_dict(options, kwargs)
+    async def click(
+        self,
+        selector: str,
+        button: str = "left",
+        clickCount: int = 1,
+        delay: Number = 0,
+    ) -> None:
+        """Click element which matches ``selector``
+
+        :param selector: The query selector to be used
+        :param button: ``left``, ``right``, or ``middle``, defaults to ``left``
+        :param clickCount: defaults to 1
+        :param delay: Time to wait between ``mousedown`` and ``mouseup`` in milliseconds. Defaults to 0.
+        """
         handle = await self.querySelector(selector)
         if not handle:
             raise Exception("No node found for selector: " + selector)
-        await handle.click(options)
+        await handle.click(button, clickCount, delay)
         await handle.dispose()
 
     async def focus(self, selector: str) -> None:
@@ -269,14 +305,24 @@ class DOMWorld:
         await handle.tap()
         await handle.dispose()
 
-    async def type(
-        self, selector: str, text: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> None:
-        options = Helper.merge_dict(options, kwargs)
+    async def type(self, selector: str, text: str, delay: Number = 0) -> None:
+        """Type characters.
+
+        This method sends ``keydown``, ``keypress``/``input``, and ``keyup``
+        event for each character in the ``text``.
+
+        To press a special key, like ``Control`` or ``ArrowDown``, use
+        :meth:`press` method.
+
+        :param selector: The query selector to be used
+        :param text: Text to type into this element.
+        :param delay: Optional amount of ``delay`` that specifies the amount
+        of time to wait between key presses in seconds. Defaults to 0.
+        """
         handle = await self.querySelector(selector)
         if handle is None:
             raise Exception("Cannot find {} on this page".format(selector))
-        await handle.type(text, options)
+        await handle.type(text, delay)
         await handle.dispose()
 
     async def title(self) -> str:
@@ -323,7 +369,7 @@ class DOMWorld:
     #: alias to :meth:`querySelectorAllEval`
     JJeval = querySelectorAllEval
 
-    async def _document(self) -> ElementHandle:
+    async def document(self) -> ElementHandle:
         if self._documentPromise:
             return await self._documentPromise
         context = await self.executionContext()
@@ -355,7 +401,7 @@ class DOMWorld:
         )
         handle = await wait_task.promise
         element_handle = handle.asElement()
-        if not element_handle:
+        if element_handle is None:
             await handle.dispose()
             return None
         return element_handle
@@ -378,8 +424,8 @@ class DOMWorld:
                 Exception("waitForFunction failed: frame got detached.")
             )
 
-    def __attrs_post_init__(self) -> None:
-        self._hasContextEvent = Event(loop=self._loop)
+    def _hasContext(self) -> bool:
+        return self._executionContext is not None
 
 
 GET_DOCUMENT_HTML_JS: str = """() => {
@@ -391,12 +437,6 @@ GET_DOCUMENT_HTML_JS: str = """() => {
     result[1] = document.documentElement.outerHTML;
   }
   return result.join('');
-}"""
-
-SET_DOCUMENT_HTML_JS: str = """function (html) {
-  document.open();
-  document.write(html);
-  document.close();
 }"""
 
 ADD_SCRIPT_URL_JS: str = """async function addScriptUrl(url, type) {
@@ -482,24 +522,50 @@ SELECT_JS: str = """function selectOptions (element, values) {
 }"""
 
 WAIT_FOR_SELECTOR_OR_XPATH_JS: str = """function predicate(selectorOrXPath, isXPath, waitForVisible, waitForHidden) {
-  const node = isXPath
-    ? document.evaluate(selectorOrXPath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
-    : document.querySelector(selectorOrXPath);
-  if (!node)
-    return waitForHidden;
-  if (!waitForVisible && !waitForHidden)
-    return node;
-  const element = /** @type {Element} */ (node.nodeType === Node.TEXT_NODE ? node.parentElement : node);
+  if (!waitForVisible) {
+    const node = isXPath
+      ? document.evaluate(selectorOrXPath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+      : document.querySelector(selectorOrXPath);
 
-  const style = window.getComputedStyle(element);
-  const isVisible = style && style.visibility !== 'hidden' && hasVisibleBoundingBox();
-  const success = (waitForVisible === isVisible || waitForHidden === !isVisible);
-  return success ? node : null;
+    if (!node) return waitForHidden;
+    if (!waitForHidden) return node;
+  }
+
+  // We need to loop over all matching nodes, and test each one, returning the first successful one... or null
+  if (isXPath) {
+    const nodeIterator = document.evaluate(selectorOrXPath, document, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
+    let node = nodeIterator.iterateNext();
+    while (node) {
+      if (testNode(node)) return node;
+      node = nodeIterator.iterateNext();
+    }
+  } else {
+    const nodes = Array.from(document.querySelectorAll(selectorOrXPath));
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (testNode(node)) return node;
+    }
+  }
+
+  return null;
 
   /**
+   * tests if node passes visible/hidden test
+   * @param {Node} node
+   */
+  function testNode(node) {
+    const element = /** @type {Element} */ (node.nodeType === Node.TEXT_NODE ? node.parentElement : node);
+    const style = window.getComputedStyle(element);
+    const isVisible = style && style.visibility !== 'hidden' && hasVisibleBoundingBox(element);
+    const success = (waitForVisible === isVisible || waitForHidden === !isVisible);
+    return success ? node : null;
+  }
+
+  /**
+   * @param {Element} element
    * @return {boolean}
    */
-  function hasVisibleBoundingBox() {
+  function hasVisibleBoundingBox(element) {
     const rect = element.getBoundingClientRect();
     return !!(rect.top || rect.bottom || rect.width || rect.height);
   }

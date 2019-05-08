@@ -16,7 +16,9 @@ class TestFrameExecutionContext(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_should_work(self):
         await self.goto_empty(waitUntil="load")
-        await TestUtil.attachFrame(self.page, "frame1", self.full_test_url("empty.html"))
+        await TestUtil.attachFrame(
+            self.page, "frame1", self.full_test_url("empty.html")
+        )
         assert len(self.page.frames) == 2
         frame1 = self.page.frames[0]
         frame2 = self.page.frames[1]
@@ -47,7 +49,9 @@ class TestFrameEvaluates(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_evaluate_should_work(self):
         await self.reset_and_goto_empty(waitUntil="load")
-        await TestUtil.attachFrame(self.page, "frame1", self.full_test_url("empty.html"))
+        await TestUtil.attachFrame(
+            self.page, "frame1", self.full_test_url("empty.html")
+        )
         assert len(self.page.frames) == 2
         frame1 = self.page.frames[0]
         frame2 = self.page.frames[1]
@@ -69,7 +73,9 @@ class TestFrameEvaluates(BaseChromeTest):
             except Exception as e:
                 promise.set_exception(e)
 
-        ee_helper.addEventListener(self.page, Events.Page.FrameNavigated, frame_navigated)
+        ee_helper.addEventListener(
+            self.page, Events.Page.FrameNavigated, frame_navigated
+        )
         await self.reset_and_goto_empty(waitUntil="load")
         await promise | should.be.equal.to(42)
 
@@ -158,7 +164,9 @@ class TestFrameManagement(BaseChromeTest):
         ee_helper.addEventListener(
             self.page, Events.Page.FrameAttached, lambda f: attachedFrames.append(f)
         )
-        await TestUtil.attachFrame(self.page, "frame1", self.full_test_url("frame.html"))
+        await TestUtil.attachFrame(
+            self.page, "frame1", self.full_test_url("frame.html")
+        )
         with should(attachedFrames):
             should.have.length.of(1)
             should.have.index.at(0).that.should.have.property("url").equal.to(
@@ -169,7 +177,9 @@ class TestFrameManagement(BaseChromeTest):
         ee_helper.addEventListener(
             self.page, Events.Page.FrameNavigated, lambda f: navigatedFrames.append(f)
         )
-        await TestUtil.navigateFrame(self.page, "frame1", self.full_test_url("empty.html"))
+        await TestUtil.navigateFrame(
+            self.page, "frame1", self.full_test_url("empty.html")
+        )
         with should(navigatedFrames):
             should.have.length.of(1)
             should.have.index.at(0).that.should.have.property("url").equal.to(
@@ -239,7 +249,9 @@ class TestFrameManagement(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_frame_name(self):
         await self.reset_and_goto_empty()
-        await TestUtil.attachFrame(self.page, "FrameId", self.full_test_url("empty.html"))
+        await TestUtil.attachFrame(
+            self.page, "FrameId", self.full_test_url("empty.html")
+        )
         await asyncio.sleep(0.1)
         await self.page.evaluate(
             """(url) => {
@@ -263,8 +275,12 @@ class TestFrameManagement(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_frame_parent(self):
         await self.reset_and_goto_empty()
-        await TestUtil.attachFrame(self.page, "frame1", self.full_test_url("empty.html"))
-        await TestUtil.attachFrame(self.page, "frame2", self.full_test_url("empty.html"))
+        await TestUtil.attachFrame(
+            self.page, "frame1", self.full_test_url("empty.html")
+        )
+        await TestUtil.attachFrame(
+            self.page, "frame2", self.full_test_url("empty.html")
+        )
         frame1 = self.page.frames[0]
         frame2 = self.page.frames[1]
         frame3 = self.page.frames[2]

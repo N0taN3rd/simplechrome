@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -7,7 +8,6 @@ from typing import Any
 
 import psutil
 import pytest
-import shlex
 import uvloop
 
 from simplechrome.chrome import Chrome
@@ -55,9 +55,14 @@ def ee_helper(request: SubRequest):
 
 @pytest.fixture(scope="session", autouse=True)
 def test_server(request: SubRequest) -> None:
-    sys.stdout.write(f"\n{sys.executable} {str(Path(__file__).parent / 'server2.py')}\n")
+    sys.stdout.write(
+        f"\n{sys.executable} {str(Path(__file__).parent / 'server2.py')}\n"
+    )
     server_process: subprocess.Popen = subprocess.Popen(
-        [shlex.quote(sys.executable), shlex.quote(str(Path(__file__).parent / "server2.py"))],
+        [
+            shlex.quote(sys.executable),
+            shlex.quote(str(Path(__file__).parent / "server2.py")),
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

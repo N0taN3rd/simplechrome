@@ -1,113 +1,125 @@
-import attr
-from cripy import (
-    ConnectionEvents,
-    SessionEvents,
-    Connection as Connection_,
-    CDPSession as CDPSession_,
-)
+from typing import ClassVar, Type
+
+from cripy import ConnectionEvents, SessionEvents
+
+from ._typings import EventType
 
 __all__ = [
     "BrowserContextEvents",
     "ChromeEvents",
     "Events",
-    "Events_",
     "FrameEvents",
     "FrameManagerEvents",
     "NetworkManagerEvents",
     "PageEvents",
+    "WorkerEvents",
+    "WorkerManagerEvents",
+    "ServiceWorkerEvents",
 ]
 
 
-@attr.dataclass(slots=True, frozen=True)
 class BrowserContextEvents:
-    TargetCreated: str = attr.ib(init=False, default="BrowserContext.targetcreated")
-    TargetChanged: str = attr.ib(init=False, default="BrowserContext.targetchanged")
-    TargetDestroyed: str = attr.ib(init=False, default="BrowserContext.targetdestroyed")
+    TargetCreated: EventType = "BrowserContext.targetcreated"
+    TargetChanged: EventType = "BrowserContext.targetchanged"
+    TargetDestroyed: EventType = "BrowserContext.targetdestroyed"
 
 
-@attr.dataclass(slots=True, frozen=True)
 class ChromeEvents:
-    Disconnected: str = attr.ib(init=False, default="Chrome.disconnected")
-    TargetCreated: str = attr.ib(init=False, default="Chrome.targetcreated")
-    TargetDestroyed: str = attr.ib(init=False, default="Chrome.targetdestroyed")
-    TargetChanged: str = attr.ib(init=False, default="Chrome.targetchanged")
+    Disconnected: EventType = "Chrome.disconnected"
+    TargetCreated: EventType = "Chrome.targetcreated"
+    TargetDestroyed: EventType = "Chrome.targetdestroyed"
+    TargetChanged: EventType = "Chrome.targetchanged"
 
 
-@attr.dataclass(slots=True, frozen=True)
 class FrameEvents:
-    LifeCycleEvent: str = attr.ib(default="Frame.lifecycleevent", init=False)
-    Detached: str = attr.ib(default="Frame.detached", init=False)
-    Navigated: str = attr.ib(default="Frame.navigated", init=False)
+    LifeCycleEvent: EventType = "Frame.lifecycleevent"
+    Detached: EventType = "Frame.detached"
+    Navigated: EventType = "Frame.navigated"
 
 
-@attr.dataclass(slots=True, frozen=True)
 class FrameManagerEvents:
-    FrameAttached: str = attr.ib(default="FrameManager.frameattached", init=False)
-    FrameNavigated: str = attr.ib(default="FrameManager.framenavigated", init=False)
-    FrameDetached: str = attr.ib(default="FrameManager.framedetached", init=False)
-    LifecycleEvent: str = attr.ib(default="FrameManager.lifecycleevent", init=False)
-    FrameNavigatedWithinDocument: str = attr.ib(
-        default="FrameManager.framenavigatedwithindocument", init=False
-    )
-    ExecutionContextCreated: str = attr.ib(
-        default="FrameManager.executioncontextcreated", init=False
-    )
-    ExecutionContextDestroyed: str = attr.ib(
-        default="FrameManager.executioncontextdestroyed", init=False
-    )
+    FrameAttached: EventType = "FrameManager.frameattached"
+    FrameNavigated: EventType = "FrameManager.framenavigated"
+    FrameDetached: EventType = "FrameManager.framedetached"
+    LifecycleEvent: EventType = "FrameManager.lifecycleevent"
+    FrameNavigatedWithinDocument: EventType = "FrameManager.framenavigatedwithindocument"
+    ExecutionContextCreated: EventType = "FrameManager.executioncontextcreated"
+    ExecutionContextDestroyed: EventType = "FrameManager.executioncontextdestroyed"
 
 
-@attr.dataclass(slots=True, frozen=True)
-class NetworkManagerEvents(object):
-    Request: str = attr.ib(default="NetworkManager.Request")
-    Response: str = attr.ib(default="NetworkManager.Response")
-    RequestFailed: str = attr.ib(default="NetworkManager.Requestfailed")
-    RequestFinished: str = attr.ib(default="NetworkManager.Requestfinished")
+class NetworkManagerEvents:
+    Request: EventType = "NetworkManager.Request"
+    Response: EventType = "NetworkManager.Response"
+    RequestFailed: EventType = "NetworkManager.Requestfailed"
+    RequestFinished: EventType = "NetworkManager.Requestfinished"
 
 
-@attr.dataclass(slots=True, frozen=True)
 class PageEvents:
-    Close: str = attr.ib(init=False, default="Page.close")
-    Console: str = attr.ib(init=False, default="Page.console")
-    Crashed: str = attr.ib(init=False, default="Page.crashed")
-    DOMContentLoaded: str = attr.ib(init=False, default="Page.domcontentloaded")
-    Dialog: str = attr.ib(init=False, default="Page.dialog")
-    Error: str = attr.ib(init=False, default="Page.error")
-    FrameAttached: str = attr.ib(init=False, default="Page.frameattached")
-    FrameDetached: str = attr.ib(init=False, default="Page.framedetached")
-    FrameNavigated: str = attr.ib(init=False, default="Page.framenavigated")
-    FrameNavigatedWithinDocument: str = attr.ib(
-        init=False, default="Page.framenavigatedwithindocument"
-    )
-    LifecycleEvent: str = attr.ib(init=False, default="Page.lifecycleevent")
-    Load: str = attr.ib(init=False, default="Page.load")
-    LogEntry: str = attr.ib(init=False, default="Page.logentry")
-    Metrics: str = attr.ib(init=False, default="Page.metrics")
-    NavigatedWithinDoc: str = attr.ib(init=False, default="Page.navigatedwithindoc")
-    PageError: str = attr.ib(init=False, default="Page.pageerror")
-    Popup: str = attr.ib(init=False, default="Page.popup")
-    Request: str = attr.ib(init=False, default="Page.request")
-    RequestFailed: str = attr.ib(init=False, default="Page.requestfailed")
-    RequestFinished: str = attr.ib(init=False, default="Page.requestfinished")
-    Response: str = attr.ib(init=False, default="Page.response")
-    WorkerCreated: str = attr.ib(init=False, default="Page.workercreated")
-    WorkerDestroyed: str = attr.ib(init=False, default="Page.workerdestroyed")
+    Close: EventType = "Page.close"
+    Console: EventType = "Page.console"
+    Crashed: EventType = "Page.crashed"
+    DOMContentLoaded: EventType = "Page.domcontentloaded"
+    Dialog: EventType = "Page.dialog"
+    Error: EventType = "Page.error"
+    FrameAttached: EventType = "Page.frameattached"
+    FrameDetached: EventType = "Page.framedetached"
+    FrameNavigated: EventType = "Page.framenavigated"
+    FrameNavigatedWithinDocument: EventType = "Page.framenavigatedwithindocument"
+
+    LifecycleEvent: EventType = "Page.lifecycleevent"
+    Load: EventType = "Page.load"
+    LogEntry: EventType = "Page.logentry"
+    Metrics: EventType = "Page.metrics"
+    NavigatedWithinDoc: EventType = "Page.navigatedwithindoc"
+    PageError: EventType = "Page.pageerror"
+    Popup: EventType = "Page.popup"
+    Request: EventType = "Page.request"
+    RequestFailed: EventType = "Page.requestfailed"
+    RequestFinished: EventType = "Page.requestfinished"
+    Response: EventType = "Page.response"
+    WorkerCreated: EventType = "Page.workercreated"
+    WorkerDestroyed: EventType = "Page.workerdestroyed"
+    ServiceWorkerAdded: EventType = "Page.serviceWorkerAdded"
+    ServiceWorkerDeleted: EventType = "Page.serviceWorkerDeleted"
 
 
-@attr.dataclass(slots=True, frozen=True)
-class Events_:
-    BrowserContext: BrowserContextEvents = attr.ib(
-        init=False, factory=BrowserContextEvents
-    )
-    CDPSession: SessionEvents = attr.ib(init=False, default=CDPSession_.Events)
-    Chrome: ChromeEvents = attr.ib(init=False, factory=ChromeEvents)
-    Connection: ConnectionEvents = attr.ib(init=False, default=Connection_.Events)
-    Frame: FrameEvents = attr.ib(init=False, factory=FrameEvents)
-    FrameManager: FrameManagerEvents = attr.ib(init=False, factory=FrameManagerEvents)
-    NetworkManager: NetworkManagerEvents = attr.ib(
-        init=False, factory=NetworkManagerEvents
-    )
-    Page: PageEvents = attr.ib(init=False, factory=PageEvents)
+class LogEvents:
+    EntryAdded: EventType = "Log.entryAdded"
 
 
-Events = Events_()
+class WorkerEvents:
+    Console: EventType = "Worker.ConsoleMessage"
+    Destroyed: EventType = "Worker.Destroyed"
+    Error: EventType = "Worker.Error"
+
+
+class WorkerManagerEvents:
+    ServiceWorkerAdded: EventType = "WorkerManager.serviceWorkerAdded"
+    ServiceWorkerDeleted: EventType = "WorkerManager.serviceWorkerDeleted"
+    Console: EventType = "WorkerManager.console"
+    Error: EventType = "WorkerManager.error"
+    WorkerCreated: EventType = "WorkerManager.workerCreated"
+    WorkerDestroyed: EventType = "WorkerManager.workerDestroyed"
+
+
+class ServiceWorkerEvents:
+    Error: EventType = "ServiceWorker.workerErrorReported"
+    RegistrationUpdated: EventType = "ServiceWorker.workerRegistrationUpdated"
+    VersionUpdated: EventType = "ServiceWorker.workerVersionUpdated"
+    Deleted: EventType = "ServiceWorker.deleted"
+    Closed: EventType = "ServiceWorker.closed"
+
+
+class Events:
+    BrowserContext: ClassVar[Type[BrowserContextEvents]] = BrowserContextEvents
+    CDPSession: ClassVar[Type[SessionEvents]] = SessionEvents
+    Chrome: ClassVar[Type[ChromeEvents]] = ChromeEvents
+    Connection: ClassVar[Type[ConnectionEvents]] = ConnectionEvents
+    Frame: ClassVar[Type[FrameEvents]] = FrameEvents
+    FrameManager: ClassVar[Type[FrameManagerEvents]] = FrameManagerEvents
+    NetworkManager: ClassVar[Type[NetworkManagerEvents]] = NetworkManagerEvents
+    Page: ClassVar[Type[PageEvents]] = PageEvents
+    Log: ClassVar[Type[LogEvents]] = LogEvents
+    Worker: ClassVar[Type[WorkerEvents]] = WorkerEvents
+    WorkerManager: ClassVar[Type[WorkerManagerEvents]] = WorkerManagerEvents
+    ServiceWorker: ClassVar[Type[ServiceWorkerEvents]] = ServiceWorkerEvents

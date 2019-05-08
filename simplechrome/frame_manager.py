@@ -1,26 +1,28 @@
 """Frame Manager module."""
 
-import asyncio
 import logging
-from sys import exc_info as sys_exc_info
-from asyncio import (
-    AbstractEventLoop,
-    FIRST_COMPLETED as AIO_FIRST_COMPLETED,
-    Future,
-    gather as aio_gather,
-    sleep as aio_sleep,
-    wait as aio_wait,
-)
+from asyncio import Future, gather, sleep
 from collections import OrderedDict
+from sys import exc_info
 from typing import Any, Awaitable, Dict, List, Optional, Set, TYPE_CHECKING, Union
 
-from pyee2 import EventEmitter
+from pyee2 import EventEmitterS
 
+from ._typings import (
+    AsyncAny,
+    CDPEvent,
+    Loop,
+    Number,
+    OptionalLoop,
+    OptionalNumber,
+    SlotsT,
+)
 from .connection import ClientType
 from .domWorld import DOMWorld
 from .errors import NavigationError, WaitSetupError
 from .events import Events
 from .execution_context import EVALUATION_SCRIPT_URL, ExecutionContext
+from .frame_resource_tree import FrameResourceTree
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle
 from .lifecycle_watcher import LifecycleWatcher
@@ -28,7 +30,8 @@ from .timeoutSettings import TimeoutSettings
 
 if TYPE_CHECKING:
     from .page import Page  # noqa: F401
-    from .network_manager import NetworkManager, Response  # noqa: F401
+    from .network_manager import NetworkManager  # noqa: F401
+    from .request_response import Response  # noqa: F401
 
 __all__ = ["FrameManager", "Frame"]
 
@@ -37,18 +40,33 @@ logger = logging.getLogger(__name__)
 UTILITY_WORLD_NAME: str = "__simplechrome_utility_world__"
 
 
-class FrameManager(EventEmitter):
+class FrameManager(EventEmitterS):
     """FrameManager class."""
+
+    __slots__: SlotsT = [
+        "__weakref__",
+        "_client",
+        "_contextIdToContext",
+        "_emits_life",
+        "_frames",
+        "_isolatedWorlds",
+        "_isolateWorlds",
+        "_mainFrame",
+        "_networkManager",
+        "_networkManager",
+        "_page",
+        "_timeoutSettings",
+    ]
 
     def __init__(
         self,
         client: ClientType,
-        frameTree: Dict,
         timeoutSettings: Optional[TimeoutSettings] = None,
         page: Optional["Page"] = None,
         networkManager: Optional["NetworkManager"] = None,
         isolateWorlds: bool = True,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
+        frameTree: Optional[Dict] = None,
     ) -> None:
         """Make new frame manager."""
         super().__init__(loop=Helper.ensure_loop(loop))
@@ -58,12 +76,12 @@ class FrameManager(EventEmitter):
         self._timeoutSettings: TimeoutSettings = timeoutSettings if timeoutSettings is not None else TimeoutSettings()
 
         self._frames: OrderedDict[str, Frame] = OrderedDict()
-        self._contextIdToContext: Dict[Union[str, int], ExecutionContext] = dict()
+        self._contextIdToContext: Dict[Union[str, int], ExecutionContext] = {}
 
         self._isolateWorlds: bool = isolateWorlds
         self._isolatedWorlds: Set[str] = set()
 
-        self._mainFrame: Frame = None
+        self._mainFrame: Optional[Frame] = None
         self._emits_life: bool = False
 
         self._client.on("Page.frameAttached", self._onFrameAttached)
@@ -83,8 +101,12 @@ class FrameManager(EventEmitter):
             "Runtime.executionContextsCleared", self._onExecutionContextsCleared
         )
         self._client.on("Page.lifecycleEvent", self._onLifecycleEvent)
+        if frameTree is not None:
+            self._handleFrameTree(frameTree, True)
 
-        self._handleFrameTree(frameTree, is_first=True)
+    @property
+    def isolatingWorlds(self) -> bool:
+        return self._isolateWorlds
 
     @property
     def mainFrame(self) -> "Frame":
@@ -101,7 +123,7 @@ class FrameManager(EventEmitter):
             num_inflight=num_inflight, idle_time=idle_time, global_wait=global_wait
         )
 
-    def setDefaultNavigationTimeout(self, timeout: Union[int, float]) -> None:
+    def setDefaultNavigationTimeout(self, timeout: Number) -> None:
         self._timeoutSettings.setDefaultNavigationTimeout(timeout)
 
     def enable_lifecycle_emitting(self) -> None:
@@ -123,6 +145,56 @@ class FrameManager(EventEmitter):
         """Return :class:`Frame` of ``frameId``."""
         return self._frames.get(frameId)
 
+    async def initialize(self) -> None:
+        _, frameTree = await gather(
+            self._client.send("Page.enable", {}),
+            self._client.send("Page.getFrameTree", {}),
+        )
+        self._handleFrameTree(frameTree["frameTree"], is_first=True)
+        await gather(
+            self._client.send("Page.setLifecycleEventsEnabled", {"enabled": True}),
+            self._client.send("Runtime.enable", {}),
+        )
+        if self._isolateWorlds:
+            await self._ensureIsolatedWorld(UTILITY_WORLD_NAME)
+
+    async def getResourceTree(self) -> FrameResourceTree:
+        """Returns top frames / resource tree structure
+
+        :return: The frame resource tree for the page
+        """
+        results = await self._client.send("Page.getResourceTree", {})
+        return FrameResourceTree(results["frameTree"], self)
+
+    async def getFrameResourceContent(
+        self, frameId: str, url: str
+    ) -> Dict[str, Union[str, bool]]:
+        """Returns content of the given resource
+
+        :param frameId: Frame id to get resource for
+        :param url: URL of the resource to get content for
+        :return: A dictionary with two keys, content (the content as a string),
+        base64Encoded (bool indicating if the content is base64 encoded)
+        """
+        results = await self._client.send(
+            "Page.getResourceContent", {"frameId": frameId, "url": url}
+        )
+        return results
+
+    async def captureSnapshot(self, format_: str = "mhtml") -> str:
+        """Returns a snapshot of the page as a string. For MHTML format,
+        the serialization includes iframes, shadow DOM, external resources,
+        and element-inline styles.
+
+        EXPERIMENTAL
+
+
+        :param format_: Format (defaults to mhtml)
+        :return: Serialized page data.
+        """
+        result = await self._client.send("Page.captureSnapshot", {"format": format_})
+        return result.get("data")
+
     async def navigateFrame(
         self, frame: "Frame", url: str, options: Optional[Dict] = None, **kwargs: Any
     ) -> Optional["Response"]:
@@ -130,7 +202,7 @@ class FrameManager(EventEmitter):
         timeout = opts.get("timeout", self._timeoutSettings.navigationTimeout)
         waitUnitl = opts.get("waitUntil", ["load"])
         all_frames = opts.get("all_frames", True)
-        nav_args = dict(url=url, frameId=frame.id)
+        nav_args = {"url": url, "frameId": frame.id}
 
         if "transition" in opts:
             nav_args["transitionType"] = opts.get("transition")
@@ -148,50 +220,29 @@ class FrameManager(EventEmitter):
             self, frame, waitUnitl, timeout, all_frames, self._loop
         )
 
-        ensureNewDocumentNavigation = False
-
-        async def navigate() -> Optional[NavigationError]:
-            nonlocal ensureNewDocumentNavigation
-            try:
-                response = await self._client.send("Page.navigate", nav_args)
-                # if we navigated within document i.e history modification then loaderId is None
-                ensureNewDocumentNavigation = bool(response.get("loaderId"))
-                errorText = response.get("errorText")
-                if errorText:
-                    return NavigationError.Failed(
-                        f"Navigation to {url} failed: {errorText}",
-                        response=watcher.navigationResponse,
-                    )
-            except Exception as e:
-                return NavigationError.Failed(
-                    f"Navigation to {url} failed: {e.args[0]}",
-                    response=watcher.navigationResponse,
-                    tb=sys_exc_info()[2],
-                )
-            return None
+        ensureNewDocumentNavigation = {"ensure": False}
 
         # asyncio.wait does not work like Promise.race
         # if we were to use watcher.timeoutOrTerminationPromise and there was an error
         # done would be a task with a result that is a tuple (Task-That-Failed, future still pending)
         # requiring two result calls :(
-        done, pending = await aio_wait(
-            {
-                self._loop.create_task(navigate()),
-                watcher.timeoutPromise,
-                watcher.terminationPromise,
-            },
-            return_when=AIO_FIRST_COMPLETED,
+        done, pending = await Helper.wait_for_first_done(
+            self.__navigate(ensureNewDocumentNavigation, nav_args, url, watcher),
+            watcher.timeoutPromise,
+            watcher.terminationPromise,
             loop=self._loop,
         )
         error = done.pop().result()
         if error is None:
-            if ensureNewDocumentNavigation:
+            if ensureNewDocumentNavigation["ensure"]:
                 final_prom = watcher.newDocumentNavigationPromise
             else:
                 final_prom = watcher.sameDocumentNavigationPromise
-            done, pending = await aio_wait(
-                {watcher.timeoutPromise, watcher.terminationPromise, final_prom},
-                return_when=AIO_FIRST_COMPLETED,
+
+            done, pending = await Helper.wait_for_first_done(
+                watcher.timeoutPromise,
+                watcher.terminationPromise,
+                final_prom,
                 loop=self._loop,
             )
             error = done.pop().result()
@@ -199,6 +250,31 @@ class FrameManager(EventEmitter):
         if error is not None:
             raise error
         return watcher.navigationResponse
+
+    async def __navigate(
+        self,
+        ensureNewDocumentNavigation: Dict[str, bool],
+        nav_args: Dict[str, Any],
+        url: str,
+        watcher: LifecycleWatcher,
+    ) -> Optional[NavigationError]:
+        try:
+            response = await self._client.send("Page.navigate", nav_args)
+            # if we navigated within document i.e history modification then loaderId is None
+            ensureNewDocumentNavigation["ensure"] = bool(response.get("loaderId"))
+            errorText = response.get("errorText")
+            if errorText:
+                return NavigationError.Failed(
+                    f"Navigation to {url} failed: {errorText}",
+                    response=watcher.navigationResponse,
+                )
+        except Exception as e:
+            return NavigationError.Failed(
+                f"Navigation to {url} failed: {e.args[0]}",
+                response=watcher.navigationResponse,
+                tb=exc_info()[2],
+            )
+        return None
 
     async def waitForFrameNavigation(
         self, frame: "Frame", options: Optional[Dict] = None, **kwargs: Any
@@ -210,14 +286,11 @@ class FrameManager(EventEmitter):
         watcher = LifecycleWatcher(
             self, frame, waitUnitl, timeout, all_frames, self._loop
         )
-        done, pending = await aio_wait(
-            {
-                watcher.timeoutPromise,
-                watcher.terminationPromise,
-                watcher.sameDocumentNavigationPromise,
-                watcher.newDocumentNavigationPromise,
-            },
-            return_when=AIO_FIRST_COMPLETED,
+        done, pending = await Helper.wait_for_first_done(
+            watcher.timeoutPromise,
+            watcher.terminationPromise,
+            watcher.sameDocumentNavigationPromise,
+            watcher.newDocumentNavigationPromise,
             loop=self._loop,
         )
         watcher.dispose()
@@ -229,7 +302,7 @@ class FrameManager(EventEmitter):
     async def ensureSecondaryDOMWorld(self) -> None:
         await self._ensureIsolatedWorld(UTILITY_WORLD_NAME)
 
-    def _onLifecycleEvent(self, event: Dict) -> None:
+    def _onLifecycleEvent(self, event: CDPEvent) -> None:
         frame = self._frames.get(event["frameId"])
         if frame is None:
             return
@@ -237,6 +310,7 @@ class FrameManager(EventEmitter):
         self.emit(Events.FrameManager.LifecycleEvent, frame)
 
     def _handleFrameTree(self, frameTree: Dict, is_first: bool = False) -> None:
+        self._frames.clear()
         ft_frame = frameTree["frame"]
         frameId: str = ft_frame.get("id", "")
         parent_id = ft_frame.get("parentId", None)
@@ -251,8 +325,9 @@ class FrameManager(EventEmitter):
             self._mainFrame = self._frames[frameId]
         if "childFrames" not in frameTree:
             return
+        handleFrameTree = self._handleFrameTree
         for child in frameTree["childFrames"]:
-            self._handleFrameTree(child)
+            handleFrameTree(child)
 
     def _onFrameAttached(self, eventOrFrame: Dict) -> None:
         frameId: str = eventOrFrame.get("frameId", "")
@@ -301,13 +376,13 @@ class FrameManager(EventEmitter):
         frame._navigated(framePayload)
         self.emit(Events.FrameManager.FrameNavigated, frame)
 
-    def _onFrameDetached(self, event: Dict) -> None:
+    def _onFrameDetached(self, event: CDPEvent) -> None:
         frameId: str = event.get("frameId")
         frame = self._frames.get(frameId)
         if frame:
             self._removeFramesRecursively(frame)
 
-    def _onFrameStoppedLoading(self, event: Dict) -> None:
+    def _onFrameStoppedLoading(self, event: CDPEvent) -> None:
         frameId: str = event.get("frameId")
         frame = self._frames.get(frameId)
         if frame is None:
@@ -315,7 +390,7 @@ class FrameManager(EventEmitter):
         frame._onLoadingStopped()
         self.emit(Events.FrameManager.LifecycleEvent, frame)
 
-    def _onFrameNavigatedWithinDocument(self, event: Dict) -> None:
+    def _onFrameNavigatedWithinDocument(self, event: CDPEvent) -> None:
         frameId: str = event.get("frameId")
         url: str = event.get("url")
         frame = self._frames.get(frameId, None)
@@ -325,7 +400,7 @@ class FrameManager(EventEmitter):
         self.emit(Events.FrameManager.FrameNavigatedWithinDocument, frame)
         self.emit(Events.FrameManager.FrameNavigated, frame)
 
-    def _onExecutionContextCreated(self, event: Dict) -> None:
+    def _onExecutionContextCreated(self, event: CDPEvent) -> None:
         contextPayload = event.get("context")
         auxData = contextPayload.get("auxData")
         if auxData:
@@ -337,7 +412,10 @@ class FrameManager(EventEmitter):
         if frame:
             if auxData and auxData.get("isDefault", False):
                 world = frame._mainWorld
-            else:
+            elif (
+                contextPayload.get("name") == UTILITY_WORLD_NAME
+                and not frame._secondaryWorld._hasContext()
+            ):
                 world = frame._secondaryWorld
 
         if auxData and auxData.get("type") == "isolated":
@@ -348,7 +426,7 @@ class FrameManager(EventEmitter):
             world._setContext(context)
         self._contextIdToContext[contextPayload.get("id")] = context
 
-    def _onExecutionContextDestroyed(self, event: Dict) -> None:
+    def _onExecutionContextDestroyed(self, event: CDPEvent) -> None:
         executionContextId: str = event.get("executionContextId")
         context = self._contextIdToContext.get(executionContextId)
         if not context:
@@ -364,8 +442,9 @@ class FrameManager(EventEmitter):
         self._contextIdToContext.clear()
 
     def _removeFramesRecursively(self, frame: "Frame") -> None:
+        removeFramesRecursively = self._removeFramesRecursively
         for child in frame.childFrames:
-            self._removeFramesRecursively(child)
+            removeFramesRecursively(child)
         frame._detach()
         self._frames.pop(frame.id, None)
         self.emit(Events.FrameManager.FrameDetached, frame)
@@ -378,9 +457,10 @@ class FrameManager(EventEmitter):
         )
         coroutines: List = []
         coroutines_append = coroutines.append
+        client_send = self._client.send
         for frame in self.frames():
             coroutines_append(
-                self._client.send(
+                client_send(
                     "Page.createIsolatedWorld",
                     {
                         "frameId": frame.id,
@@ -389,14 +469,32 @@ class FrameManager(EventEmitter):
                     },
                 )
             )
-        await aio_gather(*coroutines, return_exceptions=True, loop=self._loop)
+        await gather(*coroutines, return_exceptions=True, loop=self._loop)
 
 
-class Frame(EventEmitter):
+class Frame(EventEmitterS):
     """Frame class.
 
     Frame objects can be obtained via :attr:`simplechrome.page.Page.mainFrame`.
     """
+
+    __slots__: SlotsT = [
+        "__weakref__",
+        "_at_lifecycle",
+        "_childFrames",
+        "_client",
+        "_detached",
+        "_emits_life",
+        "_frameManager",
+        "_id",
+        "_lifecycleEvents",
+        "_loaderId",
+        "_mainWorld",
+        "_name",
+        "_parentFrame",
+        "_secondaryWorld",
+        "_url",
+    ]
 
     @classmethod
     def from_cdp_frame(
@@ -405,7 +503,7 @@ class Frame(EventEmitter):
         client: ClientType,
         parentFrame: Optional["Frame"],
         cdp_frame: Dict[str, str],
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> "Frame":
         frame = cls(frameManager, client, parentFrame, cdp_frame["id"], loop=loop)
         frame._loaderId = cdp_frame.get("loaderId", "")
@@ -418,7 +516,7 @@ class Frame(EventEmitter):
         client: ClientType,
         parentFrame: Optional["Frame"],
         frameId: str,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: OptionalLoop = None,
     ) -> None:
         super().__init__(loop=Helper.ensure_loop(loop))
         self._client: ClientType = client
@@ -441,6 +539,20 @@ class Frame(EventEmitter):
         self._at_lifecycle: Optional[str] = None
         if self._parentFrame:
             self._parentFrame._childFrames.add(self)
+
+    @property
+    def domWorld(self) -> DOMWorld:
+        if self._frameManager._isolateWorlds:
+            return self._secondaryWorld
+        return self._mainWorld
+
+    @property
+    def mainDOMWorld(self) -> DOMWorld:
+        return self._mainWorld
+
+    @property
+    def secondaryDOMWorld(self) -> DOMWorld:
+        return self._secondaryWorld
 
     @property
     def emits_lifecycle(self) -> bool:
@@ -513,19 +625,19 @@ class Frame(EventEmitter):
 
     def evaluateHandle(
         self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> Awaitable[JSHandle]:
+    ) -> AsyncAny:
         return self._mainWorld.evaluateHandle(
             pageFunction, *args, withCliAPI=withCliAPI
         )
 
     def evaluate(
         self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> Awaitable[Any]:
+    ) -> AsyncAny:
         return self._mainWorld.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
 
     def evaluate_expression(
         self, expression: str, withCliAPI: bool = False
-    ) -> Awaitable[Any]:
+    ) -> AsyncAny:
         """Evaluates the js expression in the frame returning the results by value.
 
         :param str expression: The js expression to be evaluated in the main frame.
@@ -542,7 +654,7 @@ class Frame(EventEmitter):
 
     def querySelectorEval(
         self, selector: str, pageFunction: str, *args: Any
-    ) -> Awaitable[Optional[Any]]:
+    ) -> AsyncAny:
         """Execute function on element which matches selector.
 
         Details see :meth:`simplechrome.page.Page.querySelectorEval`.
@@ -576,17 +688,13 @@ class Frame(EventEmitter):
 
     def content(self) -> Awaitable[str]:
         """Get the whole HTML contents of the page."""
-        if self._frameManager._isolateWorlds:
-            return self._secondaryWorld.content()
-        return self._mainWorld.content()
+        return self.domWorld.content()
 
     def setContent(
         self, html: str, options: Optional[Dict] = None, **kwargs: Any
     ) -> Awaitable[None]:
         """Set content to this page."""
-        if self._frameManager._isolateWorlds:
-            return self._secondaryWorld.setContent(html, options, **kwargs)
-        return self._mainWorld.setContent(html, options, **kwargs)
+        return self.domWorld.setContent(html, options, **kwargs)
 
     def addScriptTag(
         self, options: Optional[Dict] = None, **kwargs: Any
@@ -607,64 +715,60 @@ class Frame(EventEmitter):
         return self._mainWorld.addStyleTag(options, **kwargs)
 
     def click(
-        self, selector: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> Awaitable[None]:
+        self,
+        selector: str,
+        button: str = "left",
+        clickCount: int = 1,
+        delay: Number = 0,
+    ) -> AsyncAny:
         """Click element which matches ``selector``.
 
         Details see :meth:`simplechrome.page.Page.click`.
         """
-        if self._frameManager._isolateWorlds:
-            return self._secondaryWorld.click(selector, options, **kwargs)
-        return self._mainWorld.click(selector, options, **kwargs)
+        return self.domWorld.click(selector, button, clickCount, delay)
 
     def focus(self, selector: str) -> Awaitable[None]:
         """Fucus element which matches ``selector``.
 
         Details see :meth:`simplechrome.page.Page.focus`.
         """
-        if self._frameManager._isolateWorlds:
-            return self._secondaryWorld.focus(selector)
-        return self._mainWorld.focus(selector)
+        return self.domWorld.focus(selector)
 
     def hover(self, selector: str) -> Awaitable[None]:
         """Mouse hover the element which matches ``selector``.
 
         Details see :meth:`simplechrome.page.Page.hover`.
         """
-        if self._frameManager._isolateWorlds:
-            return self._secondaryWorld.hover(selector)
-        return self._mainWorld.hover(selector)
+        return self.domWorld.hover(selector)
 
     def select(self, selector: str, *values: str) -> Awaitable[List[str]]:
         """Select options and return selected values.
 
         Details see :meth:`simplechrome.page.Page.select`.
         """
-        if self._frameManager._isolateWorlds:
-            return self._secondaryWorld.select(selector, *values)
-        return self._mainWorld.select(selector, *values)
+        return self.domWorld.select(selector, *values)
 
-    def tap(self, selector: str) -> Awaitable[None]:
+    async def document(self) -> ElementHandle:
+        dom = await self._mainWorld.document()
+        return dom
+
+    async def tap(self, selector: str) -> None:
         """Tap the element which matches the ``selector``.
 
         Details see :meth:`simplechrome.page.Page.tap`.
         """
-        if self._frameManager._isolateWorlds:
-            return self._secondaryWorld.tap(selector)
-        return self._mainWorld.tap(selector)
+        await self.domWorld.tap(selector)
 
-    def type(
-        self, selector: str, text: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> Awaitable[None]:
+    async def type(self, selector: str, text: str, delay: Number = 0) -> None:
         """Type ``text`` on the element which matches ``selector``.
 
         Details see :meth:`simplechrome.page.Page.type`.
         """
-        return self._mainWorld.type(selector, text, options, **kwargs)
+        await self._mainWorld.type(selector, text, delay)
 
     def waitFor(
         self,
-        selectorOrFunctionOrTimeout: Union[str, int, float],
+        selectorOrFunctionOrTimeout: Union[str, Number],
         options: Optional[Dict] = None,
         *args: Any,
         **kwargs: Any,
@@ -687,10 +791,10 @@ class Frame(EventEmitter):
 
         if Helper.is_number(selectorOrFunctionOrTimeout):
             fut = self._loop.create_task(
-                aio_sleep(selectorOrFunctionOrTimeout, loop=self._loop)
+                sleep(selectorOrFunctionOrTimeout, loop=self._loop)  # type: ignore
             )
             return fut
-        if args or Helper.is_jsfunc(selectorOrFunctionOrTimeout):
+        if args or Helper.is_jsfunc(selectorOrFunctionOrTimeout):  # type: ignore
             return self.waitForFunction(
                 selectorOrFunctionOrTimeout, options, *args, **kwargs
             )
@@ -746,10 +850,7 @@ class Frame(EventEmitter):
 
         Details see :meth:`simplechrome.page.Page.waitForXPath`.
         """
-        if self._frameManager._isolateWorlds:
-            handle = await self._secondaryWorld.waitForXPath(xpath, options, **kwargs)
-        else:
-            handle = await self._mainWorld.waitForXPath(xpath, options, **kwargs)
+        handle = await self.domWorld.waitForXPath(xpath, options, **kwargs)
         if handle is None:
             return None
         if self._frameManager._isolateWorlds:
@@ -760,15 +861,12 @@ class Frame(EventEmitter):
         return handle
 
     def navigation_waiter(
-        self,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
-        timeout: Optional[Union[int, float]] = None,
+        self, loop: OptionalLoop = None, timeout: Optional[Number] = None
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        fut = loop.create_future()
+        eloop = Helper.ensure_loop(loop)
+        fut = eloop.create_future()
 
         def set_true() -> None:
             if not fut.done():
@@ -780,16 +878,13 @@ class Frame(EventEmitter):
         if timeout is not None:
             return self._loop.create_task(
                 Helper.waitWithTimeout(
-                    fut, timeout, "Frame.navigation_waiter", loop=loop
+                    fut, timeout, "Frame.navigation_waiter", loop=eloop
                 )
             )
         return fut
 
     async def _wait_for_life_cycle(
-        self,
-        cycle: str,
-        loop: AbstractEventLoop,
-        timeout: Optional[Union[int, float]] = None,
+        self, cycle: str, loop: Loop, timeout: OptionalNumber = None
     ) -> None:
         fut: Future = loop.create_future()
 
@@ -815,9 +910,7 @@ class Frame(EventEmitter):
             await fut
 
     def loaded_waiter(
-        self,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
-        timeout: Optional[int] = None,
+        self, loop: OptionalLoop = None, timeout: OptionalNumber = None
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
@@ -826,9 +919,7 @@ class Frame(EventEmitter):
         )
 
     def network_idle_waiter(
-        self,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
-        timeout: Optional[int] = None,
+        self, loop: OptionalLoop = None, timeout: OptionalNumber = None
     ) -> Future:
         if not self._emits_life:
             raise WaitSetupError("Must enable life cycle emitting")
@@ -847,7 +938,7 @@ class Frame(EventEmitter):
     #: Alias to :meth:`querySelectorAllEval`
     JJeval = querySelectorAllEval
 
-    def _navigated(self, framePayload: dict) -> None:
+    def _navigated(self, framePayload: Dict) -> None:
         self._name = framePayload.get("name", "")
         self._url = framePayload.get("url", "")
         if self._emits_life:
