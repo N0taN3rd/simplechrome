@@ -3,7 +3,7 @@ from typing import Any, Optional, TYPE_CHECKING
 from cripy.errors import NetworkError, ProtocolError
 
 if TYPE_CHECKING:
-    from .network import Response  # noqa: F401
+    from .request_response import Response  # noqa: F401
 
 __all__ = [
     "BrowserError",

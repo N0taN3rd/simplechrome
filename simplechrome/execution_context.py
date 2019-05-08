@@ -34,7 +34,7 @@ class ExecutionContext:
     ]
 
     def __init__(
-        self, client: ClientType, contextPayload: Dict, world: DOMWorld
+        self, client: ClientType, contextPayload: Dict, world: Optional[DOMWorld] = None
     ) -> None:
         self._client: ClientType = client
         self._contextPayload: Dict = contextPayload

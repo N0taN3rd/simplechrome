@@ -1,16 +1,18 @@
 """Network Manager module."""
 
 import asyncio
-from typing import Awaitable, Dict, List, Optional, Set, Any
+from typing import Any, Awaitable, Dict, List, Optional, Set
 
 from pyee2 import EventEmitterS
 
-from simplechrome._typings import CDPEvent, HTTPHeaders, OptionalLoop, SlotsT
-from simplechrome.connection import ClientType
-from simplechrome.events import Events
-from simplechrome.frame_manager import FrameManager
-from simplechrome.helper import Helper
-from .network import Cookie, NetworkIdleMonitor, Response, Request
+from ._typings import CDPEvent, HTTPHeaders, OptionalLoop, SlotsT
+from .connection import ClientType
+from .cookie import Cookie
+from .events import Events
+from .frame_manager import FrameManager
+from .helper import Helper
+from .network_idle_monitor import NetworkIdleMonitor
+from .request_response import Request, Response
 
 __all__ = ["NetworkManager"]
 

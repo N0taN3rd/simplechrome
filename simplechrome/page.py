@@ -31,19 +31,22 @@ from ._typings import (
 )
 from .connection import ClientType, Connection
 from .console_message import ConsoleMessage
+from .cookie import Cookie
 from .dialog import Dialog
 from .emulation_manager import EmulationManager
 from .errors import PageError
 from .events import Events
 from .execution_context import ElementHandle, JSHandle, createJSHandle
 from .frame_manager import Frame, FrameManager
+from .frame_resource_tree import FrameResourceTree
 from .helper import Helper
 from .input import Keyboard, Mouse, Touchscreen
-from .network import Cookie, Request, Response
+from .log import Log, LogEntry
 from .network_manager import NetworkManager
+from .request_response import Request, Response
 from .timeoutSettings import TimeoutSettings
 from .tracing import Tracing
-from .log import Log, LogEntry
+from .worker_manager import WorkerManager
 
 if TYPE_CHECKING:
     from .target import Target  # noqa: F401
@@ -73,6 +76,7 @@ class Page(EventEmitterS):
         "_touchscreen",
         "_tracing",
         "_viewport",
+        "_workerManager",
     ]
 
     PaperFormats: ClassVar[Dict[str, Dict[str, Number]]] = {
@@ -112,6 +116,7 @@ class Page(EventEmitterS):
             page.frame_manager.initialize(),
             page.network_manager.initialize(),
             page.log.enable(),
+            page.worker_manager.initialize(workers=True, serviceWorkers=True),
             loop=loop,
         )
         if defaultViewport is not None:
@@ -149,10 +154,11 @@ class Page(EventEmitterS):
         )
         self._networkManager.setFrameManager(self._frameManager)
         self._emulationManager: EmulationManager = EmulationManager(client)
+        self._workerManager: WorkerManager = WorkerManager(client, loop=self._loop)
         self._tracing: Tracing = Tracing(client)
         self._javascriptEnabled: bool = True
         self._lifecycle_emitting: bool = False
-        self._viewport: Optional[Dict[str, Any]] = None
+        self._viewport: Dict[str, Any] = {}
 
         if screenshotTaskQueue is None:
             screenshotTaskQueue = []
@@ -194,6 +200,24 @@ class Page(EventEmitterS):
             lambda event: self.emit(Events.Page.RequestFinished, event),
         )
 
+        _wm = self._workerManager
+        _wm.on(
+            Events.WorkerManager.ServiceWorkerAdded,
+            lambda sw: self.emit(Events.Page.ServiceWorkerAdded, sw),
+        )
+        _wm.on(
+            Events.WorkerManager.ServiceWorkerDeleted,
+            lambda sw: self.emit(Events.Page.ServiceWorkerDeleted, sw),
+        )
+        _wm.on(
+            Events.WorkerManager.WorkerCreated,
+            lambda worker: self.emit(Events.Page.WorkerCreated, worker),
+        )
+        _wm.on(
+            Events.WorkerManager.WorkerDestroyed,
+            lambda worker: self.emit(Events.Page.WorkerDestroyed, worker),
+        )
+
         self._log.on(Events.Log.EntryAdded, self._onLogEntryAdded)
 
         client.on("Page.domContentEventFired", self._onDomContentEventFired)
@@ -220,6 +244,10 @@ class Page(EventEmitterS):
     @property
     def emulation_manager(self) -> EmulationManager:
         return self._emulationManager
+
+    @property
+    def worker_manager(self) -> WorkerManager:
+        return self._workerManager
 
     @property
     def keyboard(self) -> Keyboard:
@@ -312,6 +340,18 @@ class Page(EventEmitterS):
         self._frameManager.remove_listener(
             Events.FrameManager.LifecycleEvent, self._on_lifecycle
         )
+
+    def getResourceTree(self) -> Awaitable[FrameResourceTree]:
+        """Returns top frames / resource tree structure
+
+        :return: The frame resource tree for the page
+        """
+        return self._frameManager.getResourceTree()
+
+    def getResourceContent(
+        self, frameId: str, url: str
+    ) -> Awaitable[Dict[str, Union[str, bool]]]:
+        return self._frameManager.getFrameResourceContent(frameId, url)
 
     def tap(self, selector: str) -> Awaitable[None]:
         """Tap the element which matches the ``selector``.
@@ -874,6 +914,7 @@ class Page(EventEmitterS):
         * ``referrer`` (str): Referrer URL. Defaults to the referrer value set using page.setExtraHTTPHeaders
         if that key exists
         """
+        self._workerManager._clear_workers()
         return await self._frameManager.mainFrame.goto(url, options, **kwargs)
 
     async def reload(
@@ -883,6 +924,7 @@ class Page(EventEmitterS):
 
         Available options are same as :meth:`goto` method.
         """
+        self._workerManager._clear_workers()
         options = Helper.merge_dict(options, kwargs)
         response = (
             await asyncio.gather(
@@ -898,6 +940,7 @@ class Page(EventEmitterS):
 
         Available options are same as :meth:`goto` method.
         """
+        self._workerManager._clear_workers()
         return await self._frameManager.mainFrame.waitForNavigation(options, **kwargs)
 
     async def waitForRequest(
@@ -945,6 +988,7 @@ class Page(EventEmitterS):
 
         Available options are same as :meth:`goto` method.
         """
+        self._workerManager._clear_workers()
         options = Helper.merge_dict(options, kwargs)
         return await self._go(-1, options)
 
@@ -955,6 +999,7 @@ class Page(EventEmitterS):
 
         Available options are same as :meth:`goto` method.
         """
+        self._workerManager._clear_workers()
         options = Helper.merge_dict(options, kwargs)
         return await self._go(+1, options)
 

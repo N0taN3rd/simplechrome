@@ -4,9 +4,9 @@ from typing import Any, Dict, List, Optional, Set
 from async_timeout import timeout
 from pyee2 import EventEmitterS
 
-from simplechrome._typings import OptionalLoop, SlotsT
-from simplechrome.connection import ClientType
-from simplechrome.helper import EEListener, Helper
+from ._typings import OptionalLoop, SlotsT
+from .connection import ClientType
+from .helper import EEListener, Helper
 
 __all__ = ["NetworkIdleMonitor"]
 

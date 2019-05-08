@@ -4,10 +4,10 @@ from typing import Awaitable, Dict, List, Optional, Union
 
 from ujson import loads
 
-from simplechrome._typings import CDPEvent, HTTPHeaders, OptionalLoop, SlotsT
-from simplechrome.connection import ClientType
-from simplechrome.frame_manager import Frame
-from simplechrome.helper import Helper
+from ._typings import CDPEvent, HTTPHeaders, OptionalLoop, SlotsT
+from .connection import ClientType
+from .frame_manager import Frame
+from .helper import Helper
 from .security_details import SecurityDetails
 
 __all__ = ["Response", "Request"]
@@ -201,6 +201,10 @@ class Request:
             return None
         return {"errorText": self.failureText}
 
+    @property
+    def as_dict(self) -> Dict:
+        return self._requestInfo
+
     async def get_post_data(self) -> Optional[str]:
         if not self.hasPostData:
             return self.postData
@@ -336,9 +340,6 @@ class Request:
             )
         except Exception:
             pass
-
-    def to_dict(self) -> Dict:
-        return self._requestInfo
 
     def __str__(self) -> str:
         return f"Request(url={self.url}, method={self.method}, headers={self.headers})"
@@ -495,6 +496,10 @@ class Response:
     def securityState(self) -> str:
         return self._pres.get("securityState")
 
+    @property
+    def as_dict(self) -> Dict:
+        return self._responseInfo
+
     async def _bufread(self) -> Union[bytes, str]:
         await self._bodyLoadedPromise.wait()
         response = await self._client.send(
@@ -523,9 +528,6 @@ class Response:
         """Get JSON representation of response body."""
         content = await self.text()
         return loads(content)
-
-    def to_dict(self) -> Dict:
-        return self._responseInfo
 
     def __str__(self) -> str:
         repr_args = []

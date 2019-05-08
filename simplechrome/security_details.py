@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
 
-from simplechrome._typings import Number, SlotsT
+from ._typings import Number, SlotsT
 
 __all__ = ["SecurityDetails"]
 
@@ -77,6 +77,9 @@ class SecurityDetails:
     def protocol(self) -> str:
         """Protocol name (e.g. "TLS 1.2" or "QUIC")"""
         return self._details.get("protocol")
+
+    def as_dict(self) -> Dict:
+        return self._details
 
     def __str__(self) -> str:
         return f"SecurityDetails({self._details})"

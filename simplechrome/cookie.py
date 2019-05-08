@@ -1,10 +1,9 @@
+from http.cookies import SimpleCookie
 from typing import Any, Dict, Optional, Set
 
-from http.cookies import SimpleCookie
-
-from simplechrome._typings import Number, OptionalNumber, OptionalStr, SlotsT
-from simplechrome.connection import ClientType
-from simplechrome.helper import Helper
+from ._typings import Number, OptionalNumber, OptionalStr, SlotsT
+from .connection import ClientType
+from .helper import Helper
 
 __all__ = ["Cookie"]
 

@@ -3,7 +3,7 @@
 import logging
 from asyncio import Future, gather, sleep
 from collections import OrderedDict
-from sys import exc_info as sys_exc_info
+from sys import exc_info
 from typing import Any, Awaitable, Dict, List, Optional, Set, TYPE_CHECKING, Union
 
 from pyee2 import EventEmitterS
@@ -22,6 +22,7 @@ from .domWorld import DOMWorld
 from .errors import NavigationError, WaitSetupError
 from .events import Events
 from .execution_context import EVALUATION_SCRIPT_URL, ExecutionContext
+from .frame_resource_tree import FrameResourceTree
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle
 from .lifecycle_watcher import LifecycleWatcher
@@ -29,8 +30,8 @@ from .timeoutSettings import TimeoutSettings
 
 if TYPE_CHECKING:
     from .page import Page  # noqa: F401
-    from .network import Response  # noqa: F401
     from .network_manager import NetworkManager  # noqa: F401
+    from .request_response import Response  # noqa: F401
 
 __all__ = ["FrameManager", "Frame"]
 
@@ -157,6 +158,29 @@ class FrameManager(EventEmitterS):
         if self._isolateWorlds:
             await self._ensureIsolatedWorld(UTILITY_WORLD_NAME)
 
+    async def getResourceTree(self) -> FrameResourceTree:
+        """Returns top frames / resource tree structure
+
+        :return: The frame resource tree for the page
+        """
+        results = await self._client.send("Page.getResourceTree", {})
+        return FrameResourceTree(results["frameTree"], self)
+
+    async def getFrameResourceContent(
+        self, frameId: str, url: str
+    ) -> Dict[str, Union[str, bool]]:
+        """Returns content of the given resource
+
+        :param frameId: Frame id to get resource for
+        :param url: URL of the resource to get content for
+        :return: A dictionary with two keys, content (the content as a string),
+        base64Encoded (bool indicating if the content is base64 encoded)
+        """
+        results = await self._client.send(
+            "Page.getResourceContent", {"frameId": frameId, "url": url}
+        )
+        return results
+
     async def captureSnapshot(self, format_: str = "mhtml") -> str:
         """Returns a snapshot of the page as a string. For MHTML format,
         the serialization includes iframes, shadow DOM, external resources,
@@ -248,7 +272,7 @@ class FrameManager(EventEmitterS):
             return NavigationError.Failed(
                 f"Navigation to {url} failed: {e.args[0]}",
                 response=watcher.navigationResponse,
-                tb=sys_exc_info()[2],
+                tb=exc_info()[2],
             )
         return None
 

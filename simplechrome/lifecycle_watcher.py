@@ -10,8 +10,8 @@ from .helper import EEListener, Helper
 
 if TYPE_CHECKING:
     from .frame_manager import FrameManager, Frame  # noqa: F401
-    from .network import Request, Response  # noqa: F401
     from .network_manager import NetworkManager  # noqa: F401
+    from .request_response import Request, Response  # noqa: F401
 
 
 __all__ = ["LifecycleWatcher"]

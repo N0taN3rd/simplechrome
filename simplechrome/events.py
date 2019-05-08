@@ -1,11 +1,6 @@
 from typing import ClassVar, Type
 
-from cripy import (
-    CDPSession as CDPSession_,
-    Connection as Connection_,
-    ConnectionEvents,
-    SessionEvents,
-)
+from cripy import ConnectionEvents, SessionEvents
 
 from ._typings import EventType
 
@@ -17,6 +12,9 @@ __all__ = [
     "FrameManagerEvents",
     "NetworkManagerEvents",
     "PageEvents",
+    "WorkerEvents",
+    "WorkerManagerEvents",
+    "ServiceWorkerEvents",
 ]
 
 
@@ -81,19 +79,47 @@ class PageEvents:
     Response: EventType = "Page.response"
     WorkerCreated: EventType = "Page.workercreated"
     WorkerDestroyed: EventType = "Page.workerdestroyed"
+    ServiceWorkerAdded: EventType = "Page.serviceWorkerAdded"
+    ServiceWorkerDeleted: EventType = "Page.serviceWorkerDeleted"
 
 
 class LogEvents:
     EntryAdded: EventType = "Log.entryAdded"
 
 
+class WorkerEvents:
+    Console: EventType = "Worker.ConsoleMessage"
+    Destroyed: EventType = "Worker.Destroyed"
+    Error: EventType = "Worker.Error"
+
+
+class WorkerManagerEvents:
+    ServiceWorkerAdded: EventType = "WorkerManager.serviceWorkerAdded"
+    ServiceWorkerDeleted: EventType = "WorkerManager.serviceWorkerDeleted"
+    Console: EventType = "WorkerManager.console"
+    Error: EventType = "WorkerManager.error"
+    WorkerCreated: EventType = "WorkerManager.workerCreated"
+    WorkerDestroyed: EventType = "WorkerManager.workerDestroyed"
+
+
+class ServiceWorkerEvents:
+    Error: EventType = "ServiceWorker.workerErrorReported"
+    RegistrationUpdated: EventType = "ServiceWorker.workerRegistrationUpdated"
+    VersionUpdated: EventType = "ServiceWorker.workerVersionUpdated"
+    Deleted: EventType = "ServiceWorker.deleted"
+    Closed: EventType = "ServiceWorker.closed"
+
+
 class Events:
     BrowserContext: ClassVar[Type[BrowserContextEvents]] = BrowserContextEvents
-    CDPSession: ClassVar[Type[SessionEvents]] = CDPSession_.Events
+    CDPSession: ClassVar[Type[SessionEvents]] = SessionEvents
     Chrome: ClassVar[Type[ChromeEvents]] = ChromeEvents
-    Connection: ClassVar[Type[ConnectionEvents]] = Connection_.Events
+    Connection: ClassVar[Type[ConnectionEvents]] = ConnectionEvents
     Frame: ClassVar[Type[FrameEvents]] = FrameEvents
     FrameManager: ClassVar[Type[FrameManagerEvents]] = FrameManagerEvents
     NetworkManager: ClassVar[Type[NetworkManagerEvents]] = NetworkManagerEvents
     Page: ClassVar[Type[PageEvents]] = PageEvents
     Log: ClassVar[Type[LogEvents]] = LogEvents
+    Worker: ClassVar[Type[WorkerEvents]] = WorkerEvents
+    WorkerManager: ClassVar[Type[WorkerManagerEvents]] = WorkerManagerEvents
+    ServiceWorker: ClassVar[Type[ServiceWorkerEvents]] = ServiceWorkerEvents
