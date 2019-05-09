@@ -12,6 +12,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Set,
     TYPE_CHECKING,
     Union,
 )
@@ -121,6 +122,15 @@ class Page(EventEmitterS):
         )
         if defaultViewport is not None:
             await page.setViewport(defaultViewport)
+        if defaultViewport is None:
+            metrics = await client.send("Page.getLayoutMetrics", {})
+            lp = metrics["layoutViewport"]
+            vp = metrics["visualViewport"]
+            page._viewport = {
+                "scale": 1,
+                "width": max(vp["clientWidth"], lp["clientWidth"]),
+                "height": max(vp["clientHeight"], lp["clientHeight"]),
+            }
         return page
 
     def __init__(
@@ -1067,7 +1077,7 @@ class Page(EventEmitterS):
             screenshotType = "png"
         return await self._rawScreenshotTask(screenshotType, options)
 
-    async def screenshot(self, options: Dict = None, **kwargs: Any) -> bytes:
+    def screenshot(self, options: Dict = None, **kwargs: Any) -> Awaitable[bytes]:
         """Take a screen shot.
 
         The following options are available:
@@ -1091,14 +1101,14 @@ class Page(EventEmitterS):
         * ``omitBackground`` (bool): Hide default white background and allow
           capturing screenshot with transparency.
         """
-        options = Helper.merge_dict(options, kwargs)
+        opts = Helper.merge_dict(options, kwargs)
         screenshotType = None
-        if "type" in options:
-            screenshotType = options["type"]
+        if "type" in opts:
+            screenshotType = opts["type"]
             if screenshotType not in ["png", "jpeg"]:
                 raise ValueError(f"Unknown type value: {screenshotType}")
-        elif "path" in options:
-            mimeType, _ = mimetypes.guess_type(options["path"])
+        elif "path" in opts:
+            mimeType, _ = mimetypes.guess_type(opts["path"])
             if mimeType == "image/png":
                 screenshotType = "png"
             elif mimeType == "image/jpeg":
@@ -1107,12 +1117,12 @@ class Page(EventEmitterS):
                 raise ValueError("Unsupported screenshot " f"mime type: {mimeType}")
         if screenshotType is None:
             screenshotType = "png"
-        if options.get("quality"):
+        if opts.get("quality"):
             if screenshotType != "jpeg":
                 raise ValueError(
                     f"options.quality is unsupported for the {screenshotType} screenshots"
                 )
-            quality = options.get("quality")
+            quality = opts.get("quality")
             if not isinstance(quality, (int, float)):
                 raise ValueError(
                     f"Expected options.quality to be a int or float but found {type(quality)}"
@@ -1121,10 +1131,8 @@ class Page(EventEmitterS):
                 raise ValueError(
                     f"Expected options.quality to be between 0 and 100 (inclusive), got {quality}"
                 )
-        if not options.get("clip") or not options.get("fullPage"):
-            raise ValueError("options.clip and options.fullPage are exclusive")
-        if options.get("clip"):
-            clip = options.get("clip")
+        if opts.get("clip"):
+            clip = opts.get("clip")
             if not isinstance(clip.get("x"), (int, float)):
                 raise ValueError(
                     f"Expected clip.x to be a int or float but found {type(clip.get('x'))}"
@@ -1141,7 +1149,7 @@ class Page(EventEmitterS):
                 raise ValueError(
                     f"Expected clip.height to be a int or float but found {type(clip.get('height'))}"
                 )
-        return await self._screenshotTask(screenshotType, options)
+        return self._screenshotTask(screenshotType, opts)
 
     async def pdf(self, options: Dict = None, **kwargs: Any) -> bytes:
         """Generate a pdf of the page.
@@ -1304,11 +1312,8 @@ class Page(EventEmitterS):
             "Target.activateTarget", {"targetId": self._target._targetId}
         )
         clip = options.get("clip")
-        if clip:
-            clip["scale"] = 1
-
         if options.get("fullPage", False):
-            metrics = await self._client.send("Page.getLayoutMetrics")
+            metrics = await self._client.send("Page.getLayoutMetrics", {})
             width = math.ceil(metrics["contentSize"]["width"])
             height = math.ceil(metrics["contentSize"]["height"])
 
@@ -1339,22 +1344,23 @@ class Page(EventEmitterS):
             )
         opt = {"format": format_}
         if clip:
-            opt["clip"] = clip
+            opt["clip"] = process_clip(clip)
         if options.get("quality"):
             opt["quality"] = options.get("quality")
+
         result = await self._client.send("Page.captureScreenshot", opt)
 
         if shouldSetDefaultBackground:
-            await self._client.send("Emulation.setDefaultBackgroundColorOverride")
-
-        if options.get("fullPage"):
+            await self._client.send("Emulation.setDefaultBackgroundColorOverride", {})
+        if options.get("fullPage") and self._viewport:
             await self.setViewport(self._viewport)
-        if result.get("encoding") == "base64":
+        if options.get("encoding") != "base64":
             buffer = base64.b64decode(result.get("data", b""))
         else:
-            buffer = result.get("data")
-        if "path" in options:
-            async with aiofiles.open(options["path"], "wb") as f:
+            buffer = result.get("data", "").encode("utf-8")
+        path = options.get("path")
+        if path:
+            async with aiofiles.open(path, "wb") as f:
                 await f.write(buffer)
         return buffer
 
@@ -1408,9 +1414,9 @@ class Page(EventEmitterS):
         if options.get("omitBackground"):
             await self._client.send("Emulation.setDefaultBackgroundColorOverride")
 
-        if options.get("fullPage"):
+        if options.get("fullPage") and self._viewport:
             await self.setViewport(self._viewport)
-        return result.get("data", b"")
+        return result.get("data", "").encode("utf-8")
 
     def _onTargetCrashed(self, *args: Any, **kwargs: Any) -> None:
         self.emit(Events.Page.Crashed, PageError("Page crashed!"))
@@ -1487,7 +1493,7 @@ class Page(EventEmitterS):
     Jx = xpath
 
 
-supportedMetrics = (
+supportedMetrics: Set[str] = {
     "Timestamp",
     "Documents",
     "Frames",
@@ -1501,7 +1507,7 @@ supportedMetrics = (
     "TaskDuration",
     "JSHeapUsedSize",
     "JSHeapTotalSize",
-)
+}
 
 
 unitToPixels = {"px": 1, "in": 96, "cm": 37.8, "mm": 3.78}
@@ -1509,7 +1515,7 @@ unitToPixels = {"px": 1, "in": 96, "cm": 37.8, "mm": 3.78}
 
 def convertPrintParameterToInches(
     parameter: Optional[Union[Number, str]]
-) -> Optional[float]:
+) -> Optional[Number]:
     """Convert print parameter to inches."""
     if parameter is None:
         return None
@@ -1533,3 +1539,15 @@ def convertPrintParameterToInches(
             "page.pdf() Cannot handle parameter type: " + str(type(parameter))
         )
     return pixels / 96
+
+
+def process_clip(clip: Dict[str, Number]) -> Dict[str, Number]:
+    x = round(clip["x"])
+    y = round(clip["y"])
+    return {
+        "x": x,
+        "y": y,
+        "width": round(clip["width"] + clip["x"] - x),
+        "height": round(clip["height"] + clip["y"] - y),
+        "scale": clip.get("scale", 1),
+    }
