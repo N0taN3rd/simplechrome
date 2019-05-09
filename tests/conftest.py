@@ -26,11 +26,6 @@ try:
 except Exception:
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
-try:
-    from asyncio.runners import _cancel_all_tasks
-except Exception:
-    _cancel_all_tasks = lambda loop: None
-
 
 async def aio_noop(*args: Any, **kwargs: Any) -> None:
     return None
@@ -116,11 +111,12 @@ async def chrome_page(request: SubRequest, chrome: Chrome) -> Page:
 def event_loop(request: SubRequest) -> asyncio.AbstractEventLoop:
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
-    try:
-        _cancel_all_tasks(loop)
-        loop.run_until_complete(getattr(loop, "shutdown_asyncgens", aio_noop)())
-    finally:
-        loop.close()
+    loop.close()
+
+
+@pytest.fixture
+def eloop(request: SubRequest) -> asyncio.AbstractEventLoop:
+    return asyncio.get_event_loop()
 
 
 @pytest.fixture

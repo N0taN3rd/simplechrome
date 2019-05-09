@@ -25,7 +25,6 @@ class Chrome(EventEmitterS):
         "_defaultContext",
         "_defaultViewport",
         "_ignoreHTTPSErrors",
-        "_page",
         "_process",
         "_screenshotTaskQueue",
         "_targetInfo",
@@ -74,7 +73,6 @@ class Chrome(EventEmitterS):
         self._screenshotTaskQueue: List = []
         self._connection: ClientType = connection
         self._targetInfo: Optional[Dict] = targetInfo
-        self._page: Optional[Page] = None
 
         browserContextId = None
         if self._targetInfo is not None:
@@ -148,7 +146,7 @@ class Chrome(EventEmitterS):
             return existingTarget
         existingTargetPromise: Future = self._loop.create_future()
 
-        def check(atarget: "Target") -> None:
+        def check(atarget: Target) -> None:
             if predicate(atarget) and not existingTargetPromise.done():
                 existingTargetPromise.set_result(atarget)
 
@@ -199,7 +197,10 @@ class Chrome(EventEmitterS):
     async def close(self) -> None:
         results = self._closeCallback()
         if results and isawaitable(results):
-            await results
+            try:
+                await results
+            except Exception:
+                pass
         await self.disconnect()
 
     async def disconnect(self) -> None:

@@ -5,19 +5,19 @@ import atexit
 import logging
 import os
 import os.path
+import re
 import shutil
 import signal
-import subprocess
 import sys
-from asyncio import AbstractEventLoop, sleep
+from asyncio import AbstractEventLoop
 from pathlib import Path
+from subprocess import DEVNULL, PIPE, Popen
 from tempfile import mkdtemp
 from typing import Any, Dict, List, Optional, Union
-from urllib.parse import urljoin
 
-from aiohttp import ClientConnectorError
 from appdirs import AppDirs
 
+from ._typings import Loop, OptionalLoop
 from .browser_fetcher import BrowserFetcher
 from .chrome import Chrome
 from .connection import Connection, createForWebSocket
@@ -26,7 +26,7 @@ from .helper import Helper
 
 __all__ = ["Launcher", "launch", "connect", "DEFAULT_ARGS"]
 
-DEFAULT_CHROMIUM_REVISION: str = "654752"
+DEFAULT_CHROMIUM_REVISION: str = "656675"
 CHROMIUM_REVISION: str = os.getenv(
     "SIMPLECHROME_CHROMIUM_REVISION", DEFAULT_CHROMIUM_REVISION
 )
@@ -67,67 +67,6 @@ DEFAULT_ARGS = [
 Options = Dict[str, Union[int, str, bool, List[str]]]
 
 
-async def ensureInitialPage(browser: Chrome) -> None:
-    for target in browser.targets():
-        if target.type == "page":
-            return None
-    initialPagePromise = asyncio.get_event_loop().create_future()
-
-    def onTargetCreated(newTarget: Any) -> None:
-        if newTarget.type == "page":
-            initialPagePromise.set_result(True)
-
-    listeners = [Helper.addEventListener(browser, "targetcreated", onTargetCreated)]
-    await initialPagePromise
-    Helper.removeEventListeners(listeners)
-
-
-async def get_ws_endpoint(url: str, loop: Optional[AbstractEventLoop] = None) -> str:
-    loop_ = Helper.ensure_loop(loop)
-    data: Optional[List[Dict[str, str]]] = None
-    async with Helper.make_aiohttp_session(loop=loop_) as session:
-        session_get = session.get
-        for _ in range(100):
-            try:
-                async with session_get(urljoin(url, "json")) as res:
-                    data = await res.json()
-                break
-            except ClientConnectorError:
-                await sleep(0.1, loop=loop_)
-                continue
-        else:
-            # cannot connet to browser for 10 seconds
-            raise LauncherError(f"Failed to connect to browser port: {url}")
-    if data is not None:
-        for d in data:
-            if d["type"] == "page":
-                return d["webSocketDebuggerUrl"]
-    raise LauncherError("Could not find a page to connect to")
-
-
-async def find_target(url: str, loop: Optional[AbstractEventLoop] = None) -> Dict:
-    loop_ = Helper.ensure_loop(loop)
-    data: Optional[List[Dict[str, str]]] = None
-    async with Helper.make_aiohttp_session(loop=loop_) as session:
-        session_get = session.get
-        for _ in range(150):
-            try:
-                async with session_get(urljoin(url, "json")) as res:
-                    data = await res.json()
-                break
-            except ClientConnectorError:
-                await sleep(0.1, loop=loop_)
-                continue
-        else:
-            # cannot connet to browser for 10 seconds
-            raise LauncherError(f"Failed to connect to browser port: {url}")
-    if data is not None:
-        for d in data:
-            if d["type"] == "page":
-                return d
-    raise LauncherError("Could not find a page to connect to")
-
-
 def args_include(args: List[str], needle: str) -> bool:
     for arg in args:
         if needle in arg:
@@ -162,7 +101,13 @@ def default_args(opts: Dict) -> List[str]:
 
 
 class Launcher:
-    __slots__ = ["projectRoot", "preferredRevision", "chrome_dead"]
+    __slots__ = [
+        "projectRoot",
+        "preferredRevision",
+        "chrome_dead",
+        "_temp_udata",
+        "_chrome_process",
+    ]
 
     def __init__(
         self,
@@ -172,17 +117,15 @@ class Launcher:
         self.projectRoot: str = projectRoot
         self.preferredRevision: str = preferredRevision
         self.chrome_dead: bool = False
+        self._temp_udata: Optional[str] = None
+        self._chrome_process: Optional[Popen] = None
 
-    async def launch(
-        self,
-        options: Optional[Dict] = None,
-        loop: Optional[AbstractEventLoop] = None,
-        **kwargs: Any,
-    ) -> Chrome:
-        loop_ = Helper.ensure_loop(loop)
-        opts = Helper.merge_dict(options, kwargs)
+    async def build_args(self, opts: Dict, loop: Loop) -> List[str]:
+        executable = opts.get("executablePath", None)
+        if executable is None:
+            executable = await self.resolveExecutablePath(opts, loop=loop)
         ignoreDefaultArgs = opts.get("ignoreDefaultArgs", False)
-        chromeArguments = []
+        chromeArguments = [executable]
         if not ignoreDefaultArgs:
             chromeArguments.extend(default_args(opts))
         elif isinstance(ignoreDefaultArgs, list):
@@ -192,18 +135,13 @@ class Launcher:
         else:
             chromeArguments.extend(opts.get("args", []))
 
-        executable = opts.get("executablePath", None)
-        if executable is None:
-            executable = await self.resolveExecutablePath(opts, loop=loop_)
-
-        port = opts.get("port", "9222")
+        port = opts.get("port", "0")
         if not args_include(chromeArguments, "--remote-debugging-"):
             chromeArguments.append(f"--remote-debugging-port={port}")
 
-        temp_udata = None
         if not args_include(chromeArguments, "--user-data-dir"):
-            temp_udata = mkdtemp()
-            chromeArguments.append(f"--user-data-dir={temp_udata}")
+            self._temp_udata = mkdtemp()
+            chromeArguments.append(f"--user-data-dir={self._temp_udata}")
             if "--password-store=basic" not in chromeArguments:
                 chromeArguments.append("--password-store=basic")
             if "--use-mock-keychain" not in chromeArguments:
@@ -212,60 +150,57 @@ class Launcher:
         if not includes_starting_page(chromeArguments):
             chromeArguments.append("about:blank")
 
-        chrome_process: subprocess.Popen = subprocess.Popen(
-            [executable] + chromeArguments,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        return chromeArguments
 
-        def kill_chrome(*args: Any, **kwargs: Any) -> None:
-            try:
-                if temp_udata is not None and os.path.exists(temp_udata):
-                    shutil.rmtree(temp_udata)
-            except Exception:
-                pass
-            if self.chrome_dead:
-                return
-            try:
-                chrome_process.kill()
-            except Exception:
-                pass
-            try:
-                chrome_process.wait()
-            except Exception:
-                pass
-            self.chrome_dead = True
+    async def launch(
+        self, options: Optional[Dict] = None, loop: OptionalLoop = None, **kwargs: Any
+    ) -> Chrome:
+        loop_ = Helper.ensure_loop(loop)
+        opts = Helper.merge_dict(options, kwargs)
+        chromeArguments = await self.build_args(opts, loop=loop_)
+        browser_ws_re = re.compile("DevTools listening on (?P<websocket>ws:[^\n]+)$")
+        chrome_process: Popen = Popen(chromeArguments, stdout=DEVNULL, stderr=PIPE)
+        browser_ws = None
+        while 1:
+            line = chrome_process.stderr.readline()
+            m = browser_ws_re.match(line.decode("utf-8"))
+            if m:
+                browser_ws = m.group("websocket")
+                break
+            if chrome_process.stderr.closed or chrome_process.returncode is not None:
+                break
+        chrome_process.stderr.close()
+        if browser_ws is None or chrome_process.returncode is not None:
+            raise LauncherError("Could not launch chrome")
 
-        atexit.register(kill_chrome)
+        self._chrome_process = chrome_process
+        atexit.register(self.__kill_chrome)
 
         if opts.get("handleSIGINT", True):
-            loop_.add_signal_handler(signal.SIGINT, kill_chrome)
+            loop_.add_signal_handler(signal.SIGINT, self.__kill_chrome)
         if opts.get("handleSIGTERM", True):
-            loop_.add_signal_handler(signal.SIGTERM, kill_chrome)
+            loop_.add_signal_handler(signal.SIGTERM, self.__kill_chrome)
         if opts.get("handleSIGHUP", True):
-            loop_.add_signal_handler(signal.SIGHUP, kill_chrome)
+            loop_.add_signal_handler(signal.SIGHUP, self.__kill_chrome)
 
-        await sleep(2, loop=loop_)
-
-        target = await find_target(f"http://localhost:{port}", loop=loop_)
-        connection: Connection = await createForWebSocket(
-            target["webSocketDebuggerUrl"], loop=loop_
-        )
-        targetInfo = await connection.send(
-            "Target.getTargetInfo", {"targetId": target["id"]}
-        )
-        chrome = await Chrome.create(
-            connection,
-            [],
-            opts.get("ignoreHTTPSErrors", False),
-            opts.get("defaultViewPort"),
-            chrome_process,
-            kill_chrome,
-            targetInfo=targetInfo["targetInfo"],
-            loop=loop_,
-        )
-        await ensureInitialPage(chrome)
-        return chrome
+        try:
+            connection: Connection = await createForWebSocket(browser_ws, loop=loop_)
+            targets = await connection.send("Target.getTargets", {})
+            chrome = await Chrome.create(
+                connection,
+                [],
+                opts.get("ignoreHTTPSErrors", False),
+                opts.get("defaultViewPort"),
+                chrome_process,
+                self.__kill_chrome,
+                targetInfo=targets.get("targetInfos", [None])[0],
+                loop=loop_,
+            )
+            await chrome.waitForTarget(lambda t: t.type == "page")
+            return chrome
+        except Exception:
+            self.__kill_chrome()
+            raise
 
     async def resolveExecutablePath(
         self, opts: Optional[Dict] = None, loop: Optional[AbstractEventLoop] = None
@@ -290,6 +225,24 @@ class Launcher:
             ri = await bf.download(revision, loop=loop)
             return str(ri.executablePath)
         return str(exe_path)
+
+    def __kill_chrome(self, *args: Any, **kwargs: Any) -> None:
+        try:
+            if self._temp_udata is not None and os.path.exists(self._temp_udata):
+                shutil.rmtree(self._temp_udata)
+        except Exception:
+            pass
+        if self.chrome_dead:
+            return
+        try:
+            self._chrome_process.kill()
+        except Exception:
+            pass
+        try:
+            self._chrome_process.wait()
+        except Exception:
+            pass
+        self.chrome_dead = True
 
 
 async def launch(
