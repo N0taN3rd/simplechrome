@@ -175,7 +175,7 @@ class EmulationManager:
                 f"The disabled argument must be a bool got {type(disabled)}"
             )
         await self._client.send(
-            "Emulation.setScriptExecutionDisabled", {"disabled": disabled}
+            "Emulation.setScriptExecutionDisabled", {"value": disabled}
         )
         self._scriptExecutionDisabled = disabled
 
