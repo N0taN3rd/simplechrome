@@ -1,11 +1,11 @@
 import asyncio
-import math
 import time
 
+import math
 import pytest
 from grappa import should
 
-from simplechrome.errors import NavigationError, EvaluationError
+from simplechrome.errors import NavigationError
 from simplechrome.events import Events
 from .base_test import BaseChromeTest
 from .utils import TestUtil
@@ -59,7 +59,7 @@ class TestPage(BaseChromeTest):
     @pytest.mark.asyncio
     async def test_promise_reject(self):
         await self.goto_empty(waitUntil="load")
-        with pytest.raises(EvaluationError) as cm:
+        with pytest.raises(Exception) as cm:
             await self.page.evaluate("() => not.existing.object.property")
         str(cm.value) | should.contain("not is not defined")
 

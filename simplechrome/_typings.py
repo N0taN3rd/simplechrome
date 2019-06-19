@@ -1,9 +1,10 @@
 from asyncio import AbstractEventLoop, Future, Task
-from typing import Any, Awaitable, ClassVar, Dict, List, Optional, Union
+from typing import Any, Awaitable, ClassVar, Coroutine, Dict, List, Optional, Union
 
 __all__ = [
     "AsyncAny",
     "CDPEvent",
+    "CoAny",
     "Device",
     "EventType",
     "FutureOrTask",
@@ -29,6 +30,7 @@ Loop = AbstractEventLoop
 FutureOrTask = Union[Future, Task]
 SlotsT = List[str]
 AsyncAny = Awaitable[Any]
+CoAny = Coroutine[Any, Any, Any]
 Device = Dict[str, Union[str, Dict[str, Union[Number, bool]]]]
 
 OptionalNumber = Optional[Number]

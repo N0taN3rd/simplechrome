@@ -1,13 +1,13 @@
 """ExecutionContext Context Module."""
 import re
-from typing import Any, Dict, Optional, Pattern, TYPE_CHECKING
+from typing import Any, Awaitable, Dict, List, Optional, Pattern, TYPE_CHECKING
 
 import math
 
-from ._typings import SlotsT
+from ._typings import AsyncAny, CoAny, SlotsT
 from .connection import ClientType
 from .domWorld import DOMWorld
-from .errors import EvaluationError, ProtocolError
+from .errors import EvaluationError
 from .helper import Helper
 from .jsHandle import ElementHandle, JSHandle, createJSHandle
 
@@ -56,104 +56,32 @@ class ExecutionContext:
     def frame(self) -> Optional["Frame"]:
         return self._world.frame if self._world is not None else None
 
-    async def evaluate(
+    def evaluate(
         self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> Any:
+    ) -> CoAny:
         """Execute ``pageFunction`` on this context.
 
         Details see :meth:`simplechrome.page.Page.evaluate`.
         """
-        handle = await self.evaluateHandle(pageFunction, *args, withCliAPI=withCliAPI)
-        try:
-            result = await handle.jsonValue()
-        except ProtocolError as e:
-            if "Object reference chain is too long" in e.args[0]:
-                return
-            if "Object couldn't be returned by value" in e.args[0]:
-                return
-            raise EvaluationError(e.args[0])
-        await handle.dispose()
-        return result
+        return self._evaluateInternal(pageFunction, *args, withCliAPI=withCliAPI)
 
-    async def evaluateHandle(
+    def evaluateHandle(
         self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> "JSHandle":
+    ) -> Awaitable[JSHandle]:
         """Execute ``pageFunction`` on this context.
 
         Details see :meth:`simplechrome.page.Page.evaluateHandle`.
         """
-        if withCliAPI or not Helper.is_jsfunc(pageFunction):
-            expression_with_source_url = (
-                pageFunction
-                if SOURCE_URL_REGEX.match(pageFunction) is not None
-                else f"{pageFunction}\n{suffix}"
-            )
-            _obj = await self._client.send(
-                "Runtime.evaluate",
-                {
-                    "expression": expression_with_source_url,
-                    "contextId": self._contextId,
-                    "returnByValue": False,
-                    "awaitPromise": True,
-                    "userGesture": True,
-                    "includeCommandLineAPI": withCliAPI,
-                },
-            )
-            exceptionDetails = _obj.get("exceptionDetails")
-            if exceptionDetails:
-                raise EvaluationError(
-                    "Evaluation failed: {}".format(
-                        Helper.getExceptionMessage(exceptionDetails)
-                    )
-                )
-            remoteObject = _obj.get("result")
-            return createJSHandle(self, remoteObject)
-
-        _obj = await self._client.send(
-            "Runtime.callFunctionOn",
-            {
-                "functionDeclaration": f"{pageFunction}\n{suffix}\n",
-                "executionContextId": self._contextId,
-                "arguments": [self._convertArgument(arg) for arg in args],
-                "returnByValue": False,
-                "awaitPromise": True,
-                "userGesture": True,
-            },
+        return self._evaluateInternal(
+            pageFunction, *args, withCliAPI=withCliAPI, returnByValue=False
         )
-        exceptionDetails = _obj.get("exceptionDetails")
-        if exceptionDetails:
-            raise EvaluationError(
-                "Evaluation failed: {}".format(
-                    Helper.getExceptionMessage(exceptionDetails)
-                )
-            )
-        remoteObject = _obj.get("result")
-        return createJSHandle(self, remoteObject)
 
-    async def evaluate_expression(
+    def evaluate_expression(
         self, expression: str, withCliAPI: bool = False
-    ) -> Any:
-        results = await self._client.send(
-            "Runtime.evaluate",
-            {
-                "expression": expression,
-                "contextId": self._contextId,
-                "returnByValue": True,
-                "awaitPromise": True,
-                "userGesture": True,
-                "includeCommandLineAPI": withCliAPI,
-            },
-        )
-        exceptionDetails = results.get("exceptionDetails")
-        if exceptionDetails:
-            raise EvaluationError(
-                "Evaluation failed: {}".format(
-                    Helper.getExceptionMessage(exceptionDetails)
-                )
-            )
-        return Helper.valueFromRemoteObject(results["result"])
+    ) -> CoAny:
+        return self._evaluateInternal(expression, withCliAPI=withCliAPI)
 
-    async def queryObjects(self, prototypeHandle: "JSHandle") -> "JSHandle":
+    async def queryObjects(self, prototypeHandle: JSHandle) -> JSHandle:
         """Send query.
 
         Details see :meth:`simplechrome.page.Page.queryObjects`.
@@ -169,6 +97,85 @@ class ExecutionContext:
             {"prototypeObjectId": prototypeHandle._remoteObject["objectId"]},
         )
         return createJSHandle(self, response.get("objects"))
+
+    async def globalLexicalScopeNames(self) -> List[str]:
+        """Returns all let, const and class variables from the global scope"""
+        results = await self._client.send(
+            "Runtime.globalLexicalScopeNames", {"executionContextId": self._contextId}
+        )
+        return results.get("names")
+
+    def globalObject(self) -> Awaitable[JSHandle]:
+        return self._evaluateInternal("() => self")
+
+    async def _evaluateInternal(
+        self,
+        pageFunction: str,
+        *args: Any,
+        withCliAPI: bool = False,
+        returnByValue: bool = True,
+    ) -> CoAny:
+        if not Helper.is_jsfunc(pageFunction):
+            expression_with_source_url = (
+                pageFunction
+                if SOURCE_URL_REGEX.match(pageFunction) is not None
+                else f"{pageFunction}\n{suffix}"
+            )
+            try:
+                _obj = await self._client.send(
+                    "Runtime.evaluate",
+                    {
+                        "expression": expression_with_source_url,
+                        "contextId": self._contextId,
+                        "awaitPromise": True,
+                        "userGesture": True,
+                        "includeCommandLineAPI": withCliAPI,
+                        "returnByValue": returnByValue,
+                    },
+                )
+            except Exception as e:
+                _obj = rewrite_error(e)
+            exceptionDetails = _obj.get("exceptionDetails")
+            if exceptionDetails:
+                raise EvaluationError(
+                    f"Evaluation failed: {Helper.getExceptionMessage(exceptionDetails)}"
+                )
+            remoteObject = _obj.get("result")
+            return (
+                Helper.valueFromRemoteObject(remoteObject)
+                if returnByValue
+                else createJSHandle(self, remoteObject)
+            )
+
+        try:
+            _obj = await self._client.send(
+                "Runtime.callFunctionOn",
+                {
+                    "functionDeclaration": f"{pageFunction}\n{suffix}\n",
+                    "executionContextId": self._contextId,
+                    "arguments": [self._convertArgument(arg) for arg in args],
+                    "userGesture": True,
+                    "awaitPromise": True,
+                    "includeCommandLineAPI": withCliAPI,
+                    "returnByValue": returnByValue,
+                },
+            )
+        except Exception as e:
+            msg = str(e)
+            if msg == "Converting circular structure to JSON":
+                raise Exception(f"{msg} Are you passing a nested JSHandle?")
+            raise e
+        exceptionDetails = _obj.get("exceptionDetails")
+        if exceptionDetails:
+            raise Exception(
+                f"Evaluation failed: {Helper.getExceptionMessage(exceptionDetails)}"
+            )
+        remoteObject = _obj.get("result")
+        return (
+            Helper.valueFromRemoteObject(remoteObject)
+            if returnByValue
+            else createJSHandle(self, remoteObject)
+        )
 
     def _convertArgument(self, arg: Any) -> Dict:  # noqa: C901
         if arg == -0:
@@ -220,3 +227,16 @@ class ExecutionContext:
 
     def __repr__(self) -> str:
         return self.__str__()
+
+
+def rewrite_error(error: Exception) -> Dict:
+    msg = str(error)
+    if "Object reference chain is too long" in msg:
+        return {"result": {"type": "undefined"}}
+    if "Object couldn't be returned by value" in msg:
+        return {"result": {"type": "undefined"}}
+    if msg.endswith("Cannot find context with specified id"):
+        raise Exception(
+            "Execution context was destroyed, most likely because of a navigation"
+        )
+    raise error

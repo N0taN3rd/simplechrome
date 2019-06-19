@@ -9,8 +9,8 @@ from typing import Any, Awaitable, Dict, List, Optional, Set, TYPE_CHECKING, Uni
 from pyee2 import EventEmitterS
 
 from ._typings import (
-    AsyncAny,
     CDPEvent,
+    CoAny,
     Loop,
     Number,
     OptionalLoop,
@@ -625,19 +625,17 @@ class Frame(EventEmitterS):
 
     def evaluateHandle(
         self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> AsyncAny:
+    ) -> CoAny:
         return self._mainWorld.evaluateHandle(
             pageFunction, *args, withCliAPI=withCliAPI
         )
 
     def evaluate(
         self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> AsyncAny:
+    ) -> CoAny:
         return self._mainWorld.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
 
-    def evaluate_expression(
-        self, expression: str, withCliAPI: bool = False
-    ) -> AsyncAny:
+    def evaluate_expression(self, expression: str, withCliAPI: bool = False) -> CoAny:
         """Evaluates the js expression in the frame returning the results by value.
 
         :param str expression: The js expression to be evaluated in the main frame.
@@ -652,9 +650,7 @@ class Frame(EventEmitterS):
         """
         return self._mainWorld.querySelector(selector)
 
-    def querySelectorEval(
-        self, selector: str, pageFunction: str, *args: Any
-    ) -> AsyncAny:
+    def querySelectorEval(self, selector: str, pageFunction: str, *args: Any) -> CoAny:
         """Execute function on element which matches selector.
 
         Details see :meth:`simplechrome.page.Page.querySelectorEval`.
@@ -692,7 +688,7 @@ class Frame(EventEmitterS):
 
     def setContent(
         self, html: str, options: Optional[Dict] = None, **kwargs: Any
-    ) -> Awaitable[None]:
+    ) -> CoAny:
         """Set content to this page."""
         return self.domWorld.setContent(html, options, **kwargs)
 
@@ -720,14 +716,14 @@ class Frame(EventEmitterS):
         button: str = "left",
         clickCount: int = 1,
         delay: Number = 0,
-    ) -> AsyncAny:
+    ) -> CoAny:
         """Click element which matches ``selector``.
 
         Details see :meth:`simplechrome.page.Page.click`.
         """
         return self.domWorld.click(selector, button, clickCount, delay)
 
-    def focus(self, selector: str) -> Awaitable[None]:
+    def focus(self, selector: str) -> CoAny:
         """Fucus element which matches ``selector``.
 
         Details see :meth:`simplechrome.page.Page.focus`.

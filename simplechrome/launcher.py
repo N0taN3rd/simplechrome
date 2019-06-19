@@ -26,7 +26,7 @@ from .helper import Helper
 
 __all__ = ["Launcher", "launch", "connect", "DEFAULT_ARGS"]
 
-DEFAULT_CHROMIUM_REVISION: str = "656675"
+DEFAULT_CHROMIUM_REVISION: str = "669486"
 CHROMIUM_REVISION: str = os.getenv(
     "SIMPLECHROME_CHROMIUM_REVISION", DEFAULT_CHROMIUM_REVISION
 )
@@ -93,8 +93,6 @@ def default_args(opts: Dict) -> List[str]:
     if headless:
         chromeArgs.append("--headless")
         chromeArgs.append("--hide-scrollbars")
-        if sys.platform.startswith("win"):
-            chromeArgs.append("--disable-gpu")
     supplied_chrome_args = opts.get("args", [])
     chromeArgs.extend(supplied_chrome_args)
     return chromeArgs

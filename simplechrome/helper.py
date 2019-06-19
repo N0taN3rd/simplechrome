@@ -1,5 +1,7 @@
 """Helper functions."""
+import re
 from asyncio import FIRST_COMPLETED, Future, TimeoutError, get_event_loop, wait
+from base64 import b64decode
 from typing import (
     Any,
     Awaitable,
@@ -8,6 +10,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Pattern,
     Set,
     Tuple,
     Type,
@@ -21,6 +24,7 @@ from pyee2 import EventEmitter, EventEmitterS
 from ujson import dumps
 
 from ._typings import FutureOrTask, Loop, Number, OptionalLoop, OptionalNumber
+from .conditional_file_io import maybe_open_file
 from .connection import ClientType
 from .errors import ElementHandleError, WaitTimeoutError
 
@@ -38,6 +42,8 @@ EEType = Union[EventEmitter, EventEmitterS]
 EEListener = Dict[str, Union[str, EEType, Callable]]
 
 MAYBE_NUMBER_CHECK_TUPLE: Tuple[Type[int], Type[float]] = (int, float)
+
+ArrowFnPattern: Pattern = re.compile("^[(][^)]*[)]\s[=][>].*")
 
 
 class Helper:
@@ -59,7 +65,7 @@ class Helper:
         func = func.strip()
         if func.startswith("function") or func.startswith("async "):
             return True
-        elif "=>" in func:
+        elif ArrowFnPattern.match(func) is not None:
             return True
         return False
 
@@ -158,7 +164,7 @@ class Helper:
             dictionary.pop(key, None)
 
     @staticmethod
-    def noop(*args: Any, **kwargs: Any) -> Any:
+    def noop(*args: Any, **kwargs: Any) -> None:
         return None
 
     @staticmethod
@@ -250,3 +256,27 @@ class Helper:
         *args: Union[Coroutine, FutureOrTask], loop: OptionalLoop = None
     ) -> Awaitable[Tuple[Set[Future], Set[Future]]]:
         return wait(args, return_when=FIRST_COMPLETED, loop=loop)
+
+    @staticmethod
+    async def readProtocolStream(
+        client: ClientType,
+        handle: str,
+        path: Optional[str] = None,
+        loop: OptionalLoop = None,
+    ) -> bytes:
+        eof = False
+        io_args = {"handle": handle}
+        content = bytearray()
+        async with maybe_open_file(path, mode="w", loop=loop) as maybe_io:
+            while not eof:
+                response = await client.send("IO.read", io_args)
+                eof = response.get("eof")
+                if response.get("base64Encoded", False):
+                    data = b64decode(response.get("data"))
+                else:
+                    data = response.get("data").encode("utf-8")
+                content += data
+                if maybe_io is not None:
+                    await maybe_io.write(data)
+        await client.send("IO.close", io_args)
+        return bytes(content)

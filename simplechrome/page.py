@@ -22,7 +22,9 @@ import math
 from pyee2 import EventEmitterS
 
 from ._typings import (
+    AsyncAny,
     CDPEvent,
+    CoAny,
     HTTPHeaders,
     Number,
     OptionalLoop,
@@ -87,8 +89,8 @@ class Page(EventEmitterS):
         "ledger": {"width": 17, "height": 11},
         "a0": {"width": 33.1, "height": 46.8},
         "a1": {"width": 23.4, "height": 33.1},
-        "a2": {"width": 16.5, "height": 23.4},
-        "a3": {"width": 11.7, "height": 16.5},
+        "a2": {"width": 16.54, "height": 23.4},
+        "a3": {"width": 11.7, "height": 16.54},
         "a4": {"width": 8.27, "height": 11.7},
         "a5": {"width": 5.83, "height": 8.27},
     }
@@ -711,11 +713,11 @@ class Page(EventEmitterS):
             raise PageError("no main frame.")
         return frame.waitForFunction(pageFunction, options, *args, **kwargs)
 
-    def enableNetworkCache(self) -> Awaitable[None]:
-        return self._networkManager.enableNetworkCache()
+    async def enableNetworkCache(self) -> None:
+        await self._networkManager.enableNetworkCache()
 
-    def disableNetworkCache(self) -> Awaitable[None]:
-        return self._networkManager.disableNetworkCache()
+    async def disableNetworkCache(self) -> None:
+        await self._networkManager.disableNetworkCache()
 
     def cookies(self, *urls: str) -> Awaitable[List[Cookie]]:
         """Get all cookies that are for the supplied URLs
@@ -1233,6 +1235,7 @@ class Page(EventEmitterS):
         result = await self._client.send(
             "Page.printToPDF",
             {
+                "transferMode": "ReturnAsStream",
                 "landscape": landscape,
                 "displayHeaderFooter": displayHeaderFooter,
                 "headerTemplate": headerTemplate,
@@ -1249,23 +1252,19 @@ class Page(EventEmitterS):
                 "preferCSSPageSize": preferCSSPageSize,
             },
         )
-        buffer = base64.b64decode(result.get("data", b""))
-        if "path" in options:
-            async with aiofiles.open(options["path"], "wb") as f:
-                await f.write(buffer)
-        return buffer
+        return await Helper.readProtocolStream(
+            self._client, result.get("stream"), options.get("path")
+        )
 
     def evaluate(
         self, pageFunction: str, *args: Any, withCliAPI: bool = False
-    ) -> Awaitable[Any]:
+    ) -> CoAny:
         frame = self.mainFrame
         if frame is None:
-            raise Exception("No main frame.")
+            raise Exception("No main frame")
         return frame.evaluate(pageFunction, *args, withCliAPI=withCliAPI)
 
-    async def evaluate_expression(
-        self, expression: str, withCliAPI: bool = False
-    ) -> Any:
+    def evaluate_expression(self, expression: str, withCliAPI: bool = False) -> CoAny:
         """Evaluates the js expression in the main frame returning the results by value.
 
         :param str expression: The js expression to be evaluated in the main frame.
@@ -1274,7 +1273,7 @@ class Page(EventEmitterS):
         frame = self.mainFrame
         if frame is None:
             raise PageError("No main frame.")
-        return await frame.evaluate_expression(expression, withCliAPI=withCliAPI)
+        return frame.evaluate_expression(expression, withCliAPI=withCliAPI)
 
     async def close(self) -> None:
         """Close connection."""
@@ -1282,7 +1281,7 @@ class Page(EventEmitterS):
 
         if conn is None:
             raise PageError(
-                "Protocol Error: Connectoin Closed. "
+                "Protocol Error: Connection Closed. "
                 "Most likely the page has been closed."
             )
         await conn.send("Target.closeTarget", {"targetId": self._target._targetId})

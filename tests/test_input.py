@@ -170,7 +170,7 @@ class TestClick(BaseChromeTest):
         await self.page.mouse.move(100, 100)
         await self.page.mouse.up()
         await self.page.evaluate(
-            "window.getSelection().toString()"
+            "() => window.getSelection().toString()"
         ) | should.be.equal.to(text)
 
     @pytest.mark.asyncio

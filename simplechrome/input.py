@@ -1,4 +1,4 @@
-from asyncio import sleep
+from asyncio import gather, sleep
 from typing import Dict, Optional, Set
 
 from ._typings import Number, NumberOrStr, SlotsT
@@ -244,7 +244,7 @@ class Mouse:
         y: Number,
         button: str = "left",
         clickCount: int = 1,
-        delay: Number = 0,
+        delay: Optional[Number] = None,
     ) -> None:
         """Click button at (``x``, ``y``).
 
@@ -258,11 +258,16 @@ class Mouse:
         :param clickCount: defaults to 1
         :param delay: Time to wait between ``mousedown`` and ``mouseup`` in milliseconds. Defaults to 0.
         """
-        await self.move(x, y)
-        await self.down(button, clickCount)
-        if delay:
+        if delay is not None:
+            await gather(self.move(x, y), self.down(button, clickCount))
             await sleep(delay, loop=self.client.loop)
-        await self.up(button, clickCount)
+            await self.up(button, clickCount)
+        else:
+            await gather(
+                self.move(x, y),
+                self.down(button, clickCount),
+                self.up(button, clickCount),
+            )
 
     async def down(self, button: str = "left", clickCount: int = 1) -> None:
         """Press down button (dispatches ``mousedown`` event).

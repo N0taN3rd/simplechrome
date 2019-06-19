@@ -1,8 +1,6 @@
 from base64 import b64decode
 from typing import Any, Dict, List, Optional
 
-import aiofiles
-
 from ._typings import Loop, OptionalLoop, SlotsT
 from .connection import ClientType
 from .helper import Helper
@@ -56,25 +54,4 @@ class Tracing:
         self._recording = False
         complete_event = await contentPromise
         stream: str = complete_event.get("stream")
-        if self._path:
-            async with aiofiles.open(self._path, "wb") as out:
-                return await self._readStream(stream, out)
-        return await self._readStream(stream)
-
-    async def _readStream(self, handle: str, fh: Optional[Any] = None) -> bytes:
-        eof = False
-        content = bytearray()
-        handle_args = {"handle": handle}
-        while not eof:
-            response = await self.client.send("IO.read", handle_args)
-            eof = response.get("eof")
-            if response.get("base64Encoded", False):
-                data = b64decode(response.get("data"))
-            else:
-                data = response.get("data").encode("utf-8")
-            content += data
-            if fh is not None:
-                await fh.write(data)
-
-        await self.client.send("IO.close", handle_args)
-        return bytes(content)
+        return await Helper.readProtocolStream(self.client, stream, self._path)

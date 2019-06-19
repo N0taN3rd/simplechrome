@@ -260,7 +260,7 @@ class ElementHandle(JSHandle):
         await self._page.mouse.move(x, y)
 
     async def click(
-        self, button: str = "left", clickCount: int = 1, delay: Number = 0
+        self, button: str = "left", clickCount: int = 1, delay: Optional[Number] = None
     ) -> None:
         """Click the center of this element.
 
@@ -269,7 +269,7 @@ class ElementHandle(JSHandle):
 
         :param button: ``left``, ``right``, or ``middle``, defaults to ``left``
         :param clickCount: defaults to 1
-        :param delay: Time to wait between ``mousedown`` and ``mouseup`` in milliseconds. Defaults to 0.
+        :param delay: Time to wait between ``mousedown`` and ``mouseup`` in milliseconds. Defaults to None.
         """
         await self._scrollIntoViewIfNeeded()
         obj = await self._clickablePoint()
